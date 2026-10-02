@@ -264,7 +264,7 @@ export class AIController {
       return { family: opts[0][1], depth: opts[0][2], aimX };
     };
 
-    const sb = this.p.smashBias;
+    const sb = this.p.smashBias * (m.shuttle.wobble ? 2.2 : 1); // 機會球就殺
     // 網前（不論高度）只要球明顯高過網：撲殺（已限速）或放網
     if (dn < 2.3 && y >= COURT.netTop + 0.3) {
       const kill = this.p.killRate;

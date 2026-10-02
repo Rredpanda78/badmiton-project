@@ -17,6 +17,7 @@
       <button id="pauseBtn" aria-label="暫停">❚❚</button>
       <div id="meter"><div class="fill"></div></div>
       <div id="banner"><span></span><div class="sub"></div></div>
+      <div id="drillGoal"></div>
       <div id="hint">發球：按住蓄力 → <b>往上划</b> 發高遠球、<b>往下划</b> 發小球</div>
     </div>
     <div id="touch"></div>
@@ -61,6 +62,7 @@
           <div class="seg" data-key="vibration"><button data-v="true">開</button><button data-v="false">關</button></div>
         </div>
         <button id="startBtn" class="primary">開始比賽（對 AI）</button>
+        <button id="drillsBtn">訓練關卡</button>
         <button class="ghost" disabled>線上房間（開發中）</button>
         <details class="howto">
           <summary>操作說明</summary>
@@ -101,6 +103,15 @@
         <button id="resumeBtn" class="primary">繼續</button>
         <button id="restartBtn">重新開始</button>
         <button id="menuBtn">回主選單</button>
+      </div>
+    </div>
+
+    <div id="drills" class="overlay">
+      <div class="panel">
+        <h2>訓練關卡</h2>
+        <p class="tag">發球機一直餵同一種球，每關 10 球。用上面選的球員、球拍和操作模式。</p>
+        <div id="drillList" class="drill-list"></div>
+        <button id="drillsBackBtn">返回</button>
       </div>
     </div>
 

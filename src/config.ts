@@ -96,6 +96,7 @@ export interface MatchSettings {
   venue: Venue; // 場地
   aiCharacter?: string; // 對手（每場隨機）
   aiRacket?: string;
+  practice?: boolean; // 練習模式：發球機餵球、不計分
 }
 
 export const DEFAULT_SETTINGS: MatchSettings = {

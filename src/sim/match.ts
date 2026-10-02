@@ -51,7 +51,7 @@ export interface PlayerState {
   bufferT: number;
 }
 
-export type Phase = 'serve' | 'rally' | 'point' | 'matchOver';
+export type Phase = 'serve' | 'rally' | 'point' | 'matchOver' | 'drill'; // drill = 練習模式等待發球機
 
 export type WhiffReason = '太早' | '太晚' | '太遠' | '太高' | '太低';
 export type HitGrade = '完美' | '不錯' | '勉強';
@@ -77,6 +77,8 @@ export type MatchEvent =
   | { type: 'jumpLand'; player: 0 | 1 }
   | { type: 'net'; pos: Vec3 }
   | { type: 'land'; pos: Vec3; inBounds: boolean }
+  | { type: 'drillLand'; hitter: 0 | 1; pos: Vec3; inBounds: boolean; net: boolean }
+  | { type: 'chance'; player: 0 | 1 } // 打出晃動的機會球
   | { type: 'point'; winner: 0 | 1; reason: string }
   | { type: 'game'; winner: 0 | 1 }
   | { type: 'match'; winner: 0 | 1 }
@@ -94,6 +96,7 @@ export interface ShuttleState {
   prediction: Prediction | null;
   stepDt: number; // 每 tick 羽球前進的物理時間（球速倍率）
   launchTime: number; // 擊出時的 match.time（prediction 的 t 從這裡算）
+  wobble: boolean; // 勉強接回的機會球（會晃、比較慢、適合殺）
 }
 
 const clamp = (x: number, a: number, b: number) => Math.max(a, Math.min(b, x));
@@ -147,8 +150,9 @@ export class Match {
       bufferT: 0,
     });
     this.players = [mk(0, 1), mk(1, -1)];
-    this.shuttle = { pos: v3(), vel: v3(), mode: 'held', lastHitter: null, isServe: false, serveBoxSign: 1, prediction: null, stepDt: PHYS.dt, launchTime: 0 };
-    this.setupServe();
+    this.shuttle = { pos: v3(), vel: v3(), mode: 'held', lastHitter: null, isServe: false, serveBoxSign: 1, prediction: null, stepDt: PHYS.dt, launchTime: 0, wobble: false };
+    if (settings.practice) this.enterDrillIdle();
+    else this.setupServe();
   }
 
   get receiver(): 0 | 1 {
@@ -193,8 +197,8 @@ export class Match {
     this.events.push({ type: 'serveStart', server: this.server });
   }
 
-  private placeHeldShuttle(): void {
-    const s = this.players[this.server];
+  private placeHeldShuttle(who: 0 | 1 = this.server): void {
+    const s = this.players[who];
     this.shuttle.pos = v3(s.pos.x + s.side * 0.35, GAME.serveContactY, s.pos.z - s.side * 0.4);
   }
 
@@ -213,9 +217,12 @@ export class Match {
       case 'rally':
         this.updateRally();
         break;
+      case 'drill':
+        this.placeHeldShuttle(1);
+        break;
       case 'point':
         this.updateShuttleLoose();
-        if (this.phaseT >= GAME.pointPause) this.afterPoint();
+        if (this.phaseT >= (this.settings.practice ? 0.9 : GAME.pointPause)) this.afterPoint();
         break;
       case 'matchOver':
         this.updateShuttleLoose();
@@ -500,6 +507,7 @@ export class Match {
     sh.isServe = isServe;
     sh.stepDt = stepDt;
     sh.launchTime = this.time;
+    sh.wobble = false;
     sh.prediction = predict(sh.pos, sh.vel, stepDt);
     this.rallyHits++;
     this.hitSerial++;
@@ -514,8 +522,8 @@ export class Match {
   }
 
   /** 擊球品質：時機（划動後 idealContactT 最好）× 位置（0.25~0.85 m 最好） */
-  private contactQuality(t: number, dist: number): number {
-    return timeQuality(t) * posQuality(dist);
+  private contactQuality(p: PlayerState, t: number, dist: number): number {
+    return timeQuality(t, setFactor(p)) * posQuality(dist);
   }
 
   private updateRally(): void {
@@ -537,7 +545,7 @@ export class Match {
           const at = v3(p.pos.x + p.vel.x * dt, p.airborne ? p.pos.y + p.vy * dt : p.pos.y, p.pos.z + p.vel.z * dt);
           const nd = this.inReach(p, np, at);
           const dropsBelowHigh = sh.pos.y >= GAME.highZoneY + p.pos.y && np.y < GAME.highZoneY + at.y;
-          if (nd !== null && !dropsBelowHigh && posQuality(nd) > posQuality(d) + 1e-4 && this.contactQuality(s.t + dt, nd) >= this.contactQuality(s.t, d)) continue;
+          if (nd !== null && !dropsBelowHigh && posQuality(nd) > posQuality(d) + 1e-4 && this.contactQuality(p, s.t + dt, nd) >= this.contactQuality(p, s.t, d)) continue;
         }
         this.hit(p, d);
         break;
@@ -565,7 +573,7 @@ export class Match {
     const swing = p.swing!;
     const sh = this.shuttle;
     // 在空中擊中：越接近跳躍最高點越好。划動直接起跳的那一下只看這個；先起跳再划的取兩者較好的
-    let qTime = timeQuality(swing.t);
+    let qTime = timeQuality(swing.t, setFactor(p));
     if (p.airborne) {
       const apexQ = 1 - 0.35 * clamp(Math.abs(this.time - p.takeoffAt - jumpApexTime()) / 0.15, 0, 1);
       qTime = swing.triggeredJump ? apexQ : Math.max(qTime, apexQ);
@@ -573,28 +581,39 @@ export class Match {
     const quality = qTime * posQuality(dist);
     const contact = copy3(sh.pos);
     const incoming = Math.hypot(sh.vel.x, sh.vel.y, sh.vel.z);
-    const charge = Math.max(swing.charge, reboundCharge(incoming));
-    const shot = resolveShot(
-      { side: p.side, contact, family: swing.family, aimX: swing.aimX, charge, quality, serve: null, jump: p.airborne, kit: p.kit },
-      this.rng,
-    );
+    let charge = Math.max(swing.charge, reboundCharge(incoming));
+    // 勉強接到（品質差、不是往下壓）→ 只能把球撈成一顆又高又慢、會晃的「機會球」到中場
+    let family = swing.family;
+    const weak = quality < 0.72 && !p.airborne && family !== 'down';
+    if (weak) {
+      family = 'up';
+      charge = clamp(charge, chargeForDepth(3.2), chargeForDepth(4.6));
+    }
+    const chanceIn = sh.wobble; // 對方送來的是機會球
+    const shot = resolveShot({ side: p.side, contact, family, aimX: swing.aimX, charge, quality, serve: null, jump: p.airborne, kit: p.kit }, this.rng);
+    const chanceSmash = chanceIn && (shot.name === '殺球' || shot.name === '跳殺');
+    let stepDt = shot.stepDt;
+    if (weak) stepDt *= 0.85; // 機會球飄比較慢
+    if (chanceSmash) stepDt *= 1.12; // 機會殺球更快
     swing.contacted = true;
     swing.contactPoint = contact;
     swing.contactT = swing.t;
-    this.launch(p, shot.vel, shot.stepDt, false);
+    this.launch(p, shot.vel, stepDt, false);
+    sh.wobble = weak;
+    if (weak) this.events.push({ type: 'chance', player: p.id === 0 ? 1 : 0 });
     this.events.push({
       type: 'hit',
       player: p.id,
-      name: shot.name,
-      speedKmh: shot.speedKmh,
+      name: chanceSmash ? '機會殺球' : shot.name,
+      speedKmh: Math.round(shot.speedKmh * (chanceSmash ? 1.12 : 1)),
       pos: contact,
-      family: swing.family,
+      family,
       charge,
       netFault: shot.netFault,
       powerShort: shot.powerShort,
       quality,
       grade: quality >= 0.92 ? '完美' : quality >= 0.78 ? '不錯' : '勉強',
-      jump: shot.name === '跳殺' || shot.name === '跳撲',
+      jump: shot.name === '跳殺' || shot.name === '跳撲' || chanceSmash,
       serve: false,
     });
   }
@@ -634,6 +653,13 @@ export class Match {
       }
     }
     this.events.push({ type: 'land', pos: copy3(sh.pos), inBounds });
+    if (this.settings.practice) {
+      // 練習：不計分，交給關卡判定
+      this.events.push({ type: 'drillLand', hitter, pos: copy3(sh.pos), inBounds, net: wasNet || landSide === hitterSide });
+      this.phase = 'point';
+      this.phaseT = 0;
+      return;
+    }
     this.awardPoint(winner, reason);
   }
 
@@ -666,11 +692,91 @@ export class Match {
   }
 
   private afterPoint(): void {
+    if (this.settings.practice) return this.enterDrillIdle();
     if (this.gameJustEnded) {
       this.gameJustEnded = false;
       this.score = [0, 0];
     }
     this.setupServe();
+  }
+
+  // ---------- 練習模式（發球機） ----------
+
+  /** 練習：等待下一球。發球機（對面球員）拿著球 */
+  private enterDrillIdle(): void {
+    for (const p of this.players) {
+      p.swing = null;
+      p.charging = false;
+      p.charge = 0;
+      p.chargeT = 0;
+      p.airborne = false;
+      p.pos.y = 0;
+      p.jumpArmed = false;
+      p.jumpUsed = false;
+      p.bufferT = 0;
+    }
+    this.shuttle.mode = 'held';
+    this.shuttle.vel = v3();
+    this.shuttle.lastHitter = null;
+    this.shuttle.prediction = null;
+    this.shuttle.wobble = false;
+    this.phase = 'drill';
+    this.phaseT = 0;
+    this.placeHeldShuttle(1);
+  }
+
+  /**
+   * 發球機餵一球：從對面 from 位置，用指定球種打到「自己半場」深度 depth 的地方。
+   * playerAt：餵球前把玩家放回的位置（世界座標，自己這側）
+   */
+  feed(spec: { from: { x: number; y: number; z: number }; family: Family; depth: number; aimX: number; playerAt?: { x: number; z: number } }): void {
+    const feeder = this.players[1];
+    const me = this.players[0];
+    if (spec.playerAt) {
+      me.pos = v3(spec.playerAt.x, 0, spec.playerAt.z);
+      me.vel = v3();
+    }
+    feeder.pos = v3(spec.from.x - feeder.side * 0.4, 0, spec.from.z);
+    feeder.vel = v3();
+    const contact = v3(spec.from.x, spec.from.y, spec.from.z);
+    this.shuttle.pos = copy3(contact);
+    const shot = resolveShot(
+      { side: feeder.side, contact, family: spec.family, aimX: spec.aimX, charge: chargeForDepth(spec.depth), quality: 1, serve: null, jump: false },
+      this.rng,
+    );
+    feeder.swing = {
+      t: 0,
+      window: GAME.swingWindow,
+      charge: 0,
+      family: spec.family,
+      aimX: spec.aimX,
+      contacted: true,
+      contactPoint: contact,
+      contactT: 0,
+      isServe: false,
+      whiffed: false,
+      from: copy3(feeder.pos),
+      airborne: false,
+      triggeredJump: false,
+    };
+    this.launch(feeder, shot.vel, shot.stepDt, false);
+    this.events.push({
+      type: 'hit',
+      player: 1,
+      name: shot.name,
+      speedKmh: shot.speedKmh,
+      pos: contact,
+      family: spec.family,
+      charge: 0,
+      netFault: false,
+      powerShort: false,
+      quality: 1,
+      grade: '完美',
+      jump: false,
+      serve: false,
+    });
+    this.phase = 'rally';
+    this.phaseT = 0;
   }
 
   private updateShuttleLoose(): void {
@@ -708,9 +814,22 @@ export function timeUntilInReach(m: Match, id: 0 | 1): number | null {
 }
 
 /** 時機分數：划動後 GAME.idealContactT 擊中最好；划太晚（球已經在身邊）扣分較少，划太早扣較多 */
-function timeQuality(t: number): number {
+/**
+ * 站穩程度（學 TopSpin）：擊球時越接近停住，「完美」的時間範圍越寬；邊跑邊打則變窄。
+ * 回傳時間容許度倍率 0.8（全速跑動）～1.4（站定）
+ */
+function setFactor(p: PlayerState): number {
+  if (p.airborne) return 1;
+  const sp = Math.hypot(p.vel.x, p.vel.z);
+  const set = 1 - Math.min(1, sp / (GAME.moveSpeed * 0.6));
+  return 0.8 + 0.6 * set;
+}
+
+function timeQuality(t: number, f = 1): number {
   const ideal = GAME.idealContactT;
-  return t < ideal ? 1 - 0.25 * ((ideal - t) / ideal) : 1 - 0.35 * clamp((t - ideal) / (GAME.swingWindow - ideal), 0, 1);
+  const late = ((ideal - t) / ideal) / f;
+  const early = (t - ideal) / (GAME.swingWindow - ideal) / f;
+  return t < ideal ? 1 - 0.25 * clamp(late, 0, 1) : 1 - 0.35 * clamp(early, 0, 1);
 }
 
 /** 位置分數：離身體 0.25~0.85 m 最好，太遠或太擠扣分 */

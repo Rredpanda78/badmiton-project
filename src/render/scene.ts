@@ -21,6 +21,7 @@ export class GameRenderer {
   private marker: THREE.Mesh;
   private reachRing: THREE.Mesh;
   private serveBoxLine: THREE.LineLoop;
+  private target: THREE.Mesh;
   private baseFov = 40;
   private fovPunch = 0;
   private bursts: { mesh: THREE.Mesh; t: number }[] = [];
@@ -102,6 +103,15 @@ export class GameRenderer {
     this.serveBoxLine.visible = false;
     this.scene.add(this.serveBoxLine);
 
+    // 訓練關卡的目標區（對面場地上的黃色半透明區塊）
+    this.target = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 1),
+      new THREE.MeshBasicMaterial({ color: 0xffd54a, transparent: true, opacity: 0.22, depthWrite: false }),
+    );
+    this.target.rotation.x = -Math.PI / 2;
+    this.target.visible = false;
+    this.scene.add(this.target);
+
     this.resize();
   }
 
@@ -171,6 +181,14 @@ export class GameRenderer {
     this.camera.position.set(camX + sx, this.pose.y + sy, vs * this.pose.z);
     this.camera.lookAt(camX * 0.6, 0, vs * this.pose.lookZ);
     this.camera.updateMatrixWorld();
+  }
+
+  /** 訓練關卡目標區；null = 不顯示 */
+  setTarget(t: { x0: number; x1: number; z0: number; z1: number } | null): void {
+    this.target.visible = !!t;
+    if (!t) return;
+    this.target.position.set((t.x0 + t.x1) / 2, 0.009, (t.z0 + t.z1) / 2);
+    this.target.scale.set(Math.abs(t.x1 - t.x0), Math.abs(t.z1 - t.z0), 1);
   }
 
   /** 換場地（室內／竹林／櫻花園） */
@@ -251,6 +269,7 @@ export class GameRenderer {
     const shake = this.shakeAmt;
     this.shakeAmt = Math.max(0, this.shakeAmt - dt * 0.6);
     this.placeCamera(this.camX, (Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+    if (this.target.visible) (this.target.material as THREE.MeshBasicMaterial).opacity = 0.32 + Math.sin(match.time * 4) * 0.08;
     if (this.fovPunch > 0 || this.camera.fov !== this.baseFov) {
       this.fovPunch = Math.max(0, this.fovPunch - dt * 25);
       this.camera.fov = this.baseFov - this.fovPunch;

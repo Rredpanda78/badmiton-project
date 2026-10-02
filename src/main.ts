@@ -4,7 +4,8 @@ import { sfx, unlockAudio } from './audio';
 import { DEFAULT_SETTINGS, GAME, PHYS, type MatchSettings } from './config';
 import { LocalControls } from './input/controls';
 import { GameRenderer } from './render/scene';
-import { Match, type MatchEvent } from './sim/match';
+import { idleInput, Match, type MatchEvent } from './sim/match';
+import { DRILLS, DrillRunner, loadBest, saveBest, type Drill } from './modes/drills';
 import { buildKit, CHARACTERS, characterById, RACKETS } from './sim/kits';
 import { Hud } from './ui/hud';
 import { chargeZones } from './sim/shots';
@@ -21,7 +22,9 @@ const hud = new Hud($('hud'));
 
 let mode: Mode = 'menu';
 let match!: Match;
-let opponent!: AIController;
+let opponent: AIController | null = null; // 練習模式沒有對手 AI
+let drill: DrillRunner | null = null; // 目前的訓練關卡
+let again: () => void = () => startGame(); // 「再來一次」要重開什麼
 let demoPlayer: AIController | null = null; // 主選單背景的 AI 示範對打
 let resultTimer: number | undefined;
 
@@ -62,6 +65,9 @@ function newMatch(demo: boolean): void {
   renderer.setLooks([me, opp]);
   renderer.setVenue(settings.venue);
   hud.oppName = opp.name;
+  hud.drill = null;
+  drill = null;
+  renderer.setTarget(null);
   clearTimeout(resultTimer);
   hitStop = 0;
 }
@@ -120,6 +126,7 @@ function setMode(m: Mode): void {
   $('menu').classList.toggle('show', m === 'menu');
   $('pause').classList.toggle('show', m === 'paused');
   $('result').classList.toggle('show', m === 'result');
+  $('drills').classList.remove('show');
   $('hud').style.visibility = m === 'menu' ? 'hidden' : 'visible';
 }
 
@@ -171,6 +178,7 @@ function handleEvent(e: MatchEvent): void {
       break;
   }
   if (live) hud.onEvent(e, match, renderer, HUMAN);
+  drill?.onEvent(e);
 }
 
 // ---------- 主迴圈：固定步長模擬，畫面照幀率跑 ----------
@@ -179,6 +187,7 @@ let acc = 0;
 function tick(now: number): void {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
+  if (drill && mode === 'play' && hitStop <= 0) drill.tick(dt);
   if (hitStop > 0) hitStop -= dt;
   else if (mode === 'play' || mode === 'menu') {
     acc += dt * GAME.simSpeed;
@@ -195,7 +204,7 @@ function tick(now: number): void {
         sfx.whoosh();
         buzz(8);
       }
-      match.step([mine, opponent.input()]);
+      match.step([mine, opponent ? opponent.input() : idleInput()]);
       acc -= PHYS.dt;
       for (const e of match.drainEvents()) handleEvent(e);
     }
@@ -241,6 +250,7 @@ function startGame(): void {
     el.requestFullscreen?.().catch(() => {});
   }
   newMatch(false);
+  again = () => startGame();
   acc = 0;
   setMode('play');
 }
@@ -262,8 +272,8 @@ document.querySelectorAll<HTMLElement>('.seg').forEach((seg) => {
 });
 
 $('startBtn').addEventListener('click', startGame);
-$('againBtn').addEventListener('click', startGame);
-$('restartBtn').addEventListener('click', startGame);
+$('againBtn').addEventListener('click', () => again());
+$('restartBtn').addEventListener('click', () => again());
 $('pauseBtn').addEventListener('click', () => mode === 'play' && setMode('paused'));
 $('resumeBtn').addEventListener('click', () => setMode('play'));
 const toMenu = () => {
@@ -328,3 +338,72 @@ requestAnimationFrame(frame);
     for (let t = 0; t < secs; t += 1 / 60) tick(last + 1000 / 60);
   },
 };
+
+// ---------- 訓練關卡 ----------
+function buildDrillList(): void {
+  const best = loadBest();
+  const box = $('drillList');
+  box.innerHTML = '';
+  for (const d of DRILLS) {
+    const b = document.createElement('button');
+    b.className = 'drill-item';
+    const s = best[d.id] ?? 0;
+    const stars = [1, 2, 3].map((i) => (i <= s ? '★' : '<i class="off">★</i>')).join('');
+    b.innerHTML = `<div><b>${d.name}</b><span>${d.goal}</span><span>${d.how}</span></div><div class="stars">${stars}</div>`;
+    b.addEventListener('click', () => startDrill(d));
+    box.appendChild(b);
+  }
+}
+
+function startDrill(d: Drill): void {
+  unlockAudio();
+  if (controls.isTouch || matchMedia('(pointer: coarse)').matches) document.documentElement.requestFullscreen?.().catch(() => {});
+  const me = characterById(settings.character);
+  match = new Match({ ...settings, practice: true, aiCharacter: 'allround', aiRacket: 'balance' }, (Date.now() ^ (Math.random() * 1e9)) >>> 0);
+  opponent = null;
+  demoPlayer = null;
+  assist = settings.autoMove ? new AIController(match, 0, 'hard', true) : null;
+  controls.autoMove = !!assist;
+  renderer.setLooks([me, { shirt: 0x8a96a8, shorts: 0x2a2f38 }]); // 對面是灰色的發球機教練
+  renderer.setVenue(settings.venue);
+  renderer.setTarget(d.target);
+  hud.oppName = '發球機';
+  hud.drill = { name: d.name, rep: 0, reps: d.reps, ok: 0, goal: `${d.goal}｜${d.how}` };
+  hitStop = 0;
+  clearTimeout(resultTimer);
+  drill = new DrillRunner(
+    match,
+    d,
+    (r) => {
+      hud.drill = { ...hud.drill!, rep: drill!.rep, ok: drill!.ok };
+      hud.showRep(r.ok, r.msg);
+      sfx.point(r.ok);
+      buzz(r.ok ? 20 : [8, 40, 8]);
+    },
+    (ok, stars) => {
+      saveBest(d.id, stars);
+      $('resultTitle').textContent = `${'★'.repeat(stars)}${'☆'.repeat(3 - stars)}  ${d.name}`;
+      $('resultScore').textContent = `成功 ${ok} / ${d.reps}${stars < 3 ? `（3 星需要 ${d.stars[2]} 球）` : '　完美通關！'}`;
+      setMode('result');
+    },
+  );
+  // 每一球更新進度
+  const origTick = drill.tick.bind(drill);
+  drill.tick = (dt: number) => {
+    origTick(dt);
+    if (drill && hud.drill) hud.drill.rep = drill.rep;
+  };
+  again = () => startDrill(d);
+  acc = 0;
+  setMode('play');
+}
+
+$('drillsBtn').addEventListener('click', () => {
+  buildDrillList();
+  $('menu').classList.remove('show');
+  $('drills').classList.add('show');
+});
+$('drillsBackBtn').addEventListener('click', () => {
+  $('drills').classList.remove('show');
+  $('menu').classList.add('show');
+});

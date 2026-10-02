@@ -15,6 +15,9 @@ export class Hud {
   private meterHold = 0;
   private lastCharge = 0;
   oppName = 'AI';
+  /** 訓練關卡進度（有值時記分板改顯示這個） */
+  drill: { name: string; rep: number; reps: number; ok: number; goal: string } | null = null;
+  private goal: HTMLElement;
 
   constructor(private root: HTMLElement) {
     this.score = root.querySelector('#scoreboard')!;
@@ -23,6 +26,7 @@ export class Hud {
     this.banner = root.querySelector('#banner')!;
     this.bannerSub = root.querySelector('#banner .sub')!;
     this.hint = root.querySelector('#hint')!;
+    this.goal = root.querySelector('#drillGoal')!;
   }
 
   onEvent(e: MatchEvent, match: Match, r: GameRenderer, humanId: 0 | 1): void {
@@ -61,6 +65,11 @@ export class Hud {
     }
   }
 
+  /** 訓練關卡每一球的結果 */
+  showRep(ok: boolean, msg: string): void {
+    this.showBanner(`${ok ? '✔' : '✘'} ${msg}`, '', `rep ${ok ? 'win' : 'lose'}`, 1.1);
+  }
+
   private showBanner(main: string, sub: string, cls: string, secs: number): void {
     this.banner.firstChild!.textContent = main;
     this.bannerSub.textContent = sub;
@@ -82,10 +91,16 @@ export class Hud {
     const opp = humanId === 0 ? 1 : 0;
     const serveDot = (id: number) => (match.server === id && match.phase !== 'matchOver' ? '<i class="dot"></i>' : '');
     const multi = match.settings.games > 1;
-    this.score.innerHTML =
-      `<span class="me">${serveDot(humanId)}你${multi ? `<small>${match.games[humanId]}</small>` : ''}<b>${match.score[humanId]}</b></span>` +
-      `<span class="sep">:</span>` +
-      `<span class="opp"><b>${match.score[opp]}</b>${multi ? `<small>${match.games[opp]}</small>` : ''}${this.oppName}<em>AI</em>${serveDot(opp)}</span>`;
+    const d = this.drill;
+    this.goal.style.display = d ? 'block' : 'none';
+    if (d) {
+      this.score.innerHTML = `<span>${d.name}</span><b>${Math.min(d.rep, d.reps)}/${d.reps}</b><span class="me">✔ ${d.ok}</span>`;
+      this.goal.textContent = d.goal;
+    } else
+      this.score.innerHTML =
+        `<span class="me">${serveDot(humanId)}你${multi ? `<small>${match.games[humanId]}</small>` : ''}<b>${match.score[humanId]}</b></span>` +
+        `<span class="sep">:</span>` +
+        `<span class="opp"><b>${match.score[opp]}</b>${multi ? `<small>${match.games[opp]}</small>` : ''}${this.oppName}<em>AI</em>${serveDot(opp)}</span>`;
 
     if (this.bannerTimer > 0) {
       this.bannerTimer -= dt;
