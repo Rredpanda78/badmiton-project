@@ -16,7 +16,7 @@ interface Pad {
 
 /**
  * 本機玩家輸入：
- * - 手機：左半邊 = 移動搖桿；右半邊 = 按住蓄力、往某方向划動出拍（不划直接放開 = 取消）
+ * - 手機（直向或橫向）：左半邊 = 移動搖桿；右半邊 = 按住蓄力、往某方向划動出拍（不划直接放開 = 取消）
  * - 電腦：WASD 移動；滑鼠按住蓄力、拖曳出拍（或 空白鍵蓄力 + 方向鍵出拍）
  * - 手把：左搖桿移動；RT/RB/A 蓄力；右搖桿撥出去出拍
  */
@@ -33,7 +33,7 @@ export class LocalControls {
   private baseEl: HTMLElement;
   private knobEl: HTMLElement;
   private ringEl: HTMLElement;
-  isTouch = false;
+  isTouch = matchMedia('(pointer: coarse)').matches;
 
   constructor(surface: HTMLElement, overlay: HTMLElement) {
     this.baseEl = mk(overlay, 'stick-base');
@@ -62,7 +62,7 @@ export class LocalControls {
     const touch = e.pointerType !== 'mouse';
     if (touch) this.isTouch = true;
     const pad: Pad = { id: e.pointerId, ox: e.clientX, oy: e.clientY, x: e.clientX, y: e.clientY, flicked: false };
-    if (touch && e.clientX < window.innerWidth * 0.45) {
+    if (touch && e.clientX < window.innerWidth * 0.5) {
       if (!this.move) this.move = pad;
     } else if (!this.action) {
       this.action = pad;
@@ -161,7 +161,12 @@ export class LocalControls {
   }
 
   /** 更新觸控搖桿外觀；charge 0..1 */
-  draw(charge: number, charging: boolean): void {
+  draw(charge: number, charging: boolean, bottomReserve: number): void {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    // 預設位置：直向時放在下方保留區中間，橫向時放左右下角
+    const restY = bottomReserve > 0 ? h * (1 - bottomReserve / 2) : h - 110;
+    const restX = bottomReserve > 0 ? w * 0.22 : Math.max(90, w * 0.12);
     const show = this.isTouch;
     this.baseEl.style.display = show ? 'block' : 'none';
     this.ringEl.style.display = show || this.action ? 'block' : 'none';
@@ -179,8 +184,8 @@ export class LocalControls {
       }
       this.knobEl.style.transform = `translate(${dx}px, ${dy}px)`;
     } else {
-      this.baseEl.style.left = `${Math.max(90, window.innerWidth * 0.12)}px`;
-      this.baseEl.style.top = `${window.innerHeight - 110}px`;
+      this.baseEl.style.left = `${restX}px`;
+      this.baseEl.style.top = `${restY}px`;
       this.baseEl.classList.remove('active');
       this.knobEl.style.transform = '';
     }
@@ -190,8 +195,8 @@ export class LocalControls {
       this.ringEl.style.top = `${a.oy}px`;
       this.ringEl.classList.add('active');
     } else {
-      this.ringEl.style.left = `${window.innerWidth - Math.max(100, window.innerWidth * 0.13)}px`;
-      this.ringEl.style.top = `${window.innerHeight - 110}px`;
+      this.ringEl.style.left = `${w - restX}px`;
+      this.ringEl.style.top = `${restY}px`;
       this.ringEl.classList.remove('active');
     }
     this.ringEl.style.setProperty('--charge', `${(charging ? charge : 0) * 360}deg`);

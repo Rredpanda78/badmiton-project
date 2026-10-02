@@ -99,8 +99,7 @@ export class Hud {
     this.meter.style.display = visible ? 'block' : 'none';
     if (visible) {
       const serving = match.phase === 'serve' && match.server === humanId;
-      const dn = serving ? Math.abs(match.shuttle.pos.z) : Math.abs(me.pos.z);
-      const z = chargeZones(dn, serving);
+      const z = chargeZones(serving);
       const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
       this.meter.style.background = `linear-gradient(to top,
         #e5484d 0 ${pct(z.net)}, #9be37b ${pct(z.net)} ${pct(z.front)},
@@ -108,7 +107,7 @@ export class Hud {
         #e5484d ${pct(z.out)} 100%)`;
       this.meterFill.style.bottom = pct(this.lastCharge);
       const at = r.project(v3(me.pos.x, 1.2, me.pos.z));
-      this.meter.style.left = `${at.x + 48}px`;
+      this.meter.style.left = `${Math.min(window.innerWidth - 26, at.x + 44)}px`;
       this.meter.style.top = `${at.y}px`;
     }
   }

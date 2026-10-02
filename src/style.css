@@ -372,23 +372,18 @@ h2 {
   font-size: 18px;
 }
 
-#rotate {
-  position: fixed;
-  inset: 0;
-  display: none;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  font-size: 48px;
-  background: var(--bg);
-  z-index: 10;
-}
-#rotate p {
-  font-size: 18px;
-}
-@media (orientation: portrait) and (pointer: coarse) {
-  #rotate {
-    display: flex;
+/* 直向手機：下方留給兩個拇指，提示文字放在保留區上面 */
+@media (orientation: portrait) {
+  #hint {
+    top: calc(max(10px, env(safe-area-inset-top)) + 58px);
+    bottom: auto;
+    white-space: normal;
+    width: max-content;
+    max-width: 92vw;
+    text-align: center;
+  }
+  #banner {
+    font-size: 36px;
   }
 }
 

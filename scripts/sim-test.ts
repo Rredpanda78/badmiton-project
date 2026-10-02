@@ -5,29 +5,33 @@ import { DEFAULT_SETTINGS, GAME, type Difficulty } from '../src/config';
 import { Match } from '../src/sim/match';
 import { predict, v3 } from '../src/sim/physics';
 import { Rng } from '../src/sim/rng';
-import { resolveShot, type Family } from '../src/sim/shots';
+import { chargeForDepth, resolveShot, type Family } from '../src/sim/shots';
 
 const rng = new Rng(1);
 console.log('--- 單球測試（近側球員 side=1，往 z<0 打） ---');
 const cases: [string, number, number, Family, number][] = [
-  // 名稱, 擊球點 z, 高度, 球種, 蓄力
-  ['後場高遠 c=0.70', 6.0, 2.5, 'up', 0.7],
-  ['後場高遠 c=0.95(出界?)', 6.0, 2.5, 'up', 0.95],
-  ['後場殺球 c=0.58', 5.5, 2.6, 'down', 0.58],
-  ['後場切球 c=0.40', 5.5, 2.6, 'down', 0.4],
-  ['中場平抽 c=0.55', 3.5, 1.4, 'side', 0.55],
-  ['網前放網 c=0.15', 1.2, 0.8, 'down', 0.15],
-  ['網前挑球 c=0.45', 1.2, 0.6, 'up', 0.45],
-  ['蓄力不足 c=0.20', 5.0, 2.4, 'up', 0.2],
+  // 名稱, 擊球點 z, 高度, 球種, 目標深度（m，越過網）
+  ['後場高遠 深6.0', 6.0, 2.5, 'up', 6.0],
+  ['後場高遠 深7.4(出界)', 6.0, 2.5, 'up', 7.4],
+  ['後場殺球 深4.3', 5.5, 2.6, 'down', 4.3],
+  ['後場切球 深1.3', 5.5, 2.6, 'down', 1.3],
+  ['中場平抽 深5.2', 3.5, 1.4, 'side', 5.2],
+  ['網前放網 深0.9', 1.2, 0.8, 'down', 0.9],
+  ['網前挑球 深5.6', 1.2, 0.6, 'up', 5.6],
+  ['網前撲球 深3.2', 1.3, 2.1, 'down', 3.2],
+  ['網前高點撲 深3.2', 1.5, 2.6, 'down', 3.2],
+  ['蓄力不足 深0.0', 5.0, 2.4, 'up', 0.0],
 ];
-for (const [name, z, y, family, charge] of cases) {
+for (const [name, z, y, family, depth] of cases) {
   const t0 = performance.now();
+  const charge = chargeForDepth(depth);
   const r = resolveShot({ side: 1, contact: v3(0, y, z), family, aimX: 0, charge, quality: 1, serve: null }, rng);
   const ms = (performance.now() - t0).toFixed(1);
-  const pr = predict(v3(0, y, z), r.vel);
-  const land = pr.landing ? `落點 z=${pr.landing.z.toFixed(2)} x=${pr.landing.x.toFixed(2)}` : pr.hitsNet ? '掛網' : '未落地';
+  const pr = predict(v3(0, y, z), r.vel, r.stepDt);
+  const land = pr.landing ? `落點 z=${pr.landing.z.toFixed(2)}` : pr.hitsNet ? '掛網' : '未落地';
   const apex = Math.max(...pr.points.map((p) => p.p.y)).toFixed(2);
-  console.log(`${name.padEnd(22)} ${r.name.padEnd(4)} ${String(r.speedKmh).padStart(3)}km/h 飛行${pr.landTime.toFixed(2)}s 最高${apex}m ${land} (${ms}ms)`);
+  const real = (pr.landTime / GAME.simSpeed).toFixed(2);
+  console.log(`${name.padEnd(16)} c=${charge.toFixed(2)} ${r.name.padEnd(4)} ${String(r.speedKmh).padStart(3)}km/h 實際飛行${real}s 最高${apex}m ${land} (${ms}ms)`);
 }
 
 const diff = (process.argv[2] as Difficulty) ?? 'normal';

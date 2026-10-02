@@ -57,6 +57,7 @@ export interface ShuttleState {
   isServe: boolean;
   serveBoxSign: number; // 發球時對角發球區在 x 的正負號
   prediction: Prediction | null;
+  stepDt: number; // 每 tick 羽球前進的物理時間（球速倍率）
 }
 
 const clamp = (x: number, a: number, b: number) => Math.max(a, Math.min(b, x));
@@ -91,7 +92,7 @@ export class Match {
       recover: 0,
     });
     this.players = [mk(0, 1), mk(1, -1)];
-    this.shuttle = { pos: v3(), vel: v3(), mode: 'held', lastHitter: null, isServe: false, serveBoxSign: 1, prediction: null };
+    this.shuttle = { pos: v3(), vel: v3(), mode: 'held', lastHitter: null, isServe: false, serveBoxSign: 1, prediction: null, stepDt: PHYS.dt };
     this.setupServe();
   }
 
@@ -148,14 +149,14 @@ export class Match {
         this.placeHeldShuttle();
         break;
       case 'rally':
-        this.updateRally(dt);
+        this.updateRally();
         break;
       case 'point':
-        this.updateShuttleLoose(dt);
+        this.updateShuttleLoose();
         if (this.phaseT >= GAME.pointPause) this.afterPoint();
         break;
       case 'matchOver':
-        this.updateShuttleLoose(dt);
+        this.updateShuttleLoose();
         break;
     }
   }
@@ -245,24 +246,25 @@ export class Match {
     swing.contactPoint = contact;
     swing.contactT = swing.t;
     swing.isServe = true;
-    this.launch(p, shot.vel, true);
+    this.launch(p, shot.vel, shot.stepDt, true);
     this.events.push({ type: 'hit', player: p.id, name: shot.name, speedKmh: shot.speedKmh, pos: contact, family: swing.family, charge: swing.charge, netFault: shot.netFault });
     this.phase = 'rally';
     this.phaseT = 0;
   }
 
-  private launch(p: PlayerState, vel: Vec3, isServe: boolean): void {
+  private launch(p: PlayerState, vel: Vec3, stepDt: number, isServe: boolean): void {
     const sh = this.shuttle;
     sh.vel = copy3(vel);
     sh.mode = 'flight';
     sh.lastHitter = p.id;
     sh.isServe = isServe;
-    sh.prediction = predict(sh.pos, sh.vel);
+    sh.stepDt = stepDt;
+    sh.prediction = predict(sh.pos, sh.vel, stepDt);
     this.rallyHits++;
     this.hitSerial++;
   }
 
-  private updateRally(dt: number): void {
+  private updateRally(): void {
     const sh = this.shuttle;
     // 擊球判定（先判定再移動，避免高速球穿過）
     if (sh.mode === 'flight') {
@@ -279,7 +281,7 @@ export class Match {
 
     const pz = sh.pos.z;
     const py = sh.pos.y;
-    stepShuttle(sh.pos, sh.vel, dt);
+    stepShuttle(sh.pos, sh.vel, sh.stepDt);
     if (sh.mode === 'flight' && pz !== 0 && Math.sign(pz) !== Math.sign(sh.pos.z)) {
       const a = pz / (pz - sh.pos.z);
       const yCross = py + (sh.pos.y - py) * a;
@@ -311,7 +313,7 @@ export class Match {
     swing.contacted = true;
     swing.contactPoint = contact;
     swing.contactT = swing.t;
-    this.launch(p, shot.vel, false);
+    this.launch(p, shot.vel, shot.stepDt, false);
     this.events.push({ type: 'hit', player: p.id, name: shot.name, speedKmh: shot.speedKmh, pos: contact, family: swing.family, charge: swing.charge, netFault: shot.netFault });
   }
 
@@ -389,10 +391,10 @@ export class Match {
     this.setupServe();
   }
 
-  private updateShuttleLoose(dt: number): void {
+  private updateShuttleLoose(): void {
     const sh = this.shuttle;
     if (sh.mode === 'flight' || sh.mode === 'netfall') {
-      stepShuttle(sh.pos, sh.vel, dt);
+      stepShuttle(sh.pos, sh.vel, sh.stepDt);
       if (sh.pos.y <= 0) {
         sh.pos.y = 0;
         sh.mode = 'down';
@@ -400,10 +402,6 @@ export class Match {
     }
   }
 
-  /** 球員離網距離（蓄力條甜蜜區用） */
-  distToNet(id: 0 | 1): number {
-    return Math.abs(this.players[id].pos.z);
-  }
 
   drainEvents(): MatchEvent[] {
     const e = this.events;

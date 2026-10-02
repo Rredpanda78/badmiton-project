@@ -97,7 +97,7 @@ function tick(now: number): void {
   renderer.update(match, mode === 'paused' || mode === 'result' ? 0 : dt, settings.landingHint && !demoPlayer, HUMAN);
   if (mode !== 'menu') hud.update(match, renderer, dt, HUMAN);
   const me = match.players[HUMAN];
-  controls.draw(me.charge, me.charging && !demoPlayer);
+  controls.draw(me.charge, me.charging && !demoPlayer, renderer.bottomReserve);
   renderer.render();
 }
 function frame(now: number): void {
@@ -110,7 +110,7 @@ function startGame(): void {
   unlockAudio();
   if (controls.isTouch || matchMedia('(pointer: coarse)').matches) {
     const el = document.documentElement;
-    el.requestFullscreen?.().then(() => (screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> }).lock?.('landscape')).catch(() => {});
+    el.requestFullscreen?.().catch(() => {});
   }
   newMatch(false);
   acc = 0;
@@ -182,6 +182,7 @@ requestAnimationFrame(frame);
     return match;
   },
   settings,
+  renderer,
   advance(secs: number) {
     for (let t = 0; t < secs; t += 1 / 60) tick(last + 1000 / 60);
   },

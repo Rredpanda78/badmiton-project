@@ -1,21 +1,22 @@
-import { chargeFromTime, COURT, GAME, timeForCharge, type Difficulty } from '../config';
+import { chargeFromTime, COURT, GAME, PHYS, timeForCharge, type Difficulty } from '../config';
 import { idleInput, type Match, type PlayerInput } from '../sim/match';
-import { reboundCharge, type Family, type Flick } from '../sim/shots';
+import { chargeForDepth, depthFromCharge, reboundCharge, type Family, type Flick } from '../sim/shots';
 
 interface AIParams {
   reaction: number; // 對手出拍後多久才開始動
   speedMul: number;
-  chargeNoise: number; // 蓄力誤差（蓄力值單位）
+  depthNoise: number; // 落點深度誤差（公尺）
   timingJitter: number;
   outJudge: number; // 正確放掉出界球的機率
   smartAim: number; // 打對手空檔的機率
   smashBias: number;
+  killRate: number; // 網前高球選擇撲殺的比例
 }
 
 const PARAMS: Record<Difficulty, AIParams> = {
-  easy: { reaction: 0.38, speedMul: 0.78, chargeNoise: 0.05, timingJitter: 0.05, outJudge: 0.5, smartAim: 0.35, smashBias: 0.6 },
-  normal: { reaction: 0.25, speedMul: 0.9, chargeNoise: 0.025, timingJitter: 0.03, outJudge: 0.8, smartAim: 0.7, smashBias: 1 },
-  hard: { reaction: 0.15, speedMul: 1.0, chargeNoise: 0.017, timingJitter: 0.015, outJudge: 0.95, smartAim: 0.9, smashBias: 1.2 },
+  easy: { reaction: 0.38, speedMul: 0.78, depthNoise: 0.9, timingJitter: 0.05, outJudge: 0.5, smartAim: 0.35, smashBias: 0.6, killRate: 0.25 },
+  normal: { reaction: 0.25, speedMul: 0.9, depthNoise: 0.45, timingJitter: 0.03, outJudge: 0.8, smartAim: 0.7, smashBias: 1, killRate: 0.4 },
+  hard: { reaction: 0.15, speedMul: 1.0, depthNoise: 0.3, timingJitter: 0.015, outJudge: 0.95, smartAim: 0.9, smashBias: 1.2, killRate: 0.55 },
 };
 
 interface ShotChoice {
@@ -68,13 +69,13 @@ export class AIController {
 
     const plan = sh.lastHitter === this.id || !this.plan || this.plan.leave || this.plan.done ? null : this.plan;
     if (!plan) {
-      this.moveTo(inp, 0, this.me.side * 3.9, 0.6);
+      this.moveTo(inp, 0, this.me.side * 3.6, 0.6);
       return inp;
     }
 
     const now = m.time;
     if (now >= plan.reactAt) this.moveTo(inp, plan.standX, plan.standZ, 1);
-    else this.moveTo(inp, 0, this.me.side * 3.9, 0.4);
+    else this.moveTo(inp, 0, this.me.side * 3.6, 0.4);
 
     if (now >= plan.chargeAt && now >= plan.reactAt) inp.charging = true;
     const charged = this.me.charge >= plan.charge;
@@ -96,12 +97,11 @@ export class AIController {
     this.seenServeT = m.phaseT;
     if (m.phaseT < this.serveDelay) return inp;
     if (!this.serveChoice) {
-      const dn = Math.abs(m.shuttle.pos.z);
       const long = m.rng.chance(0.35);
       const depth = long ? 5.9 : COURT.shortService + 0.5;
       const aim = (m.rng.next() - 0.5) * 1.2;
       this.serveChoice = {
-        charge: this.chargeFor(dn, depth),
+        charge: this.chargeFor(depth),
         flick: this.flickFor(long ? 'up' : 'down', aim),
       };
     }
@@ -113,8 +113,8 @@ export class AIController {
     return inp;
   }
 
-  private chargeFor(dn: number, depth: number): number {
-    const c = (dn + depth) / GAME.maxShotLength + this.match.rng.gauss() * this.p.chargeNoise;
+  private chargeFor(depth: number): number {
+    const c = chargeForDepth(depth + this.match.rng.gauss() * this.p.depthNoise);
     return Math.max(0.02, Math.min(1, c));
   }
 
@@ -145,7 +145,7 @@ export class AIController {
     const rng = m.rng;
     const now = m.time;
     const p = this.p;
-    const leavePlan = (): Plan => ({ reactAt: now, standX: 0, standZ: me.side * 3.9, contactAt: 0, chargeAt: 1e9, flickAt: 1e9, charge: 0, flick: { x: 0, y: 1 }, leave: true, done: false });
+    const leavePlan = (): Plan => ({ reactAt: now, standX: 0, standZ: me.side * 3.6, contactAt: 0, chargeAt: 1e9, flickAt: 1e9, charge: 0, flick: { x: 0, y: 1 }, leave: true, done: false });
     if (!pred || pred.hitsNet) return leavePlan();
 
     // 出界球判斷
@@ -191,14 +191,16 @@ export class AIController {
     // 來不及蓄滿就改打需要較少力道的球（放網／擋網前）；快球有反彈力可借
     const pts = pred.points;
     const j = Math.min(pick.i + 1, pts.length - 1);
-    const inSpeed = j > pick.i ? Math.hypot(pts[j].p.x - pt.x, pts[j].p.y - pt.y, pts[j].p.z - pt.z) / (pts[j].t - pts[pick.i].t) : 0;
+    // 預測點的時間是 tick 時間；換回物理速度要除以球速倍率
+    const speedMul = pred.stepDt / PHYS.dt;
+    const inSpeed = j > pick.i ? Math.hypot(pts[j].p.x - pt.x, pts[j].p.y - pt.y, pts[j].p.z - pt.z) / (pts[j].t - pts[pick.i].t) / speedMul : 0;
     const maxCharge = Math.max(chargeFromTime(flickAt - (now + p.reaction)), reboundCharge(inSpeed));
     let shot = this.chooseShot(pt.y, dn);
-    if ((dn + shot.depth) / GAME.maxShotLength > maxCharge) {
-      const depth = Math.max(0.9, maxCharge * GAME.maxShotLength - dn - 0.3);
+    if (chargeForDepth(shot.depth) > maxCharge) {
+      const depth = Math.max(0.9, depthFromCharge(maxCharge) - 0.3);
       shot = { family: 'down', depth, aimX: shot.aimX };
     }
-    const charge = this.chargeFor(dn, shot.depth);
+    const charge = this.chargeFor(shot.depth);
     return {
       reactAt: now + p.reaction,
       standX: pick.sx,
@@ -238,12 +240,17 @@ export class AIController {
     };
 
     const sb = this.p.smashBias;
+    // 網前（不論高度）只要球明顯高過網：撲殺（已限速）或放網
+    if (dn < 2.3 && y >= COURT.netTop + 0.3) {
+      const kill = this.p.killRate;
+      return pick([[kill, 'down', 3.2], [1 - kill, 'down', 1.0], [oppFront ? 0.3 : 0.1, 'up', 5.6]]);
+    }
     if (y >= GAME.highZoneY) {
       if (dn < 4.5) return pick([[0.6 * sb, 'down', 4.3], [oppDeep ? 0.35 : 0.2, 'down', 1.3], [oppFront ? 0.3 : 0.12, 'up', 5.8]]);
       return pick([[oppFront ? 0.55 : 0.4, 'up', 5.8], [0.3 * sb, 'down', 4.6], [oppDeep ? 0.45 : 0.25, 'down', 1.4]]);
     }
     if (y >= 1.3) {
-      if (dn < 2.3) return pick([[0.7, 'down', 3.2], [0.3, 'down', 1.0]]);
+      if (dn < 2.3) return pick([[0.7, 'down', 1.0], [0.3, 'up', 5.6]]);
       return pick([[0.4, 'side', 5.2], [oppFront ? 0.5 : 0.3, 'up', 5.6], [oppDeep ? 0.35 : 0.2, 'down', 1.5]]);
     }
     if (dn < 2.5) return pick([[oppDeep ? 0.65 : 0.45, 'down', 0.9], [oppFront ? 0.65 : 0.45, 'up', 5.6]]);

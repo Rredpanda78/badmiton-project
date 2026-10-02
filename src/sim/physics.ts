@@ -41,10 +41,11 @@ export interface Prediction {
   landing: Vec3 | null; // 若撞網則為 null
   landTime: number;
   hitsNet: boolean;
+  stepDt: number; // 每 tick 的物理時間步長（> PHYS.dt 代表球速被加快）
 }
 
-/** 從目前狀態往後預測軌跡（含撞網判定） */
-export function predict(p0: Vec3, v0: Vec3, maxT = 6): Prediction {
+/** 從目前狀態往後預測軌跡（含撞網判定）。stepDt = 每 tick 羽球前進的物理時間（球速倍率 × PHYS.dt）；t 用 tick 時間計 */
+export function predict(p0: Vec3, v0: Vec3, stepDt = PHYS.dt, maxT = 6): Prediction {
   const p = copy3(p0);
   const v = copy3(v0);
   const points: PathPoint[] = [{ t: 0, p: copy3(p) }];
@@ -52,22 +53,22 @@ export function predict(p0: Vec3, v0: Vec3, maxT = 6): Prediction {
   while (t < maxT) {
     const pz = p.z;
     const py = p.y;
-    stepShuttle(p, v);
+    stepShuttle(p, v, stepDt);
     t += PHYS.dt;
     if (pz !== 0 && Math.sign(pz) !== Math.sign(p.z)) {
       const a = pz / (pz - p.z);
       const yCross = py + (p.y - py) * a;
-      if (yCross < netTopAt(p.x)) return { points, landing: null, landTime: t, hitsNet: true };
+      if (yCross < netTopAt(p.x)) return { points, landing: null, landTime: t, hitsNet: true, stepDt };
     }
     if (p.y <= 0) {
       const a = py / (py - p.y);
       const land = v3(p.x, 0, pz + (p.z - pz) * a);
       points.push({ t, p: land });
-      return { points, landing: land, landTime: t, hitsNet: false };
+      return { points, landing: land, landTime: t, hitsNet: false, stepDt };
     }
     points.push({ t, p: copy3(p) });
   }
-  return { points, landing: null, landTime: t, hitsNet: false };
+  return { points, landing: null, landTime: t, hitsNet: false, stepDt };
 }
 
 // ---------- 擊球求解器（2D：沿擊球方向的垂直平面） ----------
@@ -77,13 +78,12 @@ interface Flight2D {
   netY: number; // 經過網子平面時的高度（還沒到網就落地則為 -1）
 }
 
-export function fly2d(v0: number, th: number, y0: number, sNet: number): Flight2D {
+export function fly2d(v0: number, th: number, y0: number, sNet: number, dt = PHYS.dt): Flight2D {
   let s = 0;
   let y = y0;
   let vs = v0 * Math.cos(th);
   let vy = v0 * Math.sin(th);
   let netY = -1;
-  const dt = PHYS.dt;
   for (let t = 0; t < 8; t += dt) {
     const sp = Math.sqrt(vs * vs + vy * vy);
     const f = 1 / (1 + DRAG_K * sp * dt);
@@ -102,13 +102,13 @@ export function fly2d(v0: number, th: number, y0: number, sNet: number): Flight2
 const V_MAX = 150;
 
 /** 固定仰角下，求能落在距離 L 的初速 */
-export function solveSpeed(th: number, y0: number, L: number, sNet: number): number {
+export function solveSpeed(th: number, y0: number, L: number, sNet: number, dt = PHYS.dt): number {
   let lo = 0.3;
   let hi = V_MAX;
-  if (fly2d(hi, th, y0, sNet).land < L) return hi;
+  if (fly2d(hi, th, y0, sNet, dt).land < L) return hi;
   for (let i = 0; i < 26; i++) {
     const mid = (lo + hi) / 2;
-    if (fly2d(mid, th, y0, sNet).land < L) lo = mid;
+    if (fly2d(mid, th, y0, sNet, dt).land < L) lo = mid;
     else hi = mid;
   }
   return (lo + hi) / 2;
@@ -122,9 +122,10 @@ export function solveCrossing(
   sNet: number,
   thMin: number,
   thMax: number,
+  dt = PHYS.dt,
 ): { th: number; v: number } {
-  const netYAt = (th: number) => fly2d(solveSpeed(th, y0, L, sNet), th, y0, sNet).netY;
-  if (netYAt(thMin) >= targetNetY) return { th: thMin, v: solveSpeed(thMin, y0, L, sNet) };
+  const netYAt = (th: number) => fly2d(solveSpeed(th, y0, L, sNet, dt), th, y0, sNet, dt).netY;
+  if (netYAt(thMin) >= targetNetY) return { th: thMin, v: solveSpeed(thMin, y0, L, sNet, dt) };
   let lo = thMin;
   let hi = thMax;
   for (let i = 0; i < 20; i++) {
@@ -132,5 +133,5 @@ export function solveCrossing(
     if (netYAt(mid) < targetNetY) lo = mid;
     else hi = mid;
   }
-  return { th: hi, v: solveSpeed(hi, y0, L, sNet) };
+  return { th: hi, v: solveSpeed(hi, y0, L, sNet, dt) };
 }

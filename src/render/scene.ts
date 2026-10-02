@@ -21,6 +21,8 @@ export class GameRenderer {
   private bursts: { mesh: THREE.Mesh; t: number }[] = [];
   private shakeAmt = 0;
   private camX = 0;
+  private pose = { y: 10.2, z: 13.8, lookZ: 0.6, follow: 0.22 };
+  private reserve = 0;
   private tmp = new THREE.Vector3();
   viewSide: 1 | -1 = 1; // 1 = 自己在畫面下方（z>0）
 
@@ -76,15 +78,72 @@ export class GameRenderer {
     this.resize();
   }
 
+  /**
+   * 依螢幕方向擺鏡頭，並自動算視角讓整個球場剛好塞滿畫面。
+   * 手機直向時，畫面下方保留 reserve 比例給兩個拇指搖桿，球場只畫在上面那塊。
+   */
   resize(): void {
     const w = window.innerWidth;
     const h = window.innerHeight;
+    if (!w || !h) return; // 分頁隱藏時尺寸可能是 0
     this.renderer.setSize(w, h);
-    const aspect = w / h;
-    this.camera.aspect = aspect;
-    // 直式螢幕時加大視角，確保整個球場看得到
-    this.camera.fov = aspect >= 1.45 ? 40 : Math.min(80, 40 * (1.45 / aspect) ** 0.8);
+    const portrait = h > w * 1.05;
+    this.pose = portrait ? { y: 15.5, z: 9.6, lookZ: 0.3, follow: 0.08 } : { y: 10.2, z: 13.8, lookZ: 0.6, follow: 0.22 };
+    this.reserve = portrait && matchMedia('(pointer: coarse)').matches ? 0.22 : 0;
+
+    // 先把球場塞進「上方區域」(寬 w、高 hc)
+    const hc = h * (1 - this.reserve);
+    const fitFov = this.fitFov(w / hc);
+    // 再把可視範圍往下延伸 reserve 區（對稱視錐 + view offset，只取上半部顯示）
+    const hf = 2 * h - hc;
+    const tanF = Math.tan(((fitFov / 2) * Math.PI) / 180) * (hf / hc);
+    this.camera.fov = (2 * Math.atan(tanF) * 180) / Math.PI;
+    this.camera.aspect = w / hf;
+    if (this.reserve > 0) this.camera.setViewOffset(w, hf, 0, h - hc, w, h);
+    else this.camera.clearViewOffset();
     this.camera.updateProjectionMatrix();
+  }
+
+  /** 畫面下方保留給搖桿的比例（UI 用） */
+  get bottomReserve(): number {
+    return this.reserve;
+  }
+
+  private fitFov(aspect: number): number {
+    const cam = this.camera;
+    const vs = this.viewSide;
+    cam.clearViewOffset();
+    cam.aspect = aspect;
+    this.placeCamera(0, 0, 0);
+    const pts: THREE.Vector3[] = [];
+    for (const sx of [-1, 1]) {
+      pts.push(new THREE.Vector3(sx * 3.3, 0, vs * 7.4)); // 自己底線後方
+      pts.push(new THREE.Vector3(sx * 3.3, 0, -vs * 7.0)); // 對面底線
+      pts.push(new THREE.Vector3(sx * 2.7, 2.2, -vs * 6.9)); // 對手站在底線時的頭
+      pts.push(new THREE.Vector3(sx * 2.7, 2.0, vs * 7.2)); // 自己站在底線時的頭
+    }
+    const p = new THREE.Vector3();
+    let lo = 10;
+    let hi = 120;
+    for (let i = 0; i < 22; i++) {
+      const mid = (lo + hi) / 2;
+      cam.fov = mid;
+      cam.updateProjectionMatrix();
+      const fits = pts.every((q) => {
+        p.copy(q).project(cam);
+        return Math.abs(p.x) <= 0.94 && p.y <= 0.84 && p.y >= -0.96;
+      });
+      if (fits) hi = mid;
+      else lo = mid;
+    }
+    return hi;
+  }
+
+  private placeCamera(camX: number, sx: number, sy: number): void {
+    const vs = this.viewSide;
+    this.camera.position.set(camX + sx, this.pose.y + sy, vs * this.pose.z);
+    this.camera.lookAt(camX * 0.6, 0, vs * this.pose.lookZ);
+    this.camera.updateMatrixWorld();
   }
 
   resetTrail(p: Vec3): void {
@@ -104,17 +163,13 @@ export class GameRenderer {
   }
 
   update(match: Match, dt: number, showHint: boolean, humanId: 0 | 1): void {
-    const vs = this.viewSide;
     const me = match.players[humanId];
 
     // 鏡頭：在自己這側後上方，稍微跟著自己左右移動
-    this.camX += (me.pos.x * 0.22 - this.camX) * Math.min(1, dt * 3);
+    this.camX += (me.pos.x * this.pose.follow - this.camX) * Math.min(1, dt * 3);
     const shake = this.shakeAmt;
     this.shakeAmt = Math.max(0, this.shakeAmt - dt * 0.6);
-    const sx = (Math.random() - 0.5) * shake;
-    const sy = (Math.random() - 0.5) * shake;
-    this.camera.position.set(this.camX + sx, 10.2 + sy, vs * 13.8);
-    this.camera.lookAt(this.camX * 0.6, 0, vs * 0.6);
+    this.placeCamera(this.camX, (Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
 
     match.players.forEach((p, i) => this.models[i].update(p, dt));
 
