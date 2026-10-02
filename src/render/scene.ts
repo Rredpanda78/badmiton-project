@@ -4,7 +4,15 @@ import { timeUntilInReach, type Match } from '../sim/match';
 import { v3, type Vec3 } from '../sim/physics';
 import { makeCourt } from './court';
 import { buildVenue, type Environment } from './environment';
-import { PlayerModel } from './playerModel';
+import { PlayerModel, playerStyle } from './playerModel';
+
+/** 球員外觀：球衣顏色＋（可選）角色造型與球拍顏色 */
+export interface Look {
+  shirt: number;
+  shorts: number;
+  id?: string;
+  racketColor?: number;
+}
 
 const SHUTTLE_SCALE = 2.4; // 真實羽球太小，放大一點比較看得清楚
 const TRAIL_LEN = 22;
@@ -218,10 +226,11 @@ export class GameRenderer {
   }
 
   /** 換球員外觀（球衣顏色） */
-  setLooks(looks: [{ shirt: number; shorts: number }, { shirt: number; shorts: number }]): void {
+  setLooks(looks: [Look, Look]): void {
     looks.forEach((l, i) => {
       this.scene.remove(this.models[i].root);
-      this.models[i] = new PlayerModel(l.shirt, l.shorts);
+      this.models[i].dispose();
+      this.models[i] = new PlayerModel(l.shirt, l.shorts, l.id ? playerStyle(l.id, l.racketColor) : undefined);
       this.scene.add(this.models[i].root);
     });
   }

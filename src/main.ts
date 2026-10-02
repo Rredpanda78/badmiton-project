@@ -6,7 +6,7 @@ import { LocalControls } from './input/controls';
 import { GameRenderer } from './render/scene';
 import { idleInput, Match, type MatchEvent } from './sim/match';
 import { DRILLS, DrillRunner, loadBest, saveBest, type Drill } from './modes/drills';
-import { buildKit, CHARACTERS, characterById, RACKETS } from './sim/kits';
+import { buildKit, CHARACTERS, characterById, racketById, RACKETS } from './sim/kits';
 import { Hud } from './ui/hud';
 import { chargeZones } from './sim/shots';
 
@@ -62,7 +62,10 @@ function newMatch(demo: boolean): void {
   demoPlayer = demo ? new AIController(match, 0, 'hard') : null;
   assist = !demo && settings.autoMove ? new AIController(match, 0, 'hard', true) : null;
   controls.autoMove = !!assist;
-  renderer.setLooks([me, opp]);
+  renderer.setLooks([
+    { ...me, racketColor: racketById(s.racket).color },
+    { ...opp, racketColor: racketById(s.aiRacket!).color },
+  ]);
   renderer.setVenue(settings.venue);
   hud.oppName = opp.name;
   hud.drill = null;
@@ -364,7 +367,7 @@ function startDrill(d: Drill): void {
   demoPlayer = null;
   assist = settings.autoMove ? new AIController(match, 0, 'hard', true) : null;
   controls.autoMove = !!assist;
-  renderer.setLooks([me, { shirt: 0x8a96a8, shorts: 0x2a2f38 }]); // 對面是灰色的發球機教練
+  renderer.setLooks([{ ...me, racketColor: racketById(settings.racket).color }, { shirt: 0x8a96a8, shorts: 0x2a2f38 }]); // 對面是灰色的發球機教練
   renderer.setVenue(settings.venue);
   renderer.setTarget(d.target);
   hud.oppName = '發球機';

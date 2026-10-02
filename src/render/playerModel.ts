@@ -21,6 +21,46 @@ import {
   SWING_POSES,
   type SwingType,
 } from './anim/poses';
+import { merge, paint } from './geo';
+import { RacketTrail, SWOOSH_JUMP, SWOOSH_NORMAL, SWOOSH_SMASH } from './swoosh';
+
+/** 髮型（頭上一個頂點色合併的 mesh；馬尾另外一個會甩的 mesh） */
+export type HairStyle = 'short' | 'crop' | 'ponytail' | 'spiky' | 'cap';
+
+/** 球員外觀（全部可省略，省略 = 預設的小羽） */
+export interface PlayerStyle {
+  racketColor?: number; // 拍框顏色（拍線維持淺色）；省略 = 球衣色
+  hair?: number; // 髮色
+  hairStyle?: HairStyle;
+  skin?: number; // 膚色
+  height?: number; // 身高倍率（1 = 標準，約 0.9–1.1）
+  build?: number; // 體型寬度倍率（肩寬、四肢粗細）
+  headband?: number; // 頭帶顏色（馬尾：髮圈也用這個色；帽子：帽簷色）
+  cap?: number; // 帽子顏色（hairStyle = 'cap'）
+  number?: number; // 背號
+  accent?: number; // 球衣配色（領口、側邊條）
+}
+
+/** 五位球員的外觀，key = kits.ts 的 CHARACTERS id */
+export const CHARACTER_STYLES: Record<string, PlayerStyle> = {
+  // 小羽：全能型，標準身材
+  allround: { hairStyle: 'short', hair: 0x2a1d14, number: 1, accent: 0xffffff },
+  // 阿豪：重砲手，高壯、黑短髮、紅頭帶
+  power: { hairStyle: 'crop', hair: 0x15100c, headband: 0xd8262a, skin: 0xd59d74, height: 1.07, build: 1.17, number: 9, accent: 0x2a1414 },
+  // 小櫻：網前魔術師，嬌小、馬尾＋粉紅髮帶
+  touch: { hairStyle: 'ponytail', hair: 0x4a2a1c, headband: 0xff6fa8, skin: 0xf7d7c0, height: 0.95, build: 0.9, number: 7, accent: 0xffffff },
+  // 阿哲：推壓手，白色棒球帽（橘色帽簷）
+  driver: { hairStyle: 'cap', hair: 0x2a1d14, cap: 0xf6f4ee, headband: 0xf2a23a, skin: 0xe0ae86, height: 1.02, build: 1.05, number: 5, accent: 0x4a3010 },
+  // 小風：快腿，瘦長、淺棕刺蝟頭
+  runner: { hairStyle: 'spiky', hair: 0x7a5230, skin: 0xedc29c, height: 1.01, build: 0.86, number: 3, accent: 0xffffff },
+};
+
+/** 球員外觀＋球拍顏色：new PlayerModel(shirt, shorts, playerStyle(characterId, racket.color)) */
+export function playerStyle(characterId: string, racketColor?: number): PlayerStyle {
+  const s: PlayerStyle = { ...(CHARACTER_STYLES[characterId] ?? {}) };
+  if (racketColor !== undefined) s.racketColor = racketColor;
+  return s;
+}
 
 const ZONES = chargeZones();
 const ARM_LEN = 1.06; // 肩膀到拍面中心的距離
@@ -92,6 +132,45 @@ const _pole = new THREE.Vector3();
 const _q1 = new THREE.Quaternion();
 const _q2 = new THREE.Quaternion();
 const _q3 = new THREE.Quaternion();
+const _sw = new THREE.Vector3();
+const _sq = new THREE.Quaternion();
+
+const hexStr = (n: number) => '#' + n.toString(16).padStart(6, '0');
+
+/**
+ * 球衣貼圖（膠囊 UV：u=0 左側、0.25 背後、0.5 右側、0.75 前面；v=1 在頂端）：
+ * 領口、兩側配色條、背號（前胸小號碼）。
+ */
+function shirtTexture(shirt: number, accent: number, num?: number): THREE.CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = 256;
+  c.height = 128;
+  const g = c.getContext('2d')!;
+  g.scale(2, 2); // 以下用 128×64 的座標畫
+  g.fillStyle = hexStr(shirt);
+  g.fillRect(0, 0, 128, 64);
+  g.fillStyle = hexStr(accent);
+  g.fillRect(0, 0, 128, 4); // 領口
+  // 側邊條（u = 0／0.5，接縫在 u = 0，所以兩端各畫一半）
+  g.fillRect(0, 14, 4, 32);
+  g.fillRect(124, 14, 4, 32);
+  g.fillRect(60, 14, 8, 32);
+  if (num !== undefined) {
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.font = 'bold 19px sans-serif';
+    g.lineWidth = 3;
+    g.strokeStyle = 'rgba(0,0,0,0.35)';
+    g.strokeText(String(num), 32, 30);
+    g.fillStyle = '#ffffff';
+    g.fillText(String(num), 32, 30);
+    g.font = 'bold 9px sans-serif';
+    g.fillText(String(num), 104, 22);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
 
 /**
  * 程序式動畫的低多邊形球員：
@@ -115,6 +194,21 @@ export class PlayerModel {
   private shadow: THREE.Mesh;
   private jumpMark: THREE.Mesh;
   private jumpMat: THREE.MeshBasicMaterial;
+  private trail = new RacketTrail();
+  private shirtTex: THREE.CanvasTexture;
+  // 外觀（身高用整體縮放：模型內部單位 = 公尺 / h）
+  private readonly h: number;
+  private readonly ih: number;
+  private readonly hipW: number;
+  private readonly shR0 = new THREE.Vector3();
+  private readonly shL0 = new THREE.Vector3();
+  // 馬尾（彈簧甩動）
+  private ponytail: THREE.Group | null = null;
+  private ptX = 0;
+  private ptVX = 0;
+  private ptZ = 0;
+  private ptVZ = 0;
+  private lastHeadYaw = 0;
 
   // ---- 動畫狀態 ----
   private inited = false;
@@ -185,39 +279,46 @@ export class PlayerModel {
   private headYaw = 0;
   private headPitch = 0;
 
-  constructor(shirt: number, shorts: number) {
-    const skin = new THREE.MeshLambertMaterial({ color: 0xf0c7a0 });
+  constructor(shirt: number, shorts: number, style: PlayerStyle = {}) {
+    // ---- 體型：身高 = 整體縮放；體型 = 肩寬、髖寬、四肢粗細 ----
+    const h = (this.h = clamp(style.height ?? 1, 0.85, 1.15));
+    this.ih = 1 / h;
+    const b = clamp(style.build ?? 1, 0.8, 1.25);
+    const limb = 1 + (b - 1) * 0.8;
+    this.root.scale.setScalar(h);
+    this.hipW = HIP_W * (1 + (b - 1) * 0.6);
+    this.shR0.set(SHOULDER_R.x * (1 + (b - 1) * 0.9), SHOULDER_R.y, SHOULDER_R.z);
+    this.shL0.set(-this.shR0.x, SHOULDER_L.y, SHOULDER_L.z);
+
+    const skinHex = style.skin ?? 0xf0c7a0;
+    const skin = new THREE.MeshLambertMaterial({ color: skinHex });
     const shirtM = new THREE.MeshLambertMaterial({ color: shirt });
     const shortsM = new THREE.MeshLambertMaterial({ color: shorts });
-    const shoeM = new THREE.MeshLambertMaterial({ color: 0xf2f2f2 });
+    // 頂點色零件（頭髮／頭帶、小腿＋襪子、鞋、球拍）共用一個材質
+    const vcM = new THREE.MeshLambertMaterial({ vertexColors: true });
 
     // ---- 髖部（root 的子物件，原點 = 髖關節中心）----
     const hips = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.17, 0.22, 10), shortsM);
     hips.position.y = 0.05;
+    hips.scale.set(b, 1, 1 + (b - 1) * 0.5);
     this.pelvis.add(hips);
     this.pelvis.rotation.order = 'YXZ';
     this.pelvis.position.y = READY_H;
 
-    // ---- 上身（腰部旋轉）----
+    // ---- 上身（腰部旋轉）：球衣貼圖有領口、側邊條、背號 ----
     this.chest.position.y = WAIST;
     this.chest.rotation.order = 'YXZ';
-    const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.42, 4, 10), shirtM);
+    this.shirtTex = shirtTexture(shirt, style.accent ?? 0xffffff, style.number);
+    const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.42, 4, 12), new THREE.MeshLambertMaterial({ map: this.shirtTex }));
     torso.position.y = 0.24;
-    torso.scale.z = 0.7;
+    torso.scale.set(b, 1, 0.7 * (1 + (b - 1) * 0.5));
     this.chest.add(torso);
     this.head.position.copy(NECK);
     this.head.rotation.order = 'YXZ';
     const headM = new THREE.Mesh(new THREE.SphereGeometry(0.13, 14, 10), skin);
     headM.position.y = 0.08;
     this.head.add(headM);
-    // 頭髮蓋住頭頂與後腦，看得出臉朝哪
-    const hair = new THREE.Mesh(
-      new THREE.SphereGeometry(0.137, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2),
-      new THREE.MeshLambertMaterial({ color: 0x2a1d14 }),
-    );
-    hair.position.y = 0.09;
-    hair.rotation.x = 0.5;
-    this.head.add(hair);
+    this.buildHair(style, vcM);
     this.chest.add(this.head);
     this.pelvis.add(this.chest);
     this.root.add(this.pelvis);
@@ -227,15 +328,35 @@ export class PlayerModel {
     thighGeo.translate(0, -THIGH / 2, 0);
     const shortLegGeo = new THREE.CapsuleGeometry(0.088, 0.12, 3, 8);
     shortLegGeo.translate(0, -0.08, 0);
-    const shinGeo = new THREE.CapsuleGeometry(0.054, SHIN, 3, 8);
+    // 小腿：下面一截是白襪（頂點色，跟膚色同一個 mesh）
+    const shinGeo = new THREE.CapsuleGeometry(0.054, SHIN, 3, 8, 6);
     shinGeo.translate(0, -SHIN / 2, 0);
-    const shoeGeo = new THREE.BoxGeometry(0.105, 0.075, 0.25);
-    shoeGeo.translate(0, -ANKLE / 2, -0.05);
+    {
+      const p = shinGeo.attributes.position;
+      const a = new Float32Array(p.count * 3);
+      const cs = new THREE.Color(skinHex);
+      const cw = new THREE.Color(0xf4f4f2);
+      for (let i = 0; i < p.count; i++) {
+        const c = p.getY(i) < -SHIN + 0.075 ? cw : cs;
+        a[i * 3] = c.r;
+        a[i * 3 + 1] = c.g;
+        a[i * 3 + 2] = c.b;
+      }
+      shinGeo.setAttribute('color', new THREE.BufferAttribute(a, 3));
+    }
+    // 鞋：白色鞋面＋膠底＋球衣色側邊條，合成一個幾何
+    const shoeGeo = merge([
+      paint(new THREE.BoxGeometry(0.112, 0.024, 0.258).translate(0, -ANKLE + 0.012, -0.05), 0xb98a5c),
+      paint(new THREE.BoxGeometry(0.102, 0.052, 0.235).translate(0, -ANKLE + 0.05, -0.055), 0xf4f4f2),
+      paint(new THREE.BoxGeometry(0.107, 0.016, 0.12).translate(0, -ANKLE + 0.04, -0.035), shirt),
+    ]);
     const mkFoot = (sign: 1 | -1) => {
       const thigh = new THREE.Mesh(thighGeo, skin);
+      thigh.scale.set(limb, 1, limb);
       thigh.add(new THREE.Mesh(shortLegGeo, shortsM));
-      const shin = new THREE.Mesh(shinGeo, skin);
-      const shoe = new THREE.Mesh(shoeGeo, shoeM);
+      const shin = new THREE.Mesh(shinGeo, vcM);
+      shin.scale.set(limb, 1, limb);
+      const shoe = new THREE.Mesh(shoeGeo, vcM);
       shoe.rotation.order = 'YXZ';
       this.root.add(thigh, shin, shoe);
       return new Foot(sign, thigh, shin, shoe);
@@ -250,25 +371,35 @@ export class PlayerModel {
     const foreGeo = new THREE.CapsuleGeometry(0.04, FOREARM, 3, 8);
     foreGeo.translate(0, -FOREARM / 2, 0);
     this.upperL = new THREE.Mesh(upperGeo, skin);
+    this.upperL.scale.set(limb, 1, limb);
     this.upperL.add(new THREE.Mesh(sleeveGeo, shirtM));
     this.foreL = new THREE.Mesh(foreGeo, skin);
+    this.foreL.scale.set(limb, 1, limb);
     this.root.add(this.upperL, this.foreL);
 
     // ---- 右手＋球拍：沿 +Y 方向延伸，用四元數指向目標 ----
     const armGeo = new THREE.CylinderGeometry(0.045, 0.04, 0.55, 8);
     armGeo.translate(0, 0.275, 0);
-    this.armR.add(new THREE.Mesh(armGeo, skin));
+    const arm = new THREE.Mesh(armGeo, skin);
+    arm.scale.set(limb, 1, limb);
+    this.armR.add(arm);
     const sleeveR = new THREE.Mesh(new THREE.CapsuleGeometry(0.062, 0.06, 3, 8), shirtM);
     sleeveR.position.y = 0.05;
+    sleeveR.scale.set(limb, 1, limb);
     this.armR.add(sleeveR);
-    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.3, 6), new THREE.MeshLambertMaterial({ color: 0x222222 }));
-    handle.position.y = 0.68;
-    this.armR.add(handle);
-    const frame = new THREE.Mesh(new THREE.TorusGeometry(0.115, 0.012, 6, 20), new THREE.MeshLambertMaterial({ color: shirt }));
-    frame.scale.set(0.82, 1, 1);
-    frame.rotation.y = Math.PI / 2;
-    frame.position.y = 0.94;
-    this.armR.add(frame);
+    // 球拍：握把（深色）＋拍桿＋拍框（球拍色），合成一個幾何；拍線維持淺色半透明
+    const rc = style.racketColor ?? shirt;
+    const frameGeo = new THREE.TorusGeometry(0.115, 0.012, 6, 20);
+    frameGeo.scale(0.82, 1, 1).rotateY(Math.PI / 2).translate(0, 0.94, 0);
+    const racket = new THREE.Mesh(
+      merge([
+        paint(new THREE.CylinderGeometry(0.017, 0.015, 0.16, 6).translate(0, 0.6, 0), 0x262626),
+        paint(new THREE.CylinderGeometry(0.0075, 0.0075, 0.17, 5).translate(0, 0.755, 0), rc),
+        paint(frameGeo, rc),
+      ]),
+      vcM,
+    );
+    this.armR.add(racket);
     const strings = new THREE.Mesh(
       new THREE.CircleGeometry(0.11, 16),
       new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35, side: THREE.DoubleSide }),
@@ -279,6 +410,8 @@ export class PlayerModel {
     this.armR.add(strings);
     this.armR.quaternion.copy(ARM_READY);
     this.root.add(this.armR);
+    // 揮拍拖尾（頂點是世界座標，見 update 最後）
+    this.root.add(this.trail.mesh);
 
     // 腳下影子
     const shadow = (this.shadow = new THREE.Mesh(
@@ -300,6 +433,135 @@ export class PlayerModel {
     this.aura.rotation.x = -Math.PI / 2;
     this.aura.position.y = 0.012;
     this.root.add(this.aura);
+    this.aura.visible = this.jumpMark.visible = false;
+    this.jumpMark.scale.setScalar(this.ih); // 提示圈大小不跟著身高變
+  }
+
+  /** 髮型＋頭帶／帽子：全部頂點色合成一個 mesh；馬尾另外一個（會甩） */
+  private buildHair(st: PlayerStyle, mat: THREE.Material): void {
+    const hairC = st.hair ?? 0x2a1d14;
+    const kind = st.hairStyle ?? 'short';
+    const C = 0.09; // 頭髮球心（頭中心略上）
+    const parts: THREE.BufferGeometry[] = [];
+    // 半球（往後傾 tilt：蓋住頭頂與後腦，看得出臉朝哪）
+    const dome = (r: number, tilt: number, cover: number, color: number) =>
+      paint(new THREE.SphereGeometry(r, 14, 8, 0, Math.PI * 2, 0, cover).rotateX(tilt).translate(0, C, 0), color);
+    // 繞頭一圈的帶子（球面上的一條環帶，前高後低）
+    const band = (r: number, color: number) =>
+      paint(new THREE.SphereGeometry(r, 16, 1, 0, Math.PI * 2, 1.1, 0.22).rotateX(0.15).translate(0, C, 0), color);
+    // 從球心往 (polar a, azimuth b) 方向長出的錐（刺蝟頭）
+    const m4 = new THREE.Matrix4();
+    const qd = new THREE.Quaternion();
+    const dir = new THREE.Vector3();
+    const up = new THREE.Vector3(0, 1, 0);
+    const spike = (a: number, az: number, len: number) => {
+      dir.set(Math.sin(a) * Math.sin(az), Math.cos(a), Math.sin(a) * Math.cos(az));
+      qd.setFromUnitVectors(up, dir);
+      const g = new THREE.ConeGeometry(0.034, len, 4);
+      g.applyMatrix4(m4.compose(_v1.copy(dir).multiplyScalar(0.118 + len / 2).add(_v2.set(0, C, 0)), qd, _v3.set(1, 1, 1)));
+      return paint(g, hairC);
+    };
+
+    let domeR = 0.137;
+    if (kind === 'crop') {
+      domeR = 0.134;
+      parts.push(dome(domeR, 0.45, Math.PI * 0.47, hairC));
+    } else if (kind === 'spiky') {
+      parts.push(dome(domeR, 0.35, Math.PI / 2, hairC));
+      // 頭頂、一圈、後腦往外翹；前面兩撮瀏海往前
+      parts.push(spike(0.12, 0, 0.1));
+      for (let i = 0; i < 6; i++) parts.push(spike(0.6, (i / 6) * Math.PI * 2 + 0.3, 0.095));
+      for (const az of [-1.4, -0.7, 0, 0.7, 1.4]) parts.push(spike(1.08, az, 0.08));
+      parts.push(spike(0.95, Math.PI - 0.35, 0.075), spike(0.95, Math.PI + 0.35, 0.075));
+    } else if (kind === 'cap') {
+      parts.push(dome(0.135, 1.05, Math.PI / 2, hairC)); // 帽子底下露出的後腦頭髮
+      const capC = st.cap ?? 0xf6f4ee;
+      parts.push(
+        paint(new THREE.SphereGeometry(0.145, 14, 6, 0, Math.PI * 2, 0, Math.PI * 0.47).rotateX(0.15).translate(0, C + 0.005, 0), capC),
+      );
+      // 帽簷：半圓片，往前略往下
+      parts.push(
+        paint(
+          new THREE.CylinderGeometry(0.11, 0.11, 0.012, 14, 1, false, Math.PI / 2, Math.PI)
+            .scale(1, 1, 0.9)
+            .rotateX(-0.12)
+            .translate(0, C + 0.03, -0.115),
+          st.headband ?? capC,
+        ),
+      );
+      parts.push(paint(new THREE.SphereGeometry(0.016, 6, 4).translate(0, C + 0.15, 0.02), st.headband ?? capC)); // 帽頂鈕
+    } else {
+      parts.push(dome(domeR, kind === 'ponytail' ? 0.42 : 0.5, Math.PI / 2, hairC));
+    }
+    if (st.headband !== undefined && kind !== 'cap') {
+      parts.push(band(domeR + 0.005, st.headband));
+      if (kind === 'crop') {
+        // 腦後打結垂下的兩條帶尾
+        for (const s of [-1, 1]) {
+          parts.push(
+            paint(
+              new THREE.BoxGeometry(0.032, 0.1, 0.01)
+                .translate(0, -0.05, 0)
+                .rotateX(-0.45)
+                .rotateZ(s * 0.28)
+                .translate(s * 0.015, C + 0.03, 0.132),
+              st.headband,
+            ),
+          );
+        }
+      }
+    }
+    this.head.add(new THREE.Mesh(merge(parts), mat));
+
+    if (kind === 'ponytail') {
+      // 馬尾：掛點在後腦偏上；原點 = 掛點，往 -Y 垂下
+      const pt = (this.ponytail = new THREE.Group());
+      pt.position.set(0, C + 0.07, 0.112);
+      pt.rotation.order = 'XZY';
+      pt.add(
+        new THREE.Mesh(
+          merge([
+            paint(new THREE.TorusGeometry(0.03, 0.013, 6, 10).rotateX(Math.PI / 2).translate(0, -0.02, 0), st.headband ?? 0xff6fa8),
+            // 水滴形髮束（中段最粗、尾端收尖）
+            paint(
+              new THREE.LatheGeometry(
+                [
+                  [0, -0.27],
+                  [0.012, -0.255],
+                  [0.03, -0.21],
+                  [0.044, -0.15],
+                  [0.05, -0.09],
+                  [0.044, -0.04],
+                  [0.026, -0.01],
+                  [0, 0],
+                ].map(([x, y]) => new THREE.Vector2(x, y)),
+                8,
+              ).scale(1, 1, 0.8),
+              hairC,
+            ),
+          ]),
+          mat,
+        ),
+      );
+      this.head.add(pt);
+    }
+  }
+
+  /** 換人時釋放 GPU 資源（幾何、材質、球衣貼圖、拖尾） */
+  dispose(): void {
+    const mats = new Set<THREE.Material>();
+    const geos = new Set<THREE.BufferGeometry>();
+    this.root.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      geos.add(m.geometry);
+      const mm = m.material;
+      if (Array.isArray(mm)) mm.forEach((x) => mats.add(x));
+      else mats.add(mm);
+    });
+    geos.forEach((g) => g.dispose());
+    mats.forEach((m) => m.dispose());
+    this.shirtTex.dispose();
   }
 
   /**
@@ -309,12 +571,14 @@ export class PlayerModel {
   update(p: PlayerState, dt: number, shuttle?: { x: number; y: number; z: number }): void {
     const ta = Math.max(0, dt) * GAME.simSpeed;
     const side = p.side;
+    const H = this.h; // 世界公尺 → 模型內部單位：除以 H
+    const iH = this.ih;
     this.clock += ta;
     this.root.position.set(p.pos.x, p.pos.y, p.pos.z);
     this.root.rotation.y = side === 1 ? 0 : Math.PI;
     this.root.updateMatrixWorld();
     // 影子、光圈留在地上；跳越高影子越小
-    const ground = -p.pos.y + 0.006;
+    const ground = -p.pos.y * iH + 0.006;
     this.shadow.position.y = ground;
     const ss = 1 - Math.min(0.4, p.pos.y * 0.8);
     this.shadow.scale.set(ss, ss, ss);
@@ -353,7 +617,7 @@ export class PlayerModel {
     let shOK = false;
     if (shuttle) {
       shOK = true;
-      this.shL.set((shuttle.x - p.pos.x) * side, shuttle.y - p.pos.y, (shuttle.z - p.pos.z) * side);
+      this.shL.set((shuttle.x - p.pos.x) * side * iH, (shuttle.y - p.pos.y) * iH, (shuttle.z - p.pos.z) * side * iH);
       if (this.shHave && ta > 0) {
         const dx = shuttle.x - this.shPrev.x;
         const dy = shuttle.y - this.shPrev.y;
@@ -391,11 +655,12 @@ export class PlayerModel {
       if (s) {
         this.swingStartQ.copy(this.armR.quaternion);
         this.swingType = this.classify(shNear ? this.shL : null, s.family, p.airborne || s.airborne);
+        this.trail.reset();
       }
     }
     if (s && s.contacted && s.contactPoint) {
       const cp = s.contactPoint;
-      this.cpL.set((cp.x - p.pos.x) * side, cp.y - p.pos.y, (cp.z - p.pos.z) * side);
+      this.cpL.set((cp.x - p.pos.x) * side * iH, (cp.y - p.pos.y) * iH, (cp.z - p.pos.z) * side * iH);
       if (!this.swingHit) {
         this.swingHit = true;
         this.swingType = this.classify(this.cpL, s.family, p.airborne || s.airborne);
@@ -529,8 +794,8 @@ export class PlayerModel {
         hz = lerp(hz, tz, L);
         hyaw = lerp(hyaw, f.sign > 0 ? lyaw : lyaw + 1, L);
       }
-      f.homeX = p.pos.x + side * hx;
-      f.homeZ = p.pos.z + side * hz;
+      f.homeX = p.pos.x + side * hx * H;
+      f.homeZ = p.pos.z + side * hz * H;
       f.homeYaw = hyaw;
     }
 
@@ -608,8 +873,8 @@ export class PlayerModel {
             const f = this.feet[i];
             this.beginStep(f, f.wx, f.wz, 0.13, 0.055, f.homeYaw, false, 0);
             this.stepTarget(f, this.feet[1 - i], p, 0.13, 0, -1, cy, sy);
-            f.toX += f.sign * cy * 0.05 * side;
-            f.toZ -= f.sign * sy * 0.05 * side;
+            f.toX += f.sign * cy * 0.05 * side * H;
+            f.toZ -= f.sign * sy * 0.05 * side * H;
           }
         }
       }
@@ -646,8 +911,8 @@ export class PlayerModel {
       for (let i = 0; i < 2; i++) {
         const f = this.feet[i];
         if (!f.planted) continue;
-        const lx = (f.wx - p.pos.x) * side - (this.offX + f.sign * HIP_W * cy);
-        const lz = (f.wz - p.pos.z) * side - (this.offZ - f.sign * HIP_W * sy);
+        const lx = (f.wx - p.pos.x) * side * iH - (this.offX + f.sign * this.hipW * cy);
+        const lz = (f.wz - p.pos.z) * side * iH - (this.offZ - f.sign * this.hipW * sy);
         // 快跑時後腳拖太遠就先蹬起（兩腳同時離地＝跑步的騰空期），不讓髖部被拉低
         if (Math.hypot(lx, lz) > (this.lunging ? 0.88 : speed > 3 ? 0.56 : 0.8)) {
           this.beginStep(f, 0, 0, Math.min(dur, 0.16), lift, f.homeYaw, false, runK);
@@ -656,7 +921,7 @@ export class PlayerModel {
       }
       for (let i = 0; i < 2; i++) {
         const f = this.feet[i];
-        f.local.set((f.wx - p.pos.x) * side, ANKLE + f.h, (f.wz - p.pos.z) * side);
+        f.local.set((f.wx - p.pos.x) * side * iH, ANKLE + f.h, (f.wz - p.pos.z) * side * iH);
       }
     } else {
       // ---------- 空中：剪刀腳 ----------
@@ -680,8 +945,8 @@ export class PlayerModel {
         const rz = f.sign > 0 ? lerp(0.4, -0.34, sc) : lerp(-0.2, 0.38, sc);
         const ax = this.offX + rx * cy + rz * sy;
         const az = this.offZ - rx * sy + rz * cy;
-        const hx = (f.homeX - p.pos.x) * side;
-        const hz = (f.homeZ - p.pos.z) * side;
+        const hx = (f.homeX - p.pos.x) * side * iH;
+        const hz = (f.homeZ - p.pos.z) * side * iH;
         const tx = lerp(hx, ax, ext);
         const ty = lerp(ANKLE, AIR_H + this.crouch + ry, ext);
         const tz = lerp(hz, az, ext);
@@ -689,8 +954,8 @@ export class PlayerModel {
         f.local.x += (tx - f.local.x) * r;
         f.local.y += (Math.max(ANKLE, ty) - f.local.y) * r;
         f.local.z += (tz - f.local.z) * r;
-        f.wx = p.pos.x + side * f.local.x;
-        f.wz = p.pos.z + side * f.local.z;
+        f.wx = p.pos.x + side * f.local.x * H;
+        f.wz = p.pos.z + side * f.local.z * H;
         f.h = f.local.y - ANKLE;
         f.yaw = damp(f.yaw, yawP - f.sign * 0.1, 6, ta);
         f.pitch = damp(f.pitch, -0.35 * ext, 8, ta);
@@ -742,8 +1007,8 @@ export class PlayerModel {
       // 踩住的腳必須搆得到：必要時髖部降低（弓步、大跨步自然蹲低）。空中的腳伸不到就由 IK 收回來
       for (let i = 0; i < 2; i++) {
         const f = this.feet[i];
-        const hx = this.offX + f.sign * HIP_W * cy;
-        const hz = this.offZ - f.sign * HIP_W * sy;
+        const hx = this.offX + f.sign * this.hipW * cy;
+        const hz = this.offZ - f.sign * this.hipW * sy;
         const hd = Math.hypot(f.local.x - hx, f.local.z - hz);
         // 跨步中的腳越接近落地，限制越強（髖部提前慢慢降，不會落地瞬間一沉）
         const free = f.planted ? 0 : 1 - f.u;
@@ -774,15 +1039,15 @@ export class PlayerModel {
     this.mC.multiplyMatrices(this.pelvis.matrix, this.chest.matrix);
     this.qC.multiplyQuaternions(this.pelvis.quaternion, this.chest.quaternion);
     this.qCi.copy(this.qC).invert();
-    this.shoulderR.copy(SHOULDER_R).applyMatrix4(this.mC);
-    this.shoulderL.copy(SHOULDER_L).applyMatrix4(this.mC);
+    this.shoulderR.copy(this.shR0).applyMatrix4(this.mC);
+    this.shoulderL.copy(this.shL0).applyMatrix4(this.mC);
 
     // ---------- 腿（兩節骨 IK）----------
     const pfx = -Math.sin(yawP);
     const pfz = -Math.cos(yawP);
     for (let i = 0; i < 2; i++) {
       const f = this.feet[i];
-      f.hip.set(f.sign * HIP_W, 0, 0).applyMatrix4(this.pelvis.matrix);
+      f.hip.set(f.sign * this.hipW, 0, 0).applyMatrix4(this.pelvis.matrix);
       // 膝蓋朝腳尖方向、略往外
       _pole.set(-Math.sin(f.yaw) + pfx * 0.3 + f.sign * cy * 0.15, 0, -Math.cos(f.yaw) + pfz * 0.3 - f.sign * sy * 0.15);
       solveTwoBone(f.hip, f.local, THIGH, SHIN, _pole, f.knee, f.ankle);
@@ -839,6 +1104,41 @@ export class PlayerModel {
     this.headYaw = damp(this.headYaw, clamp(hy, -1.1, 1.1), 12, ta);
     this.headPitch = damp(this.headPitch, clamp(hp, -0.5, 0.75), 12, ta);
     this.head.rotation.set(this.headPitch, this.headYaw, 0);
+
+    // ---------- 馬尾：彈簧甩動（加減速往反方向甩、轉頭時慢半拍）----------
+    if (this.ponytail) {
+      const yaw = this.headYaw + this.psi;
+      const yawV = ta > 0 ? clamp((yaw - this.lastHeadYaw) / ta, -8, 8) : 0;
+      this.lastHeadYaw = yaw;
+      const tX =
+        -0.35 + clamp(this.accZ * 0.01, -0.45, 0.3) - 0.3 * moveK + clamp(this.crouchV * 0.12, -0.3, 0.3) + (p.airborne ? clamp(p.vy * 0.06, -0.3, 0.2) : 0);
+      const tZ = clamp(-this.accX * 0.01, -0.45, 0.45);
+      for (let rem = ta; rem > 1e-6; rem -= 1 / 120) {
+        const hh = Math.min(rem, 1 / 120);
+        this.ptVX += (90 * (tX - this.ptX) - 7 * this.ptVX) * hh;
+        this.ptVZ += (90 * (tZ - this.ptZ) - 7 * this.ptVZ - yawV * 1.5) * hh;
+        this.ptX = clamp(this.ptX + this.ptVX * hh, -1.3, 0.1);
+        this.ptZ = clamp(this.ptZ + this.ptVZ * hh, -0.6, 0.6);
+      }
+      // 抵銷抬頭／低頭：髮束靠重力往下垂，不跟著頭翹起來
+      this.ponytail.rotation.set(this.ptX - this.headPitch, 0, this.ptZ);
+    }
+
+    // ---------- 揮拍拖尾（殺球更亮、跳殺青色）----------
+    if (s) {
+      const down = s.family === 'down';
+      this.trail.setStyle(down && (p.airborne || s.airborne) ? SWOOSH_JUMP : down && poseType === OVERHEAD ? SWOOSH_SMASH : SWOOSH_NORMAL);
+    }
+    const swishing = s !== null && k >= 0.45 && k <= 1.6 && wPose > 0.5;
+    _sw.copy(this.shoulderR).applyMatrix4(this.root.matrixWorld);
+    _sq.multiplyQuaternions(this.root.quaternion, this.armR.quaternion);
+    this.trail.step(ta, swishing, _sw, _sq, this.armR.scale.y * H);
+    const tm = this.trail.mesh;
+    if (tm.visible) {
+      // 拖尾頂點是世界座標：抵銷 root 的變換
+      tm.matrix.copy(this.root.matrixWorld).invert();
+      tm.matrixWorldNeedsUpdate = true;
+    }
   }
 
   /** 揮拍種類：看擊球點（或接近中的羽球）的高度與左右 */
@@ -874,8 +1174,8 @@ export class PlayerModel {
     // 落點以「預計停下來的位置」為準（模擬裡減速約 40 m/s²）
     const stop = Math.hypot(p.vel.x, p.vel.z) / 80;
     this.beginStep(f, 0, 0, 0.17, 0.08, Math.atan2(-dx, -dz), true, 0.6);
-    f.toX = p.pos.x + p.side * tx + p.vel.x * stop;
-    f.toZ = p.pos.z + p.side * tz + p.vel.z * stop;
+    f.toX = p.pos.x + p.side * tx * this.h + p.vel.x * stop;
+    f.toZ = p.pos.z + p.side * tz * this.h + p.vel.z * stop;
   }
 
   private beginStep(f: Foot, tx: number, tz: number, dur: number, lift: number, yawTo: number, forced: boolean, runK: number): void {
@@ -1004,7 +1304,7 @@ export class PlayerModel {
     if (p.charging) {
       this.auraT += dt;
       const pulse = 1 + Math.sin(this.auraT * 14) * 0.04;
-      const s = (0.85 + p.charge * 0.55) * pulse * (this.auraT < 0.12 ? 1.25 - this.auraT * 2 : 1);
+      const s = (0.85 + p.charge * 0.55) * pulse * (this.auraT < 0.12 ? 1.25 - this.auraT * 2 : 1) * this.ih; // 不跟著身高放大
       this.aura.scale.set(s, s, s);
       this.auraMat.opacity = 0.55 + p.charge * 0.4;
       this.auraMat.color.set(p.charge >= ZONES.out ? 0xff4a4a : p.charge >= ZONES.deep ? 0x2fe07a : p.charge >= ZONES.net ? 0x9be37b : 0xffa34a);
@@ -1014,6 +1314,9 @@ export class PlayerModel {
     }
     const armed = p.jumpArmed && !p.airborne;
     this.jumpMat.opacity += ((armed ? 0.9 : 0) - this.jumpMat.opacity) * Math.min(1, dt * 12);
+    // 看不見就不畫（省 draw call）
+    this.aura.visible = this.auraMat.opacity > 0.01;
+    this.jumpMark.visible = this.jumpMat.opacity > 0.01;
   }
 
   /** 第一次或瞬移（發球前重新站位）時，直接擺成準備姿勢 */
@@ -1024,8 +1327,8 @@ export class PlayerModel {
       const f = this.feet[i];
       const hx = f.sign * 0.21;
       const hz = f.sign > 0 ? -0.07 : 0.03;
-      f.wx = f.homeX = p.pos.x + side * hx;
-      f.wz = f.homeZ = p.pos.z + side * hz;
+      f.wx = f.homeX = p.pos.x + side * hx * this.h;
+      f.wz = f.homeZ = p.pos.z + side * hz * this.h;
       f.planted = !p.airborne;
       f.forced = false;
       f.u = 1;
@@ -1051,5 +1354,8 @@ export class PlayerModel {
     this.pvz = p.vel.z * side;
     this.shHave = false;
     this.shToward = false;
+    this.trail.reset();
+    this.ptX = -0.35;
+    this.ptZ = this.ptVX = this.ptVZ = 0;
   }
 }

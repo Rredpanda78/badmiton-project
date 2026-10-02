@@ -80,7 +80,7 @@ export function timeForCharge(c: number): number {
   return GAME.chargeDelay + GAME.chargeTime * (1 - Math.pow(1 - Math.min(1, Math.max(0, c)), 1 / CHARGE_EXP));
 }
 
-export type Venue = 'indoor' | 'bamboo' | 'sakura';
+export type Venue = 'indoor' | 'bamboo' | 'sakura' | 'night';
 
 export type Difficulty = 'easy' | 'normal' | 'hard';
 
