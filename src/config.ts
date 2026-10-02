@@ -40,6 +40,8 @@ export const GAME = {
   reachMaxY: 2.85,
   swingWindow: 0.2, // 划動後這段時間內羽球進入範圍就會擊中
   swingDuration: 0.32,
+  idealContactT: 0.07, // 划動後這麼久擊中最完美（拍子需要時間揮過來）
+  flickBuffer: 0.08, // 揮拍／硬直結束前這段時間內划的會被保留
   whiffRecover: 0.15,
   highZoneY: 2.0, // 以上算「高點」（高遠/殺/切）
 
@@ -47,7 +49,19 @@ export const GAME = {
   moveSpeed: 6.4,
   moveAccel: 42,
   chargeMoveMul: 0.65,
-  swingMoveMul: 0.35,
+  swingMoveMul: 0.5,
+
+  // 跳殺：右手連按兩下並按住 → 羽球快到時自動起跳
+  jump: {
+    height: 0.42, // 起跳高度（m），擊球範圍跟著往上加
+    gravity: 16, // 跳躍用的重力（比真實大，跳起來比較俐落）
+    lead: 0.0, // 起跳時機微調（秒）：正值 = 更早跳，負值 = 更晚跳
+    minShuttleY: 2.3, // 羽球至少這麼高才會自動起跳（平抽、低挑不會誤跳）
+    landRecover: 0.2, // 落地硬直（秒）
+    landMoveMul: 0.3,
+    smashBallMul: 1.15, // 跳殺球速倍率
+    smashMaxSpeed: 72, // 跳殺初速上限（m/s，約 260 km/h）
+  },
 
   serveContactY: 0.95,
   pointPause: 1.8,

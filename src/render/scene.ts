@@ -1,7 +1,7 @@
 import * as THREE from 'three';
-import { CAMERA, COURT } from '../config';
-import type { Match } from '../sim/match';
-import type { Vec3 } from '../sim/physics';
+import { CAMERA, COURT, GAME } from '../config';
+import { timeUntilInReach, type Match } from '../sim/match';
+import { v3, type Vec3 } from '../sim/physics';
 import { makeCourt } from './court';
 import { PlayerModel } from './playerModel';
 
@@ -18,6 +18,10 @@ export class GameRenderer {
   private trail: THREE.Line;
   private trailPts: THREE.Vector3[] = [];
   private marker: THREE.Mesh;
+  private reachRing: THREE.Mesh;
+  private serveBoxLine: THREE.LineLoop;
+  private baseFov = 40;
+  private fovPunch = 0;
   private bursts: { mesh: THREE.Mesh; t: number }[] = [];
   private shakeAmt = 0;
   private camX = 0;
@@ -75,6 +79,22 @@ export class GameRenderer {
     this.marker.visible = false;
     this.scene.add(this.marker);
 
+    this.reachRing = new THREE.Mesh(
+      new THREE.RingGeometry(GAME.reach - 0.03, GAME.reach, 48),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.2, depthWrite: false }),
+    );
+    this.reachRing.rotation.x = -Math.PI / 2;
+    this.reachRing.visible = false;
+    this.scene.add(this.reachRing);
+
+    this.serveBoxLine = new THREE.LineLoop(
+      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]),
+      new THREE.LineBasicMaterial({ color: 0x8fd3ff, transparent: true, opacity: 0.6 }),
+    );
+    this.serveBoxLine.frustumCulled = false;
+    this.serveBoxLine.visible = false;
+    this.scene.add(this.serveBoxLine);
+
     this.resize();
   }
 
@@ -97,7 +117,7 @@ export class GameRenderer {
     // 再把可視範圍往下延伸 reserve 區（對稱視錐 + view offset，只取上半部顯示）
     const hf = 2 * h - hc;
     const tanF = Math.tan(((fitFov / 2) * Math.PI) / 180) * (hf / hc);
-    this.camera.fov = (2 * Math.atan(tanF) * 180) / Math.PI;
+    this.camera.fov = this.baseFov = (2 * Math.atan(tanF) * 180) / Math.PI;
     this.camera.aspect = w / hf;
     if (this.reserve > 0) this.camera.setViewOffset(w, hf, 0, h - hc, w, h);
     else this.camera.clearViewOffset();
@@ -150,16 +170,35 @@ export class GameRenderer {
     for (const t of this.trailPts) t.set(p.x, p.y, p.z);
   }
 
-  burst(p: Vec3, strong: boolean): void {
+  /** 擊球特效：品質越好越大越金，殺球加鏡頭震動與視角衝擊 */
+  burst(p: Vec3, quality: number, smash: boolean, jump: boolean): void {
+    const perfect = quality >= 0.92;
+    const poor = quality < 0.78;
+    const color = jump ? 0x7ff7ff : perfect ? 0xffd54a : poor ? 0x9aa4b0 : 0xffffff;
+    const size = jump ? 1.8 : smash ? 1.4 : perfect ? 1.25 : poor ? 0.7 : 1;
+    this.addFx(p, color, size, false);
+    if (perfect || smash || jump) this.addFx(p, 0xffffff, size * 0.6, false, 0.06);
+    if (smash || jump) {
+      this.shakeAmt = Math.max(this.shakeAmt, jump ? 0.18 : 0.12);
+      this.fovPunch = jump ? 3.5 : 2;
+    }
+  }
+
+  /** 落地揚塵 */
+  dust(p: Vec3): void {
+    this.addFx(v3(p.x, 0.02, p.z), 0xd7dee8, 2.2, true);
+  }
+
+  private addFx(p: Vec3, color: number, size: number, flat: boolean, delay = 0): void {
     const mesh = new THREE.Mesh(
-      new THREE.RingGeometry(0.05, 0.09, 24),
-      new THREE.MeshBasicMaterial({ color: strong ? 0xffe066 : 0xffffff, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false }),
+      new THREE.RingGeometry(0.05 * size, 0.09 * size, 28),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false }),
     );
     mesh.position.set(p.x, p.y, p.z);
-    mesh.lookAt(this.camera.position);
+    if (flat) mesh.rotation.x = -Math.PI / 2;
+    else mesh.lookAt(this.camera.position);
     this.scene.add(mesh);
-    this.bursts.push({ mesh, t: 0 });
-    if (strong) this.shakeAmt = Math.max(this.shakeAmt, 0.12);
+    this.bursts.push({ mesh, t: -delay });
   }
 
   update(match: Match, dt: number, showHint: boolean, humanId: 0 | 1): void {
@@ -170,6 +209,11 @@ export class GameRenderer {
     const shake = this.shakeAmt;
     this.shakeAmt = Math.max(0, this.shakeAmt - dt * 0.6);
     this.placeCamera(this.camX, (Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+    if (this.fovPunch > 0 || this.camera.fov !== this.baseFov) {
+      this.fovPunch = Math.max(0, this.fovPunch - dt * 25);
+      this.camera.fov = this.baseFov - this.fovPunch;
+      this.camera.updateProjectionMatrix();
+    }
 
     match.players.forEach((p, i) => this.models[i].update(p, dt));
 
@@ -203,20 +247,50 @@ export class GameRenderer {
       this.trail.geometry.setFromPoints(this.trailPts);
     } else this.resetTrail(sh.pos);
 
-    // 落點提示（只提示打向自己的球）
+    // 落點提示：對方打來的球（黃／紅）；自己剛打出去的球短暫顯示白色虛影
     const pred = sh.prediction;
     const incoming = flying && sh.lastHitter !== null && sh.lastHitter !== humanId;
-    if (showHint && incoming && pred?.landing) {
+    const mineJustHit = flying && sh.lastHitter === humanId && match.time - sh.launchTime < 0.45;
+    if (showHint && (incoming || mineJustHit) && pred?.landing) {
       const L = pred.landing;
       this.marker.visible = true;
       this.marker.position.set(L.x, 0.012, L.z);
       const out = Math.abs(L.x) > COURT.singlesHalfWidth + 0.03 || Math.abs(L.z) > COURT.halfLength + 0.03;
-      (this.marker.material as THREE.MeshBasicMaterial).color.set(out ? 0xff5a5a : 0xffd54a);
+      const mat = this.marker.material as THREE.MeshBasicMaterial;
+      mat.color.set(out ? 0xff5a5a : incoming ? 0xffd54a : 0xffffff);
+      mat.opacity = incoming ? 0.8 : 0.45;
     } else this.marker.visible = false;
 
-    // 擊球特效
+    // 擊球範圍圈：球打過來時顯示；羽球即將進入範圍（現在划剛好）時變綠
+    const rr = this.reachRing.material as THREE.MeshBasicMaterial;
+    if (incoming && match.phase === 'rally') {
+      const tIn = timeUntilInReach(match, humanId);
+      const now = tIn !== null && tIn <= GAME.idealContactT + 0.05;
+      this.reachRing.visible = true;
+      this.reachRing.position.set(me.pos.x, 0.011, me.pos.z);
+      rr.color.set(now ? 0x5dff8a : 0xffffff);
+      rr.opacity = now ? 0.75 : 0.18;
+    } else this.reachRing.visible = false;
+
+    // 發球時自己能站的區域
+    const box = match.serveBox(humanId);
+    this.serveBoxLine.visible = !!box;
+    if (box) {
+      const y = 0.013;
+      const pts = [
+        new THREE.Vector3(box.x0, y, box.z0),
+        new THREE.Vector3(box.x1, y, box.z0),
+        new THREE.Vector3(box.x1, y, box.z1),
+        new THREE.Vector3(box.x0, y, box.z1),
+      ];
+      this.serveBoxLine.geometry.setFromPoints(pts);
+      (this.serveBoxLine.material as THREE.LineBasicMaterial).opacity = 0.5 + Math.sin(match.time * 6) * 0.2;
+    }
+
+    // 特效動畫
     for (const b of this.bursts) {
       b.t += dt;
+      if (b.t < 0) continue;
       const s = 1 + b.t * 14;
       b.mesh.scale.set(s, s, s);
       (b.mesh.material as THREE.MeshBasicMaterial).opacity = Math.max(0, 0.9 - b.t * 3.5);

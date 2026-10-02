@@ -436,3 +436,23 @@ h2 {
     opacity: 0;
   }
 }
+
+/* 擊球評價／跳殺 */
+.float.perfect {
+  color: #ffe27a;
+  text-shadow: 0 0 10px rgba(255, 213, 74, 0.7), 0 2px 6px rgba(0, 0, 0, 0.8);
+}
+.float.jump {
+  color: #8ff7ff;
+  font-size: 24px;
+  text-shadow: 0 0 12px rgba(95, 243, 255, 0.8), 0 2px 6px rgba(0, 0, 0, 0.8);
+}
+.float.miss {
+  font-size: 16px;
+}
+.press-ripple.jump {
+  border-color: rgba(95, 243, 255, 0.95);
+}
+.action-ring.jump {
+  background: conic-gradient(rgba(95, 243, 255, 0.85) var(--charge), rgba(95, 243, 255, 0.12) 0);
+}

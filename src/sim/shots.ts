@@ -30,6 +30,7 @@ export interface ShotRequest {
   charge: number; // 0..1
   quality: number; // 0..1，擊球時機/位置好壞
   serve: null | { boxCenterX: number }; // 發球時對角發球區中心（世界座標 x）
+  jump: boolean; // 在空中擊球
 }
 
 export interface ShotResult {
@@ -38,13 +39,14 @@ export interface ShotResult {
   family: Family;
   target: Vec3;
   speedKmh: number;
-  netFault: boolean; // 蓄力不足、注定掛網
+  netFault: boolean; // 注定掛網
+  powerShort: boolean; // 掛網原因是蓄力不足（否則是擊球品質差造成的誤差）
   stepDt: number; // 這顆球每 tick 前進的物理時間（球速倍率）
 }
 
 const DEG = Math.PI / 180;
 // 球速倍率：殺球類維持原速；網前小球只加快一點（太快會變成救不到的必殺球）；其他 ×ballSpeedMul
-const SPEED_BY_NAME: Record<string, number> = { 殺球: 1, 撲球: 1, 下壓: 1, 切球: 1.2, 放網: 1.2, 發小球: 1.2 };
+const SPEED_BY_NAME: Record<string, number> = { 殺球: 1, 撲球: 1, 跳撲: 1, 下壓: 1, 切球: 1.2, 放網: 1.2, 發小球: 1.2 };
 
 /** 蓄力 → 目標落點深度（越過網後的距離）。很小或負值代表掛網，大於底線代表出界。 */
 export function depthFromCharge(charge: number): number {
@@ -80,14 +82,15 @@ export function resolveShot(req: ShotRequest, rng: Rng): ShotResult {
   const dn = Math.abs(contact.z);
   const err = 1 - quality;
 
-  let D = depthFromCharge(charge) + rng.gauss() * (0.15 + err * 1.6);
+  const D0 = depthFromCharge(charge);
+  let D = D0 + rng.gauss() * (0.12 + err * 1.0);
   // 發球：在對角發球區內左右微調；一般擊球：左右分量決定落點
   const tx = req.serve
     ? req.serve.boxCenterX + side * req.aimX * 1.0 + rng.gauss() * 0.1
-    : side * (req.aimX * 2.3 + rng.gauss() * (0.12 + err * 1.2));
+    : side * (req.aimX * 2.3 + rng.gauss() * (0.1 + err * 0.8));
   let netFault = false;
   if (D < NET_FAULT_DEPTH) {
-    // 力道不足：打進網子
+    // 深度太短：打進網子
     netFault = true;
     D = 0.8;
   }
@@ -103,8 +106,11 @@ export function resolveShot(req: ShotRequest, rng: Rng): ShotResult {
   const netY = netTopAt(contact.x + ux * sNet);
   const y0 = contact.y;
 
-  const name = shotName(family, y0, dn, D, !!req.serve);
-  const dt = PHYS.dt * (SPEED_BY_NAME[name] ?? GAME.ballSpeedMul);
+  let name = shotName(family, y0, dn, D, !!req.serve);
+  // 在空中往下壓：後場叫跳殺；網前叫跳撲（仍套用撲球限速）
+  const jumpSmash = req.jump && (name === '殺球' || name === '撲球');
+  if (jumpSmash) name = name === '撲球' ? '跳撲' : '跳殺';
+  const dt = PHYS.dt * (name === '跳殺' ? GAME.jump.smashBallMul : (SPEED_BY_NAME[name] ?? GAME.ballSpeedMul));
 
   let th: number;
   let v: number;
@@ -122,12 +128,14 @@ export function resolveShot(req: ShotRequest, rng: Rng): ShotResult {
     ({ th, v } = capSpeed(th, v, GAME.smashMaxSpeed, y0, L, sNet, dt));
   } else {
     ({ th, v } = solveCrossing(netY + 0.1, y0, L, sNet, -35 * DEG, 75 * DEG, dt));
-    ({ th, v } = capSpeed(th, v, name === '撲球' ? GAME.killMaxSpeed : GAME.smashMaxSpeed, y0, L, sNet, dt));
+    const cap = name === '撲球' || name === '跳撲' ? GAME.killMaxSpeed : name === '跳殺' ? GAME.jump.smashMaxSpeed : GAME.smashMaxSpeed;
+    ({ th, v } = capSpeed(th, v, cap, y0, L, sNet, dt));
   }
 
   const vh = v * Math.cos(th);
   const vel = v3(ux * vh, v * Math.sin(th), uz * vh);
-  return { vel, name, family, target, speedKmh: Math.round(v * 3.6), netFault, stepDt: dt };
+  const powerShort = netFault && D0 < NET_FAULT_DEPTH + 0.3;
+  return { vel, name, family, target, speedKmh: Math.round(v * 3.6), netFault, powerShort, stepDt: dt };
 }
 
 /** 初速超過上限時，把角度往 thTo 調（壓球往上抬、挑球往下壓到較省力的角度）直到初速降到上限內 */

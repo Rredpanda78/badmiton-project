@@ -28,16 +28,23 @@ export class Hud {
   onEvent(e: MatchEvent, match: Match, r: GameRenderer, humanId: 0 | 1): void {
     switch (e.type) {
       case 'hit': {
+        const mine = e.player === humanId;
         const at = r.project(v3(e.pos.x, e.pos.y + 0.6, e.pos.z));
-        const txt = e.netFault ? `${e.name}（力道不足）` : `${e.name}${e.family === 'down' && e.speedKmh > 120 ? ` ${e.speedKmh} km/h` : ''}`;
-        this.float(txt, at.x, at.y, e.player === humanId ? 'me' : 'opp');
+        const fast = (e.family === 'down' && e.speedKmh > 120) || e.jump;
+        let txt = e.name + (fast ? ` ${e.speedKmh} km/h` : '');
+        if (e.netFault) txt = `${e.name}（${e.powerShort ? '力道不足' : '擊球不佳'}）`;
+        // 自己的球：附上擊球評價，讓玩家知道時機好不好
+        const graded = mine && !e.netFault && !e.serve;
+        const cls = e.jump ? 'jump' : mine ? (graded && e.grade === '完美' ? 'me perfect' : 'me') : 'opp';
+        this.float(graded ? `${txt} · ${e.grade}` : txt, at.x, at.y, cls);
         break;
       }
       case 'whiff':
         if (e.player === humanId) {
           const p = match.players[e.player].pos;
           const at = r.project(v3(p.x, 2.2, p.z));
-          this.float('揮空', at.x, at.y, 'miss');
+          const tip = e.reason === '太高' && !e.airborne ? '（試試連按兩下跳殺）' : '';
+          this.float(`揮空・${e.reason}${tip}`, at.x, at.y, 'miss');
         }
         break;
       case 'point': {
