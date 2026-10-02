@@ -29,13 +29,16 @@ export class LocalControls {
   private gpFlickArmed = true;
   private gpFlicked = false;
   enabled = true;
+  /** 按下蓄力鍵的瞬間（給震動用） */
+  onPress: (() => void) | null = null;
+  private gpWasCharging = false;
 
   private baseEl: HTMLElement;
   private knobEl: HTMLElement;
   private ringEl: HTMLElement;
   isTouch = matchMedia('(pointer: coarse)').matches;
 
-  constructor(surface: HTMLElement, overlay: HTMLElement) {
+  constructor(surface: HTMLElement, private overlay: HTMLElement) {
     this.baseEl = mk(overlay, 'stick-base');
     this.knobEl = mk(this.baseEl, 'stick-knob');
     this.ringEl = mk(overlay, 'action-ring');
@@ -66,9 +69,25 @@ export class LocalControls {
       if (!this.move) this.move = pad;
     } else if (!this.action) {
       this.action = pad;
+      this.pressFx(e.clientX, e.clientY);
+      this.onPress?.();
     }
     e.preventDefault();
   };
+
+  /** 按下右手蓄力區的視覺回饋：圓環彈一下＋擴散波紋 */
+  private pressFx(x: number, y: number): void {
+    this.ringEl.classList.remove('pop');
+    void this.ringEl.offsetWidth; // 重新觸發動畫
+    this.ringEl.classList.add('pop');
+    const r = document.createElement('div');
+    r.className = 'press-ripple';
+    r.style.left = `${x}px`;
+    r.style.top = `${y}px`;
+    this.overlay.appendChild(r);
+    setTimeout(() => r.remove(), 450);
+  }
+
 
   private onMove = (e: PointerEvent) => {
     if (this.move?.id === e.pointerId) {
@@ -98,6 +117,7 @@ export class LocalControls {
     if (e.repeat) return;
     this.keys.add(e.code);
     if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();
+    if (e.code === 'Space' && this.enabled) this.onPress?.();
     // 空白鍵蓄力中按方向鍵 → 出拍（同時按兩個方向可以斜划）
     if (this.keys.has('Space') && !this.kbFlicked && e.code.startsWith('Arrow')) {
       setTimeout(() => {
@@ -141,6 +161,8 @@ export class LocalControls {
       const chargeBtn = [7, 5, 0].some((i) => gp.buttons[i]?.pressed);
       if (!chargeBtn) this.gpFlicked = false;
       if (chargeBtn && !this.gpFlicked) inp.charging = true;
+      if (chargeBtn && !this.gpWasCharging) this.onPress?.();
+      this.gpWasCharging = chargeBtn;
       const rx = gp.axes[2] ?? 0;
       const ry = gp.axes[3] ?? 0;
       const rm = Math.hypot(rx, ry);

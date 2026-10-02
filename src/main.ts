@@ -23,6 +23,17 @@ let opponent!: AIController;
 let demoPlayer: AIController | null = null; // 主選單背景的 AI 示範對打
 let resultTimer: number | undefined;
 
+/** 手機震動（iPhone 的 Safari 不支援，會自動略過） */
+function buzz(ms: number): void {
+  if (!settings.vibration || demoPlayer) return;
+  try {
+    navigator.vibrate?.(ms);
+  } catch {
+    /* 不支援就算了 */
+  }
+}
+controls.onPress = () => buzz(12);
+
 function newMatch(demo: boolean): void {
   match = new Match({ ...settings }, (Date.now() ^ (Math.random() * 1e9)) >>> 0);
   opponent = new AIController(match, 1, demo ? 'hard' : settings.difficulty);
@@ -46,6 +57,7 @@ function handleEvent(e: MatchEvent): void {
     case 'hit': {
       const smash = e.family === 'down' && e.speedKmh > 120;
       if (live) smash ? sfx.smash() : sfx.hit(e.charge);
+      if (e.player === HUMAN) buzz(smash ? 35 : 18);
       renderer.burst(e.pos, smash);
       break;
     }

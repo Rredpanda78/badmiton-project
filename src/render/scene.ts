@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { COURT } from '../config';
+import { CAMERA, COURT } from '../config';
 import type { Match } from '../sim/match';
 import type { Vec3 } from '../sim/physics';
 import { makeCourt } from './court';
@@ -21,7 +21,7 @@ export class GameRenderer {
   private bursts: { mesh: THREE.Mesh; t: number }[] = [];
   private shakeAmt = 0;
   private camX = 0;
-  private pose = { y: 10.2, z: 13.8, lookZ: 0.6, follow: 0.22 };
+  private pose = CAMERA.landscape;
   private reserve = 0;
   private tmp = new THREE.Vector3();
   viewSide: 1 | -1 = 1; // 1 = 自己在畫面下方（z>0）
@@ -88,7 +88,7 @@ export class GameRenderer {
     if (!w || !h) return; // 分頁隱藏時尺寸可能是 0
     this.renderer.setSize(w, h);
     const portrait = h > w * 1.05;
-    this.pose = portrait ? { y: 15.5, z: 9.6, lookZ: 0.3, follow: 0.08 } : { y: 10.2, z: 13.8, lookZ: 0.6, follow: 0.22 };
+    this.pose = portrait ? CAMERA.portrait : CAMERA.landscape;
     this.reserve = portrait && matchMedia('(pointer: coarse)').matches ? 0.22 : 0;
 
     // 先把球場塞進「上方區域」(寬 w、高 hc)
@@ -117,8 +117,8 @@ export class GameRenderer {
     this.placeCamera(0, 0, 0);
     const pts: THREE.Vector3[] = [];
     for (const sx of [-1, 1]) {
-      pts.push(new THREE.Vector3(sx * 3.3, 0, vs * 7.4)); // 自己底線後方
-      pts.push(new THREE.Vector3(sx * 3.3, 0, -vs * 7.0)); // 對面底線
+      pts.push(new THREE.Vector3(sx * 3.1, 0, vs * 7.3)); // 自己底線後方
+      pts.push(new THREE.Vector3(sx * 3.1, 0, -vs * 7.0)); // 對面底線
       pts.push(new THREE.Vector3(sx * 2.7, 2.2, -vs * 6.9)); // 對手站在底線時的頭
       pts.push(new THREE.Vector3(sx * 2.7, 2.0, vs * 7.2)); // 自己站在底線時的頭
     }
@@ -131,7 +131,7 @@ export class GameRenderer {
       cam.updateProjectionMatrix();
       const fits = pts.every((q) => {
         p.copy(q).project(cam);
-        return Math.abs(p.x) <= 0.94 && p.y <= 0.84 && p.y >= -0.96;
+        return Math.abs(p.x) <= 0.98 && p.y <= 0.84 && p.y >= -0.97;
       });
       if (fits) hi = mid;
       else lo = mid;

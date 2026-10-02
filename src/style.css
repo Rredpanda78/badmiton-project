@@ -398,3 +398,41 @@ h2 {
     margin: 6px 0;
   }
 }
+
+/* 按下蓄力的回饋 */
+.action-ring.pop {
+  animation: ringPop 0.28s ease-out;
+}
+@keyframes ringPop {
+  0% {
+    transform: scale(0.72);
+    filter: brightness(2.2);
+  }
+  55% {
+    transform: scale(1.1);
+  }
+  100% {
+    transform: scale(1);
+    filter: none;
+  }
+}
+.press-ripple {
+  position: absolute;
+  width: 120px;
+  height: 120px;
+  margin: -60px 0 0 -60px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 213, 74, 0.95);
+  pointer-events: none;
+  animation: ripple 0.42s ease-out forwards;
+}
+@keyframes ripple {
+  0% {
+    transform: scale(0.35);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1.45);
+    opacity: 0;
+  }
+}

@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { GAME } from '../config';
 import type { PlayerState } from '../sim/match';
+import { chargeZones } from '../sim/shots';
+
+const OUT_CHARGE = chargeZones().out;
 
 const UP = new THREE.Vector3(0, 1, 0);
 // 手臂方向（模型面向 -z，右手在 +x）
@@ -20,6 +23,9 @@ export class PlayerModel {
   private body = new THREE.Group();
   private legL: THREE.Mesh;
   private legR: THREE.Mesh;
+  private aura: THREE.Mesh;
+  private auraMat: THREE.MeshBasicMaterial;
+  private auraT = 0;
   private arm = new THREE.Group();
   private runPhase = 0;
   private tmpQ = new THREE.Quaternion();
@@ -97,6 +103,12 @@ export class PlayerModel {
     shadow.rotation.x = -Math.PI / 2;
     shadow.position.y = 0.006;
     this.root.add(shadow);
+    // 蓄力光圈：按下就亮起，蓄越多越大越亮，進入出界區變紅
+    this.auraMat = new THREE.MeshBasicMaterial({ color: 0xffd54a, transparent: true, opacity: 0, depthWrite: false });
+    this.aura = new THREE.Mesh(new THREE.RingGeometry(0.46, 0.56, 36), this.auraMat);
+    this.aura.rotation.x = -Math.PI / 2;
+    this.aura.position.y = 0.012;
+    this.root.add(this.aura);
     this.root.add(this.body);
   }
 
@@ -116,6 +128,19 @@ export class PlayerModel {
     const lz = p.vel.z * p.side;
     this.body.rotation.z = -lx * 0.04;
     this.body.rotation.x = lz * 0.03;
+
+    // 蓄力光圈
+    if (p.charging) {
+      this.auraT += dt;
+      const pulse = 1 + Math.sin(this.auraT * 14) * 0.04;
+      const s = (0.85 + p.charge * 0.55) * pulse * (this.auraT < 0.12 ? 1.25 - this.auraT * 2 : 1);
+      this.aura.scale.set(s, s, s);
+      this.auraMat.opacity = 0.55 + p.charge * 0.4;
+      this.auraMat.color.set(p.charge >= OUT_CHARGE ? 0xff4a4a : 0xffd54a);
+    } else {
+      this.auraT = 0;
+      this.auraMat.opacity = Math.max(0, this.auraMat.opacity - dt * 5);
+    }
 
     // 手臂
     let target: THREE.Quaternion;

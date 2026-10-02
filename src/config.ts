@@ -23,7 +23,8 @@ export const GAME = {
   simSpeed: 0.62,
 
   // 蓄力：從 0 到滿所需的模擬秒數。蓄力值 c ∈ [0,1] 線性對應「落點越過網子的深度」
-  chargeTime: 0.65,
+  chargeDelay: 0.12, // 按下後先等這段時間才開始累積蓄力（約 0.2 秒真實時間）
+  chargeTime: 0.65, // 開始累積後，從 0 到滿所需時間
   depthAtZero: -0.6, // 蓄力 0 → 落在網前 0.6 m（掛網）
   depthAtFull: 7.6, // 蓄力滿 → 超過底線 0.9 m（出界）。好球區約佔蓄力條 75%
 
@@ -52,15 +53,15 @@ export const GAME = {
 
 /**
  * 蓄力曲線：前段上升快（小力很快就有）、後段慢（深球比較好控制）。
- * c = 1 - (1 - t/T)^1.8
+ * c = 1 - (1 - u)^1.8，u = (按住時間 - chargeDelay) / chargeTime
  */
 const CHARGE_EXP = 1.8;
 export function chargeFromTime(t: number): number {
-  const u = Math.min(1, Math.max(0, t / GAME.chargeTime));
+  const u = Math.min(1, Math.max(0, (t - GAME.chargeDelay) / GAME.chargeTime));
   return 1 - Math.pow(1 - u, CHARGE_EXP);
 }
 export function timeForCharge(c: number): number {
-  return GAME.chargeTime * (1 - Math.pow(1 - Math.min(1, Math.max(0, c)), 1 / CHARGE_EXP));
+  return GAME.chargeDelay + GAME.chargeTime * (1 - Math.pow(1 - Math.min(1, Math.max(0, c)), 1 / CHARGE_EXP));
 }
 
 export type Difficulty = 'easy' | 'normal' | 'hard';
@@ -70,6 +71,7 @@ export interface MatchSettings {
   points: 11 | 21;
   games: 1 | 3;
   landingHint: boolean;
+  vibration: boolean;
 }
 
 export const DEFAULT_SETTINGS: MatchSettings = {
@@ -77,4 +79,14 @@ export const DEFAULT_SETTINGS: MatchSettings = {
   points: 11,
   games: 1,
   landingHint: true,
+  vibration: true,
+};
+
+/**
+ * 鏡頭：y = 高度、z = 離球場中心的距離、lookZ = 看向的位置。
+ * y/z 越小越平（越接近水平視角）。視角大小會自動算到剛好塞滿球場。
+ */
+export const CAMERA = {
+  portrait: { y: 10.8, z: 13.2, lookZ: -0.4, follow: 0.08 },
+  landscape: { y: 8.2, z: 14.6, lookZ: 0.2, follow: 0.22 },
 };
