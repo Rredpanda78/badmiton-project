@@ -115,28 +115,32 @@ export function resolveShot(req: ShotRequest, rng: Rng): ShotResult {
     v = solveSpeed(th, y0, L, sNet, dt);
     // 靠網太近、擊球點又低時，固定仰角會撞網 → 改用更陡的角度挑過網
     if (fly2d(v, th, y0, sNet, dt).netY < netY + 0.4) ({ th, v } = solveCrossing(netY + 0.6, y0, L, sNet, th, 84 * DEG, dt));
+    ({ th, v } = capSpeed(th, v, GAME.liftMaxSpeed, y0, L, sNet, dt, 25 * DEG));
   } else if (family === 'side') {
     const clear = y0 >= GAME.highZoneY ? 0.5 : 0.35;
     ({ th, v } = solveCrossing(netY + clear, y0, L, sNet, -20 * DEG, 45 * DEG, dt));
+    ({ th, v } = capSpeed(th, v, GAME.smashMaxSpeed, y0, L, sNet, dt));
   } else {
     ({ th, v } = solveCrossing(netY + 0.1, y0, L, sNet, -35 * DEG, 75 * DEG, dt));
-    if (name === '撲球' && v > GAME.killMaxSpeed) {
-      // 網前撲球限速：抬高角度直到初速降到上限
-      let lo = th;
-      let hi = 45 * DEG;
-      for (let i = 0; i < 16; i++) {
-        const mid = (lo + hi) / 2;
-        if (solveSpeed(mid, y0, L, sNet, dt) > GAME.killMaxSpeed) lo = mid;
-        else hi = mid;
-      }
-      th = hi;
-      v = solveSpeed(th, y0, L, sNet, dt);
-    }
+    ({ th, v } = capSpeed(th, v, name === '撲球' ? GAME.killMaxSpeed : GAME.smashMaxSpeed, y0, L, sNet, dt));
   }
 
   const vh = v * Math.cos(th);
   const vel = v3(ux * vh, v * Math.sin(th), uz * vh);
   return { vel, name, family, target, speedKmh: Math.round(v * 3.6), netFault, stepDt: dt };
+}
+
+/** 初速超過上限時，把角度往 thTo 調（壓球往上抬、挑球往下壓到較省力的角度）直到初速降到上限內 */
+function capSpeed(th: number, v: number, cap: number, y0: number, L: number, sNet: number, dt: number, thTo = 45 * DEG): { th: number; v: number } {
+  if (v <= cap) return { th, v };
+  let lo = th;
+  let hi = thTo;
+  for (let i = 0; i < 16; i++) {
+    const mid = (lo + hi) / 2;
+    if (solveSpeed(mid, y0, L, sNet, dt) > cap) lo = mid;
+    else hi = mid;
+  }
+  return { th: hi, v: Math.min(cap, solveSpeed(hi, y0, L, sNet, dt)) };
 }
 
 function shotName(family: Family, y: number, dn: number, D: number, serve: boolean): string {

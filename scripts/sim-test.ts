@@ -46,12 +46,14 @@ let totalPoints = 0;
 let ticks = 0;
 let lastShot = '';
 const byShot: Record<string, number> = {};
+const topSpeed: Record<string, number> = {};
 while (totalPoints < points && ticks < 120 * 60 * 30 && match.phase !== 'matchOver') {
   match.step([ais[0].input(), ais[1].input()]);
   ticks++;
   for (const e of match.drainEvents()) {
     if (e.type === 'hit') {
       shots[e.name] = (shots[e.name] ?? 0) + 1;
+      topSpeed[e.name] = Math.max(topSpeed[e.name] ?? 0, e.speedKmh);
       lastShot = `${e.name}${e.netFault ? '(力道不足)' : ''} c=${e.charge.toFixed(2)} y=${e.pos.y.toFixed(2)} dn=${Math.abs(e.pos.z).toFixed(1)}`;
     }
     if (e.type === 'point') {
@@ -67,6 +69,7 @@ while (totalPoints < points && ticks < 120 * 60 * 30 && match.phase !== 'matchOv
 const avg = rallyLens.reduce((a, b) => a + b, 0) / rallyLens.length;
 console.log('得分原因', reasons);
 console.log('失分球種', byShot);
+console.log('各球種最高初速 km/h', topSpeed);
 console.log('球種', shots);
 console.log(`平均每分擊球數 ${avg.toFixed(1)}，最長 ${Math.max(...rallyLens)}，模擬 ${(ticks / 120 / GAME.simSpeed / 60).toFixed(1)} 分鐘（真實時間）`);
 console.log('比分', match.score, '局數', match.games);

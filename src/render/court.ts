@@ -62,19 +62,6 @@ export function makeCourt(maxAniso: number): THREE.Object3D {
   floor.rotation.x = -Math.PI / 2;
   group.add(floor);
 
-  // 四周廣告看板（純裝飾）
-  const boardMat = new THREE.MeshLambertMaterial({ color: 0x1b4f8a, emissive: 0x0b2240 });
-  for (const z of [-10.5, 10.5]) {
-    const b = new THREE.Mesh(new THREE.BoxGeometry(14, 0.9, 0.15), boardMat);
-    b.position.set(0, 0.45, z);
-    group.add(b);
-  }
-  for (const x of [-7.5, 7.5]) {
-    const b = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.9, 21), boardMat);
-    b.position.set(x, 0.45, 0);
-    group.add(b);
-  }
-
   group.add(makeNet());
   return group;
 }

@@ -124,7 +124,11 @@ export function solveCrossing(
   thMax: number,
   dt = PHYS.dt,
 ): { th: number; v: number } {
-  const netYAt = (th: number) => fly2d(solveSpeed(th, y0, L, sNet, dt), th, y0, sNet, dt).netY;
+  // 速度上限內打不到 L 的角度視為無效（當成過網太低），避免挑到「用最高速硬打」的解
+  const netYAt = (th: number) => {
+    const f = fly2d(solveSpeed(th, y0, L, sNet, dt), th, y0, sNet, dt);
+    return f.land < L - 0.05 ? -Infinity : f.netY;
+  };
   if (netYAt(thMin) >= targetNetY) return { th: thMin, v: solveSpeed(thMin, y0, L, sNet, dt) };
   let lo = thMin;
   let hi = thMax;

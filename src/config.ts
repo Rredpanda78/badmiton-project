@@ -23,7 +23,7 @@ export const GAME = {
   simSpeed: 0.62,
 
   // 蓄力：從 0 到滿所需的模擬秒數。蓄力值 c ∈ [0,1] 線性對應「落點越過網子的深度」
-  chargeDelay: 0.12, // 按下後先等這段時間才開始累積蓄力（約 0.2 秒真實時間）
+  chargeDelay: 0, // 按下後先等這段時間才開始累積蓄力（試過 0.12，玩起來不喜歡）
   chargeTime: 0.65, // 開始累積後，從 0 到滿所需時間
   depthAtZero: -0.6, // 蓄力 0 → 落在網前 0.6 m（掛網）
   depthAtFull: 7.6, // 蓄力滿 → 超過底線 0.9 m（出界）。好球區約佔蓄力條 75%
@@ -31,6 +31,8 @@ export const GAME = {
   // 球速：殺球／撲球／下壓維持原速，其他球的飛行時間縮短為 1/ballSpeedMul
   ballSpeedMul: 1.5,
   killMaxSpeed: 16, // 網前撲球初速上限（m/s），避免近網撲殺快到無法反應
+  smashMaxSpeed: 64, // 殺球／平抽初速上限（m/s，約 230 km/h）
+  liftMaxSpeed: 45, // 高遠／挑球初速上限（m/s，約 160 km/h）
 
   // 擊球判定
   reach: 1.15, // 水平可及距離
