@@ -20,7 +20,7 @@ export function makeCourt(maxAniso: number): THREE.Object3D {
   g.fillStyle = '#35896a';
   g.fillRect(toX(-COURT.singlesHalfWidth), toY(-COURT.halfLength), COURT.singlesHalfWidth * 2 * PX, COURT.halfLength * 2 * PX);
 
-  const lw = 0.045 * PX;
+  const lw = 0.075 * PX; // 線寬（真實 4 cm，加粗比較好認）
   const line = (x1: number, z1: number, x2: number, z2: number, color = '#f4f7f2') => {
     g.strokeStyle = color;
     g.lineWidth = lw;
@@ -57,10 +57,6 @@ export function makeCourt(maxAniso: number): THREE.Object3D {
   mesh.position.y = 0.002;
   group.add(mesh);
 
-  // 場館地板
-  const floor = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), new THREE.MeshLambertMaterial({ color: 0x24313f }));
-  floor.rotation.x = -Math.PI / 2;
-  group.add(floor);
 
   group.add(makeNet());
   return group;

@@ -1,5 +1,6 @@
 import { COURT, GAME, PHYS } from '../config';
 import { fly2d, netTopAt, solveCrossing, solveSpeed, v3, type Vec3 } from './physics';
+import { shotGroup, type Kit } from './kits';
 import type { Rng } from './rng';
 
 /** 划動方向分成三類：上（高遠/挑）、下（殺/切/放網）、橫（平抽） */
@@ -31,6 +32,7 @@ export interface ShotRequest {
   quality: number; // 0..1，擊球時機/位置好壞
   serve: null | { boxCenterX: number }; // 發球時對角發球區中心（世界座標 x）
   jump: boolean; // 在空中擊球
+  kit?: Kit; // 球員特質＋球拍（沒給就是標準）
 }
 
 export interface ShotResult {
@@ -83,11 +85,12 @@ export function resolveShot(req: ShotRequest, rng: Rng): ShotResult {
   const err = 1 - quality;
 
   const D0 = depthFromCharge(charge);
-  let D = D0 + rng.gauss() * (0.12 + err * 1.0);
+  const acc = req.kit?.accuracy ?? 1;
+  let D = D0 + rng.gauss() * (0.12 + err * 1.0) * acc;
   // 發球：在對角發球區內左右微調；一般擊球：左右分量決定落點
   const tx = req.serve
     ? req.serve.boxCenterX + side * req.aimX * 1.0 + rng.gauss() * 0.1
-    : side * (req.aimX * 2.3 + rng.gauss() * (0.1 + err * 0.8));
+    : side * (req.aimX * 2.3 + rng.gauss() * (0.1 + err * 0.8) * acc);
   let netFault = false;
   if (D < NET_FAULT_DEPTH) {
     // 深度太短：打進網子
@@ -110,7 +113,9 @@ export function resolveShot(req: ShotRequest, rng: Rng): ShotResult {
   // 在空中往下壓：後場叫跳殺；網前叫跳撲（仍套用撲球限速）
   const jumpSmash = req.jump && (name === '殺球' || name === '撲球');
   if (jumpSmash) name = name === '撲球' ? '跳撲' : '跳殺';
-  const dt = PHYS.dt * (name === '跳殺' ? GAME.jump.smashBallMul : (SPEED_BY_NAME[name] ?? GAME.ballSpeedMul));
+  // 球員／球拍的球速加成：同一條軌跡跑更快
+  const kitMul = req.kit?.speed[shotGroup(name)] ?? 1;
+  const dt = PHYS.dt * kitMul * (name === '跳殺' ? GAME.jump.smashBallMul : (SPEED_BY_NAME[name] ?? GAME.ballSpeedMul));
 
   let th: number;
   let v: number;
@@ -135,7 +140,7 @@ export function resolveShot(req: ShotRequest, rng: Rng): ShotResult {
   const vh = v * Math.cos(th);
   const vel = v3(ux * vh, v * Math.sin(th), uz * vh);
   const powerShort = netFault && D0 < NET_FAULT_DEPTH + 0.3;
-  return { vel, name, family, target, speedKmh: Math.round(v * 3.6), netFault, powerShort, stepDt: dt };
+  return { vel, name, family, target, speedKmh: Math.round(v * 3.6 * kitMul), netFault, powerShort, stepDt: dt };
 }
 
 /** 初速超過上限時，把角度往 thTo 調（壓球往上抬、挑球往下壓到較省力的角度）直到初速降到上限內 */

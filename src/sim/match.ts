@@ -1,5 +1,6 @@
 import { chargeFromTime, COURT, GAME, PHYS, type MatchSettings } from '../config';
 import { copy3, netTopAt, predict, stepShuttle, v3, type Prediction, type Vec3 } from './physics';
+import { buildKit, type Kit } from './kits';
 import { Rng } from './rng';
 import { chargeForDepth, classifyFlick, reboundCharge, resolveShot, type Family, type Flick } from './shots';
 
@@ -43,6 +44,7 @@ export interface PlayerState {
   jumpUsed: boolean; // 這次按住已經跳過了（放開才會重置，避免一直連跳）
   airborne: boolean;
   landRecover: number; // 落地硬直剩餘時間
+  kit: Kit; // 球員特質＋球拍
   takeoffAt: number; // 這次起跳的 match.time（算空中高度用）
   vy: number; // 跳躍垂直速度
   bufferedFlick: Flick | null; // 揮拍／硬直中太早划的那一下
@@ -127,6 +129,7 @@ export class Match {
     const mk = (id: 0 | 1, side: 1 | -1): PlayerState => ({
       id,
       side,
+      kit: id === 0 ? buildKit(settings.character, settings.racket) : buildKit(settings.aiCharacter ?? 'allround', settings.aiRacket ?? 'balance'),
       pos: v3(0, 0, side * 4),
       vel: v3(),
       charge: 0,
@@ -237,7 +240,8 @@ export class Match {
       p.bufferT = 0;
       const { family, aimX } = classifyFlick(flick);
       // 在空中出拍：揮拍時間至少涵蓋到落地前，避免剛起跳就划結果時間不夠
-      let window = p.airborne ? Math.max(GAME.swingWindow, airTimeLeft(p) - 0.02) : GAME.swingWindow;
+      const baseWindow = GAME.swingWindow * p.kit.window;
+      let window = p.airborne ? Math.max(baseWindow, airTimeLeft(p) - 0.02) : baseWindow;
       let triggeredJump = false;
       if (p.jumpArmed && !p.airborne && p.landRecover <= 0 && this.phase === 'rally') {
         // 還沒起跳就划了 → 立刻起跳，整段滯空都能擊球
@@ -322,9 +326,10 @@ export class Match {
     }
     if (!p.airborne) {
       const mul = p.landRecover > 0 ? GAME.jump.landMoveMul : p.swing ? GAME.swingMoveMul : p.charging ? GAME.chargeMoveMul : 1;
-      const tvx = p.side * mx * GAME.moveSpeed * mul;
-      const tvz = -p.side * my * GAME.moveSpeed * mul;
-      const maxDv = GAME.moveAccel * dt;
+      const top = GAME.moveSpeed * p.kit.move * mul;
+      const tvx = p.side * mx * top;
+      const tvz = -p.side * my * top;
+      const maxDv = GAME.moveAccel * p.kit.accel * dt;
       p.vel.x += clamp(tvx - p.vel.x, -maxDv, maxDv);
       p.vel.z += clamp(tvz - p.vel.z, -maxDv, maxDv);
     }
@@ -458,6 +463,7 @@ export class Match {
         charge: swing.charge,
         quality: 1,
         serve: { boxCenterX: this.shuttle.serveBoxSign * 1.3 },
+        kit: p.kit,
         jump: false,
       },
       this.rng,
@@ -569,7 +575,7 @@ export class Match {
     const incoming = Math.hypot(sh.vel.x, sh.vel.y, sh.vel.z);
     const charge = Math.max(swing.charge, reboundCharge(incoming));
     const shot = resolveShot(
-      { side: p.side, contact, family: swing.family, aimX: swing.aimX, charge, quality, serve: null, jump: p.airborne },
+      { side: p.side, contact, family: swing.family, aimX: swing.aimX, charge, quality, serve: null, jump: p.airborne, kit: p.kit },
       this.rng,
     );
     swing.contacted = true;

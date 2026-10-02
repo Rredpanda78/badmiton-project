@@ -43,6 +43,8 @@ export class LocalControls {
   private gpDownAt = 0;
   private lastGpTap = 0;
   enabled = true;
+  /** 簡單模式：自動跑位，整個螢幕都是擊球區 */
+  autoMove = false;
   /** 按下蓄力鍵的瞬間（jump = 這次是連按兩下） */
   onPress: ((jump: boolean) => void) | null = null;
 
@@ -98,7 +100,7 @@ export class LocalControls {
     const pad: Pad = { id: e.pointerId, ox: e.clientX, oy: e.clientY, x: e.clientX, y: e.clientY, flicked: false, jump: false, downAt: now };
 
     let toMove: boolean;
-    if (!touch) toMove = false;
+    if (!touch || this.autoMove) toMove = false;
     else if (this.action && !this.move) toMove = e.clientX < this.action.ox - 40;
     else if (this.move && !this.action) toMove = e.clientX < this.move.ox + 40;
     else toMove = e.clientX < window.innerWidth * 0.5;
@@ -280,9 +282,10 @@ export class LocalControls {
     // 預設位置：直向時放在球場下方（離螢幕底部遠一點，避開系統手勢區），橫向時放左右下角
     const restY = bottomReserve > 0 ? Math.min(h * (1 - bottomReserve) + 80, h - 125) : h - 110;
     const restX = bottomReserve > 0 ? w * 0.22 : Math.max(90, w * 0.12);
-    const show = this.isTouch;
+    const show = this.isTouch && !this.autoMove;
+    const showRing = this.isTouch;
     this.baseEl.style.display = show ? 'block' : 'none';
-    this.ringEl.style.display = show || this.action ? 'block' : 'none';
+    this.ringEl.style.display = showRing || this.action ? 'block' : 'none';
     const m = this.move;
     if (m) {
       this.baseEl.style.left = `${m.ox}px`;

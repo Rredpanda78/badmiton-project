@@ -1,8 +1,9 @@
 import * as THREE from 'three';
-import { CAMERA, COURT, GAME } from '../config';
+import { CAMERA, COURT, GAME, type Venue } from '../config';
 import { timeUntilInReach, type Match } from '../sim/match';
 import { v3, type Vec3 } from '../sim/physics';
 import { makeCourt } from './court';
+import { buildVenue, type Environment } from './environment';
 import { PlayerModel } from './playerModel';
 
 const SHUTTLE_SCALE = 2.4; // 真實羽球太小，放大一點比較看得清楚
@@ -25,6 +26,10 @@ export class GameRenderer {
   private bursts: { mesh: THREE.Mesh; t: number }[] = [];
   private shakeAmt = 0;
   private camX = 0;
+  private hemi: THREE.HemisphereLight;
+  private sun: THREE.DirectionalLight;
+  private env: Environment | null = null;
+  private venue: Venue | null = null;
   private pose = CAMERA.landscape;
   private reserve = 0;
   private tmp = new THREE.Vector3();
@@ -37,12 +42,14 @@ export class GameRenderer {
     this.scene.background = new THREE.Color(0x111a26);
     this.scene.fog = new THREE.Fog(0x111a26, 26, 48);
 
-    this.scene.add(new THREE.HemisphereLight(0xe6eeff, 0x2a3442, 1.6));
-    const sun = new THREE.DirectionalLight(0xffffff, 1.6);
-    sun.position.set(4, 12, 6);
-    this.scene.add(sun);
+    this.hemi = new THREE.HemisphereLight(0xe6eeff, 0x2a3442, 1.6);
+    this.scene.add(this.hemi);
+    this.sun = new THREE.DirectionalLight(0xffffff, 1.6);
+    this.sun.position.set(4, 12, 6);
+    this.scene.add(this.sun);
 
     this.scene.add(makeCourt(this.renderer.capabilities.getMaxAnisotropy()));
+    this.setVenue('indoor');
 
     this.models = [new PlayerModel(0x2f7fe0, 0x1b2a44), new PlayerModel(0xe0483a, 0x3a1b1b)];
     for (const m of this.models) this.scene.add(m.root);
@@ -166,6 +173,41 @@ export class GameRenderer {
     this.camera.updateMatrixWorld();
   }
 
+  /** 換場地（室內／竹林／櫻花園） */
+  setVenue(v: Venue): void {
+    if (v === this.venue) return;
+    this.venue = v;
+    if (this.env) {
+      this.scene.remove(this.env.group);
+      this.env.group.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        mesh.geometry?.dispose();
+        const mat = mesh.material as THREE.Material | THREE.Material[] | undefined;
+        if (Array.isArray(mat)) mat.forEach((x) => x.dispose());
+        else mat?.dispose();
+      });
+    }
+    const env = (this.env = buildVenue(v));
+    this.scene.add(env.group);
+    (this.scene.background as THREE.Color).set(env.background);
+    const fog = this.scene.fog as THREE.Fog;
+    fog.color.set(env.fog[0]);
+    fog.near = env.fog[1];
+    fog.far = env.fog[2];
+    this.hemi.color.set(env.sky);
+    this.hemi.groundColor.set(env.ground);
+    this.sun.color.set(env.sun);
+  }
+
+  /** 換球員外觀（球衣顏色） */
+  setLooks(looks: [{ shirt: number; shorts: number }, { shirt: number; shorts: number }]): void {
+    looks.forEach((l, i) => {
+      this.scene.remove(this.models[i].root);
+      this.models[i] = new PlayerModel(l.shirt, l.shorts);
+      this.scene.add(this.models[i].root);
+    });
+  }
+
   resetTrail(p: Vec3): void {
     for (const t of this.trailPts) t.set(p.x, p.y, p.z);
   }
@@ -215,7 +257,8 @@ export class GameRenderer {
       this.camera.updateProjectionMatrix();
     }
 
-    match.players.forEach((p, i) => this.models[i].update(p, dt));
+    match.players.forEach((p, i) => this.models[i].update(p, dt, match.shuttle.pos));
+    this.env?.update(dt);
 
     // 羽球
     const sh = match.shuttle;

@@ -48,7 +48,15 @@ export class AIController {
   private serveDelay = 1;
   private serveChoice: { charge: number; flick: Flick } | null = null;
 
-  constructor(private match: Match, private id: 0 | 1, difficulty: Difficulty) {
+  /**
+   * moveOnly = 簡單模式的自動跑位：只輸出移動，蓄力／出拍交給玩家
+   */
+  constructor(
+    private match: Match,
+    private id: 0 | 1,
+    difficulty: Difficulty,
+    private moveOnly = false,
+  ) {
     this.p = PARAMS[difficulty];
   }
 
@@ -57,9 +65,19 @@ export class AIController {
   }
 
   input(): PlayerInput {
+    const inp = this.decide();
+    if (this.moveOnly) {
+      inp.charging = false;
+      inp.jump = false;
+      inp.flick = null;
+    }
+    return inp;
+  }
+
+  private decide(): PlayerInput {
     const m = this.match;
     const inp = idleInput();
-    if (m.phase === 'serve') return this.serveInput(inp);
+    if (m.phase === 'serve') return this.moveOnly ? inp : this.serveInput(inp);
     this.serveChoice = null;
     if (m.phase !== 'rally') return inp;
 
@@ -84,7 +102,8 @@ export class AIController {
       inp.jump = plan.jump;
     }
     const charged = this.me.charge >= plan.charge;
-    if ((charged && now >= plan.flickAt - 0.04) || now >= plan.flickAt + 0.03) {
+    // 自動跑位模式不出拍、也不提早離開站位，等玩家自己打
+    if (!this.moveOnly && ((charged && now >= plan.flickAt - 0.04) || now >= plan.flickAt + 0.03)) {
       inp.flick = plan.flick;
       inp.charging = false;
       plan.done = true;
@@ -164,7 +183,7 @@ export class AIController {
       if (margin >= 0 && margin < 0.3 && rng.chance((1 - p.outJudge) * 0.4)) return leavePlan();
     }
 
-    const speed = GAME.moveSpeed * p.speedMul;
+    const speed = GAME.moveSpeed * p.speedMul * me.kit.move;
     type Cand = { score: number; i: number; tAbs: number; sx: number; sz: number };
     let best: Cand | null = null;
     let fallback: Cand | null = null;

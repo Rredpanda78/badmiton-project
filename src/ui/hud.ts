@@ -3,7 +3,6 @@ import { v3 } from '../sim/physics';
 import { chargeZones } from '../sim/shots';
 import type { GameRenderer } from '../render/scene';
 
-const NAMES = ['你', 'AI'] as const;
 
 export class Hud {
   private score: HTMLElement;
@@ -15,6 +14,7 @@ export class Hud {
   private bannerTimer = 0;
   private meterHold = 0;
   private lastCharge = 0;
+  oppName = 'AI';
 
   constructor(private root: HTMLElement) {
     this.score = root.querySelector('#scoreboard')!;
@@ -49,7 +49,7 @@ export class Hud {
         break;
       case 'point': {
         const win = e.winner === humanId;
-        this.showBanner(e.reason, win ? '你得分！' : `${NAMES[e.winner]} 得分`, win ? 'win' : 'lose', 1.6);
+        this.showBanner(e.reason, win ? '你得分！' : `${this.oppName} 得分`, win ? 'win' : 'lose', 1.6);
         break;
       }
       case 'game':
@@ -85,7 +85,7 @@ export class Hud {
     this.score.innerHTML =
       `<span class="me">${serveDot(humanId)}你${multi ? `<small>${match.games[humanId]}</small>` : ''}<b>${match.score[humanId]}</b></span>` +
       `<span class="sep">:</span>` +
-      `<span class="opp"><b>${match.score[opp]}</b>${multi ? `<small>${match.games[opp]}</small>` : ''}AI${serveDot(opp)}</span>`;
+      `<span class="opp"><b>${match.score[opp]}</b>${multi ? `<small>${match.games[opp]}</small>` : ''}${this.oppName}<em>AI</em>${serveDot(opp)}</span>`;
 
     if (this.bannerTimer > 0) {
       this.bannerTimer -= dt;

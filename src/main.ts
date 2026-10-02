@@ -5,6 +5,7 @@ import { DEFAULT_SETTINGS, GAME, PHYS, type MatchSettings } from './config';
 import { LocalControls } from './input/controls';
 import { GameRenderer } from './render/scene';
 import { Match, type MatchEvent } from './sim/match';
+import { buildKit, CHARACTERS, characterById, RACKETS } from './sim/kits';
 import { Hud } from './ui/hud';
 import { chargeZones } from './sim/shots';
 
@@ -41,12 +42,74 @@ controls.onPress = (jump) => {
 let hitStop = 0; // 擊中瞬間畫面停頓（秒，真實時間）
 let lastZone = 0; // 蓄力目前在哪一區：0 掛網 1 好球 2 出界
 
+let assist: AIController | null = null; // 簡單模式：幫玩家自動跑位
+const pick = <T,>(xs: T[]) => xs[Math.floor(Math.random() * xs.length)];
+
 function newMatch(demo: boolean): void {
-  match = new Match({ ...settings }, (Date.now() ^ (Math.random() * 1e9)) >>> 0);
+  // 對手每場隨機換一位球員、一支球拍（不跟自己同一位）
+  const me = demo ? pick(CHARACTERS) : characterById(settings.character);
+  const opp = pick(CHARACTERS.filter((c) => c.id !== me.id));
+  const s: MatchSettings = { ...settings, aiCharacter: opp.id, aiRacket: pick(RACKETS).id };
+  if (demo) {
+    s.character = me.id;
+    s.racket = pick(RACKETS).id;
+  }
+  match = new Match(s, (Date.now() ^ (Math.random() * 1e9)) >>> 0);
   opponent = new AIController(match, 1, demo ? 'hard' : settings.difficulty);
   demoPlayer = demo ? new AIController(match, 0, 'hard') : null;
+  assist = !demo && settings.autoMove ? new AIController(match, 0, 'hard', true) : null;
+  controls.autoMove = !!assist;
+  renderer.setLooks([me, opp]);
+  renderer.setVenue(settings.venue);
+  hud.oppName = opp.name;
   clearTimeout(resultTimer);
   hitStop = 0;
+}
+
+/** 選球員／球拍的卡片 */
+function buildCards(): void {
+  const charBox = $('charCards');
+  charBox.innerHTML = '';
+  for (const c of CHARACTERS) {
+    const b = document.createElement('button');
+    b.className = 'card' + (c.id === settings.character ? ' on' : '');
+    b.innerHTML = `<div class="swatch" style="background:#${c.shirt.toString(16).padStart(6, '0')}"></div><b>${c.name}</b><small>${c.title}</small><span>${c.desc}</span>`;
+    b.addEventListener('click', () => {
+      settings.character = c.id;
+      saveSettings();
+      buildCards();
+    });
+    charBox.appendChild(b);
+  }
+  const rBox = $('racketCards');
+  rBox.innerHTML = '';
+  for (const r of RACKETS) {
+    const b = document.createElement('button');
+    b.className = 'card' + (r.id === settings.racket ? ' on' : '');
+    b.innerHTML = `<div class="swatch" style="background:#${r.color.toString(16).padStart(6, '0')}"></div><b>${r.name}</b><span>${r.desc}</span>`;
+    b.addEventListener('click', () => {
+      settings.racket = r.id;
+      saveSettings();
+      buildCards();
+    });
+    rBox.appendChild(b);
+  }
+  // 組合後的實際加成
+  const k = buildKit(settings.character, settings.racket);
+  const chips: string[] = [];
+  const pct = (label: string, v: number) => {
+    const d = Math.round((v - 1) * 100);
+    if (d !== 0) chips.push(`<i class="${d > 0 ? 'up' : 'down'}">${label} ${d > 0 ? '+' : ''}${d}%</i>`);
+  };
+  pct('殺球', k.speed.smash);
+  pct('切球／放網', k.speed.drop);
+  pct('推球／平抽', k.speed.push);
+  pct('高遠／挑球', k.speed.clear);
+  pct('跑速', k.move);
+  pct('起步', k.accel);
+  pct('揮拍判定', k.window);
+  if (k.accuracy !== 1) chips.push(`<i class="up">落點誤差 ${Math.round((k.accuracy - 1) * 100)}%</i>`);
+  $('kitSummary').innerHTML = chips.length ? chips.join('') : '<i>標準數值</i>';
 }
 
 function setMode(m: Mode): void {
@@ -122,6 +185,12 @@ function tick(now: number): void {
     let n = 0;
     while (acc >= PHYS.dt && n++ < 40 && hitStop <= 0) {
       const mine = demoPlayer ? demoPlayer.input() : controls.poll();
+      if (assist) {
+        // 簡單模式：移動交給自動跑位，蓄力／出拍還是玩家自己
+        const a = assist.input();
+        mine.moveX = a.moveX;
+        mine.moveY = a.moveY;
+      }
       if (!demoPlayer && mine.flick) {
         sfx.whoosh();
         buzz(8);
@@ -186,6 +255,7 @@ document.querySelectorAll<HTMLElement>('.seg').forEach((seg) => {
       (settings as unknown as Record<string, unknown>)[key] = v === 'true' ? true : v === 'false' ? false : /^\d+$/.test(v) ? Number(v) : v;
       saveSettings();
       sync();
+      if (key === 'venue') renderer.setVenue(settings.venue);
     }),
   );
   sync();
@@ -241,6 +311,7 @@ function saveSettings(): void {
   }
 }
 
+buildCards();
 newMatch(true);
 setMode('menu');
 requestAnimationFrame(frame);

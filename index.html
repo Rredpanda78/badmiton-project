@@ -25,6 +25,19 @@
       <div class="panel">
         <h1>羽球對決 <span>2.5D</span></h1>
         <p class="tag">左手移動・右手蓄力划動出拍</p>
+        <div class="section-title">球員</div>
+        <div id="charCards" class="cards"></div>
+        <div class="section-title">球拍</div>
+        <div id="racketCards" class="cards rackets"></div>
+        <div id="kitSummary" class="kit-summary"></div>
+        <div class="row">
+          <label>操作</label>
+          <div class="seg" data-key="autoMove"><button data-v="false">完整</button><button data-v="true">簡單（自動跑位）</button></div>
+        </div>
+        <div class="row">
+          <label>場地</label>
+          <div class="seg" data-key="venue"><button data-v="sakura">櫻花園</button><button data-v="bamboo">竹林</button><button data-v="indoor">室內</button></div>
+        </div>
         <div class="row">
           <label>難度</label>
           <div class="seg" data-key="difficulty">
@@ -56,6 +69,7 @@
             <li><b>左手</b>：螢幕左半邊按住拖曳 → 移動</li>
             <li><b>右手</b>：螢幕右半邊按住 → 蓄力；往某方向<b>划動</b> → 出拍</li>
             <li>按住後不划、直接放開 → 取消（可以當假動作）</li>
+            <li><b>簡單模式</b>：自動跑位，整個螢幕都是擊球區，只管蓄力和划動</li>
             <li><b>跳殺</b>：右手<b>點一下再按住</b>（連按兩下），高球快到時會自動起跳；看到起跳後約 0.25 秒往下划</li>
           </ul>
           <h3>划動方向</h3>
