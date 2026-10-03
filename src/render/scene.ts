@@ -4,12 +4,13 @@ import { ballTaker } from '../ai/doubles';
 import { flickNow, timeUntilInReach, type Match, type MatchEvent, type PlayerId, type PlayerState } from '../sim/match';
 import { v3, type Vec3 } from '../sim/physics';
 import { predictContact, type ContactHint } from './anim/contact';
-import { makeCourt } from './court';
+import { makeCourt, NetWobble } from './court';
 import { buildVenue, type Environment } from './environment';
 import { FxSystem } from './fx';
 import { PlayerModel, playerStyle } from './playerModel';
 import type { CamPose } from './replay';
 import { makeShuttleMesh } from './shuttle';
+import { ShuttleTrail, TRAIL_DRIVE, TRAIL_DROP, TRAIL_LIFT, TRAIL_SERVE } from './shuttleTrail';
 
 /** 球員外觀：球衣顏色＋（可選）角色造型與球拍顏色 */
 export interface Look {
@@ -21,7 +22,14 @@ export interface Look {
 }
 
 const SHUTTLE_SCALE = 2.4; // 真實羽球太小，放大一點比較看得清楚
-const TRAIL_LEN = 22;
+// 羽球姿態：擊中後 TUMBLE 秒內從「軟木頭朝拍面」翻成「軟木頭朝前進方向」，之後以 LAG 秒的時間常數跟著速度方向，並繞自己的軸慢慢轉
+const TUMBLE = 0.13;
+const ALIGN_LAG = 0.06;
+const SPIN_RATE = 3.5; // rad/s（每 m/s 球速再加 0.12）
+const _up = new THREE.Vector3(0, 1, 0);
+const _xAxis = new THREE.Vector3(1, 0, 0);
+const _qa = new THREE.Quaternion();
+const _qb = new THREE.Quaternion();
 
 // ---------- 即時影子 ----------
 /** 畫質 → 影子貼圖邊長（0 = 不開即時影子，只用腳下的圓形假影） */
@@ -53,9 +61,16 @@ export class GameRenderer {
   private hints: ContactHint[] = [0, 1, 2, 3].map(() => ({ t: 0, x: 0, y: 0, z: 0, d: 0 }));
   private youMark: THREE.Group; // 雙打：自己頭上的小箭頭＋腳下的圈（四個人才認得出自己）
   private shuttle = new THREE.Group();
-  private shuttleShadow: THREE.Mesh;
-  private trail: THREE.Line;
-  private trailPts: THREE.Vector3[] = [];
+  private shuttleRing: THREE.Mesh; // 落點圈：球越低越小越清楚
+  private shuttleDisc: THREE.Mesh; // 圈中間的軟影
+  private trail = new ShuttleTrail();
+  private netWobble: NetWobble;
+  // 羽球姿態（見 TUMBLE / ALIGN_LAG）
+  private shQ = new THREE.Quaternion(); // 目前朝向（不含自轉）
+  private shFrom = new THREE.Quaternion(); // 擊中那一刻的朝向（翻轉的起點）
+  private shTumble = 1; // 翻轉進度（秒；≥ TUMBLE = 翻完）
+  private shSpin = 0;
+  private shSerialQ = -1;
   private marker: THREE.Mesh;
   private reachRing: THREE.Mesh;
   private shOffset = new THREE.Vector3(); // 線上：對方擊球時的位置修正（慢慢歸零）
@@ -118,7 +133,9 @@ export class GameRenderer {
     this.fill = new THREE.DirectionalLight(DEFAULT_FILL[0], DEFAULT_FILL[1]);
     this.scene.add(this.fill);
 
-    this.scene.add(makeCourt(this.renderer.capabilities.getMaxAnisotropy()));
+    const court = makeCourt(this.renderer.capabilities.getMaxAnisotropy());
+    this.scene.add(court);
+    this.netWobble = new NetWobble(court);
     this.setVenue('indoor');
 
     this.models = [new PlayerModel(0x2f7fe0, 0x1b2a44), new PlayerModel(0xe0483a, 0x3a1b1b)];
@@ -142,18 +159,20 @@ export class GameRenderer {
     // 特效平常是隱藏的，shader 會等第一次殺球才編譯（手機上會卡一下）：先編好
     this.renderer.compile(this.fx.group, this.camera, this.scene);
 
-    this.shuttleShadow = new THREE.Mesh(
-      new THREE.CircleGeometry(0.075, 16),
+    // 羽球正下方的落點圈＋軟影（半徑 1 的幾何，每幀依高度縮放）：高的時候是一個大而淡的圈，落下來時縮小、變清楚，落點一眼看得出來
+    this.shuttleRing = new THREE.Mesh(
+      new THREE.RingGeometry(0.74, 1, 40),
       new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.5, depthWrite: false }),
     );
-    this.shuttleShadow.rotation.x = -Math.PI / 2;
-    this.scene.add(this.shuttleShadow);
+    this.shuttleRing.rotation.x = -Math.PI / 2;
+    this.shuttleDisc = new THREE.Mesh(
+      new THREE.CircleGeometry(0.72, 24),
+      new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.3, depthWrite: false }),
+    );
+    this.shuttleDisc.rotation.x = -Math.PI / 2;
+    this.scene.add(this.shuttleRing, this.shuttleDisc);
 
-    for (let i = 0; i < TRAIL_LEN; i++) this.trailPts.push(new THREE.Vector3());
-    const tg = new THREE.BufferGeometry().setFromPoints(this.trailPts);
-    this.trail = new THREE.Line(tg, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35 }));
-    this.trail.frustumCulled = false;
-    this.scene.add(this.trail);
+    this.scene.add(this.trail.mesh);
 
     this.marker = new THREE.Mesh(
       new THREE.RingGeometry(0.16, 0.24, 28),
@@ -537,7 +556,7 @@ export class GameRenderer {
   }
 
   resetTrail(p: Vec3): void {
-    for (const t of this.trailPts) t.set(p.x, p.y, p.z);
+    this.trail.reset(p);
   }
 
   /** 擊球特效（一般球）：品質越好越大越金；殺球的特效在 fxEvent（render/fx.ts） */
@@ -568,6 +587,7 @@ export class GameRenderer {
   fxEvent(e: MatchEvent, match: Match, live = true): void {
     switch (e.type) {
       case 'hit': {
+        this.trail.setStyle(e.serve ? TRAIL_SERVE : e.family === 'up' ? TRAIL_LIFT : e.family === 'down' ? TRAIL_DROP : TRAIL_DRIVE);
         const smash = !e.serve && ((e.family === 'down' && e.speedKmh > 120) || e.jump);
         if (!smash) {
           this.fx.endFlight();
@@ -591,6 +611,7 @@ export class GameRenderer {
         break;
       case 'net':
         this.fx.net(e.pos);
+        this.netWobble.hit(e.pos.x, 0.03 + 0.05 * Math.min(1, match.shuttle.pace));
         break;
     }
   }
@@ -685,31 +706,59 @@ export class GameRenderer {
     this.shOffset.multiplyScalar(Math.exp(-dt / 0.05));
     this.shuttle.position.set(sh.pos.x + this.shOffset.x, sh.pos.y + this.shOffset.y, sh.pos.z + this.shOffset.z);
     const sp = Math.hypot(sh.vel.x, sh.vel.y, sh.vel.z);
+    const flying = sh.mode === 'flight' || sh.mode === 'netfall';
     if (sh.mode === 'held') {
+      this.shQ.identity();
       this.shuttle.quaternion.identity();
+      this.shTumble = 1;
     } else if (sh.mode === 'down') {
       // 落地後側躺
-      this.shuttle.quaternion.setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2.4);
+      this.shuttle.quaternion.setFromAxisAngle(_xAxis, Math.PI / 2.4);
       this.shuttle.position.y = 0.02;
+      this.shTumble = 1;
     } else if (sp > 0.3) {
-      // 軟木頭朝前進方向
+      // 目標：軟木頭朝前進方向
       this.tmp.set(-sh.vel.x, -sh.vel.y, -sh.vel.z).normalize();
-      this.shuttle.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), this.tmp);
+      _qa.setFromUnitVectors(_up, this.tmp);
+      if (match.hitSerial !== this.shSerialQ) {
+        // 剛被打到：軟木頭還朝著拍面（來球的方向），從這裡翻過去
+        this.shSerialQ = match.hitSerial;
+        this.shFrom.copy(this.shQ);
+        this.shTumble = 0;
+      }
+      if (this.shTumble < TUMBLE) {
+        this.shTumble += dt;
+        const u = Math.min(1, this.shTumble / TUMBLE);
+        this.shQ.slerpQuaternions(this.shFrom, _qa, u * u * (3 - 2 * u));
+      } else {
+        // 跟著速度方向，稍微慢半拍（高點轉向時看得出來）
+        this.shQ.slerp(_qa, 1 - Math.exp(-dt / ALIGN_LAG));
+      }
+      this.shSpin += dt * (SPIN_RATE + 0.12 * sp);
+      _qb.setFromAxisAngle(_up, this.shSpin);
+      this.shuttle.quaternion.copy(this.shQ).multiply(_qb);
     }
 
-    this.shuttleShadow.position.set(sh.pos.x, 0.008, sh.pos.z);
-    const sc = 1 + Math.min(1.5, sh.pos.y * 0.25);
-    this.shuttleShadow.scale.set(sc, sc, sc);
-    (this.shuttleShadow.material as THREE.MeshBasicMaterial).opacity = 0.55 / sc;
+    // 落點圈＋軟影：高的時候圈大而淡，落下來縮小、變清楚；落地後只剩小小的軟影
+    {
+      const y = Math.max(0, sh.pos.y);
+      const r = 0.07 + 0.11 * Math.min(y, 6);
+      const drop = 1 - Math.min(1, y / 3.5);
+      this.shuttleRing.position.set(sh.pos.x, 0.009, sh.pos.z);
+      this.shuttleDisc.position.set(sh.pos.x, 0.008, sh.pos.z);
+      this.shuttleRing.scale.setScalar(r);
+      this.shuttleDisc.scale.setScalar(r);
+      const down = sh.mode === 'down';
+      this.shuttleRing.visible = !down && !cine;
+      (this.shuttleRing.material as THREE.MeshBasicMaterial).opacity = 0.22 + 0.45 * drop;
+      (this.shuttleDisc.material as THREE.MeshBasicMaterial).opacity = down ? 0.45 : 0.08 + 0.32 * (1 - Math.min(1, y / 2.5));
+    }
 
-    // 拖尾
-    const flying = sh.mode === 'flight' || sh.mode === 'netfall';
-    this.trail.visible = flying && !this.fx.smashing; // 殺球有自己的能量拖尾
-    if (flying) {
-      for (let i = TRAIL_LEN - 1; i > 0; i--) this.trailPts[i].copy(this.trailPts[i - 1]);
-      this.trailPts[0].set(sh.pos.x, sh.pos.y, sh.pos.z);
-      this.trail.geometry.setFromPoints(this.trailPts);
-    } else this.resetTrail(sh.pos);
+    // 拖尾（殺球有自己的能量拖尾，那時藏起來）
+    if (flying && !this.fx.smashing) this.trail.push(sh.pos, sp, this.camera, Math.min(1.6, Math.max(0.9, this.camera.position.distanceTo(this.shuttle.position) / 13)));
+    else if (flying) this.trail.hide();
+    else this.resetTrail(sh.pos);
+    this.netWobble.update(dt);
 
     // 落點提示：對方打來的球（黃／紅）；自己剛打出去的球短暫顯示白色虛影
     const pred = sh.prediction;
