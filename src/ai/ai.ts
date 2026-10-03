@@ -2,7 +2,7 @@ import { chargeFromTime, COURT, GAME, PHYS, timeForCharge, type Difficulty } fro
 import { idleInput, type Match, type PlayerId, type PlayerInput } from '../sim/match';
 import type { Prediction } from '../sim/physics';
 import { chargeForDepth, depthFromCharge, reboundCharge, type Family, type Flick } from '../sim/shots';
-import { ballTaker, formationSpot } from './doubles';
+import { ballTaker, formationSpot, isLift } from './doubles';
 
 interface AIParams {
   reaction: number; // 對手出拍後多久才開始動
@@ -308,10 +308,18 @@ export class AIController {
       m.doubles && shot.family === 'down' && shot.depth >= 2.6 && dn < GAME.netKill.zone - 0.1 && pt.y >= COURT.netTop + 0.15
         ? { x: Math.max(-0.7, Math.min(0.7, shot.aimX / 1.15)), y: 0.7, cmd: { family: 'side' as const, depth: GAME.netKill.depth } }
         : null;
+    // 雙打抓球：中前場平飛過來、高度到網子以上的球 → 搶下來往下壓（跟玩家「點一下」一樣，擊中時才轉成抓球）
+    const intercept =
+      !netKill && m.doubles && !isLift(m) && dn >= GAME.netKill.zone - 0.1 && dn < GAME.intercept.zone && pt.y >= COURT.netTop - 0.05 && rng.chance(Math.min(0.95, p.killRate + 0.3))
+        ? { x: rng.range(-0.2, 0.2), y: 1, cmd: { family: 'side' as const, depth: 5.0 } }
+        : null;
     let flick: Flick;
     let charge: number;
     if (netKill) {
       flick = netKill;
+      charge = 0;
+    } else if (intercept) {
+      flick = intercept;
       charge = 0;
     } else if (m.doubles) {
       // 雙打：跟預設的點擊滑放一樣直接指定球種與深度（不用蓄力；前場兩人距離近，蓄力常來不及），落點誤差照難度

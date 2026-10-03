@@ -9,6 +9,7 @@ import { DRILLS, DrillRunner, loadBest, saveBest, type Drill } from './modes/dri
 import { loadTour, saveTourWin, stopUnlocked, TOUR, type TourOpponent } from './modes/tour';
 import { buildKit, CHARACTERS, characterById, racketById, RACKETS, type Character, type Kit } from './sim/kits';
 import { Hud } from './ui/hud';
+import { openGuide } from './ui/guide';
 import { chargeZones } from './sim/shots';
 import { OnlineSync } from './net/sync';
 import { buildTutorial, TutorialRunner, type TutUI } from './modes/tutorial';
@@ -1064,4 +1065,18 @@ void checkUpdate();
       close();
     });
   });
+}
+
+// ---------- 球種說明（設定、暫停畫面都可以打開） ----------
+for (const [panelSel, beforeId] of [
+  ['#settings .panel', 'settingsDoneBtn'],
+  ['#pause .panel', 'menuBtn'],
+] as const) {
+  const panel = document.querySelector(panelSel);
+  if (!panel) continue;
+  const b = document.createElement('button');
+  b.textContent = '📖 球種說明';
+  b.className = 'guide-btn';
+  b.addEventListener('click', () => openGuide(settings.scheme));
+  panel.insertBefore(b, document.getElementById(beforeId));
 }

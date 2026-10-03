@@ -77,6 +77,8 @@ export const GAME = {
   manualReachMul: 1.2, // 手動跑位時玩家的擊球範圍倍率（自動跑位與 AI = 1）
   // 網前撲球：網前 zone 公尺內、球高於網時按平球（點一下／左右滑）就變撲球
   netKill: { zone: 2.3, depth: 3.4, maxSpeed: 21, speedMul: 1.35 }, // 比一般撲球快 1.35 倍（約 75 km/h）、初速上限 21 m/s；打向中場，反應得過來還救得到
+  // 抓球：中前場（網前撲球區外到離網 zone 公尺）、球高於網子附近時「點一下」（平球）→ 搶下來往下壓
+  intercept: { zone: 3.8, depth: 4.2, speedMul: 1.15, minY: -0.1 },
   attackSmashBonus: 0.1, // 殺「不到位的高球」最多快這麼多（高遠球越短越好殺，機會球最多）
   // 硬伸手接快球的懲罰：品質 × (1 - penalty × 來球兇度 × 遠)；兇度：殺球 1、撲壓 0.8、平抽 0.5；遠 = 離身體 comfy m → 擊球範圍邊緣
   stretch: { comfy: 0.6, penalty: 0.75, maxFail: 0.8 },

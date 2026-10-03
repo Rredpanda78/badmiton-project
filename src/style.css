@@ -1103,3 +1103,34 @@ body.in-menu #a2hsTip.show {
   color: #1a1a1a;
   font-weight: 700;
 }
+
+/* 球種說明 */
+#guide .panel {
+  max-height: 88vh;
+  overflow-y: auto;
+}
+.guide-timing {
+  font-size: 13px;
+  line-height: 1.55;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(93, 255, 138, 0.08);
+  border: 1px solid rgba(93, 255, 138, 0.25);
+}
+.guide-shot {
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.guide-shot h4 {
+  margin: 0 0 2px;
+  font-size: 15px;
+  color: #ffd54a;
+}
+.guide-shot p {
+  margin: 2px 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.guide-shot .when {
+  color: var(--muted);
+}

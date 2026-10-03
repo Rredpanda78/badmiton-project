@@ -48,12 +48,17 @@ export function isLift(m: Match): boolean {
   return !!pred && apexOf(pred) >= LIFT_APEX;
 }
 
-/** 這一隊現在是進攻（前後站）還是防守（左右並排）：自己這隊壓下去 = 進攻；對方挑高給我們 = 進攻 */
+/** 對方打過來的球要不要轉防守：只有殺球、撲壓這種往下打的兇球才左右並排；挑高、平球、網前球都維持前後站（前面的人攔截） */
+export function incomingIsAttack(m: Match): boolean {
+  return !isLift(m) && m.shuttle.pace >= 0.8;
+}
+
+/** 這一隊現在是進攻（前後站）還是防守（左右並排）：自己這隊壓下去 = 進攻；對方回的不是殺球（挑高、平球、小球）= 維持進攻 */
 export function teamAttacking(m: Match, team: TeamId): boolean {
   const h = m.shuttle.lastHitter;
   if (h === null) return false;
   const lift = isLift(m);
-  return m.teamOf(h) === team ? !lift : lift;
+  return m.teamOf(h) === team ? !lift : !incomingIsAttack(m);
 }
 
 /** 擋不住、還趴在地上、在空中……還要多久才能開始跑 */
@@ -90,7 +95,7 @@ function computeTaker(m: Match, team: TeamId): Assignment | null {
   // 雙打發球只有接發球的人能接
   if (sh.isServe && m.doubles) mates = mates.filter((p) => p.id === m.receiver);
   const elapsed = m.time - sh.launchTime;
-  const attack = isLift(m); // 對方挑高 → 我們進攻（前後站）
+  const attack = !incomingIsAttack(m); // 對方不是殺過來 → 我們前後站（前面的人攔截）
   const front = mates.length === 2 ? (Math.abs(mates[0].pos.z) <= Math.abs(mates[1].pos.z) ? mates[0].id : mates[1].id) : -1;
   let best: Assignment | null = null;
   let bestScore = Infinity;
@@ -182,7 +187,8 @@ export function formationSpot(m: Match, id: PlayerId): { x: number; z: number } 
   if (attack) {
     const refFront = Math.abs(ref.z) < FRONT_Z;
     const front = iAmRef ? refFront : !refFront;
-    return front ? { x: clamp(shift * 1.4 + (ours ? 0 : ref.x * 0.25), -1, 1), z: side * 2.35 } : { x: clamp(shift, -0.8, 0.8), z: side * 4.6 };
+    // 我們剛壓下去：前面的人再往前封網（約 2.1 m），對方回平球或小球就直接撲／抓
+    return front ? { x: clamp(shift * 1.4 + (ours ? 0 : ref.x * 0.25), -1, 1), z: side * (ours ? 2.1 : 2.35) } : { x: clamp(shift, -0.8, 0.8), z: side * 4.6 };
   }
   // 防守並排：參考的人那一半（世界座標的正負）
   let refLane = Math.sign(ref.x);

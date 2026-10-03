@@ -863,6 +863,14 @@ export class Match {
       charge = chargeForDepth(GAME.netKill.depth);
       killCap = GAME.netKill.maxSpeed;
     }
+    // 中前場平飛、高度到網子附近的球按「平球」（只點不滑）→ 抓球：搶下來往下壓（雙打前場攔截）
+    let intercept = false;
+    const dnC = Math.abs(contact.z);
+    if (!weak && !killCap && family === 'side' && Math.abs(swing.aimX) < 0.3 && dnC < GAME.intercept.zone && contact.y >= COURT.netTop + GAME.intercept.minY && contact.y - p.pos.y < GAME.highZoneY) {
+      family = 'down';
+      charge = chargeForDepth(GAME.intercept.depth);
+      intercept = true;
+    }
     const attackIn = sh.attack; // 對方送來的球有多好打（不到位的高球、機會球）
     const shot = resolveShot({ side: p.side, contact, family, aimX: swing.aimX, charge, quality, serve: null, jump: p.airborne, kit: p.kit, killCap }, this.rng);
     // 殺不到位的高球更兇
@@ -871,7 +879,7 @@ export class Match {
     let stepDt = shot.stepDt;
     if (weak) stepDt *= 0.85; // 機會球飄比較慢
     stepDt *= 1 + GAME.attackSmashBonus * bonus;
-    const killMul = killCap ? GAME.netKill.speedMul : 1;
+    const killMul = killCap ? GAME.netKill.speedMul : intercept ? GAME.intercept.speedMul : 1;
     stepDt *= killMul;
     swing.contacted = true;
     swing.contactPoint = contact;
@@ -885,7 +893,7 @@ export class Match {
     this.events.push({
       type: 'hit',
       player: p.id,
-      name: chanceSmash ? '機會殺球' : shot.name,
+      name: chanceSmash ? '機會殺球' : intercept ? '抓球' : shot.name,
       speedKmh: Math.round(shot.speedKmh * (1 + GAME.attackSmashBonus * bonus) * killMul),
       pos: contact,
       family,
@@ -1329,7 +1337,7 @@ function autoDepth(family: Family, y: number): number {
 /** 來球有多兇：硬伸手去接的難度 */
 function paceOf(name: string): number {
   if (name === '殺球' || name === '跳殺' || name === '機會殺球') return 1;
-  if (name === '撲球' || name === '跳撲' || name === '下壓') return 0.8;
+  if (name === '撲球' || name === '跳撲' || name === '下壓' || name === '抓球') return 0.8;
   if (name === '平抽' || name === '推球' || name === '平高球') return 0.5;
   return 0;
 }
