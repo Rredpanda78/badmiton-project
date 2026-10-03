@@ -70,11 +70,14 @@ export const GAME = {
     dist: 1.7, // 從靜止撲出的距離（m）
     reachBonus: 0.5, // 身體撲平、手臂和拍子伸直：擊球範圍往撲的方向多出這麼多
     maxY: 1.5, // 撲出去時打得到的最高點
-    down: 0.8, // 趴在地上到爬起來（秒），不能動也不能揮拍
+    down: 0.56, // 趴在地上到爬起來（秒），不能動也不能揮拍
     quality: 0.66, // 自動救球的品質
     depth: 1.3, // 自動救回網前（放網）的深度
   },
   manualReachMul: 1.2, // 手動跑位時玩家的擊球範圍倍率（自動跑位與 AI = 1）
+  // 網前撲球：網前 zone 公尺內、球高於網時按平球（點一下／左右滑）就變撲球
+  netKill: { zone: 2.3, depth: 3.4, maxSpeed: 21, speedMul: 1.35 }, // 比一般撲球快 1.35 倍（約 75 km/h）、初速上限 21 m/s；打向中場，反應得過來還救得到
+  attackSmashBonus: 0.1, // 殺「不到位的高球」最多快這麼多（高遠球越短越好殺，機會球最多）
 
   serveContactY: 0.95,
   pointPause: 1.8,
@@ -134,7 +137,7 @@ export const DEFAULT_SETTINGS: MatchSettings = {
   racket: 'balance',
   autoMove: true,
   autoDive: false,
-  scheme: 'charge',
+  scheme: 'tap',
   venue: 'sakura',
 };
 

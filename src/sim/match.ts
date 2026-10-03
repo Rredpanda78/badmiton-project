@@ -82,6 +82,7 @@ export type MatchEvent =
       vel: Vec3; // 擊出的初速（線上傳給對方）
       stepDt: number;
       wobble: boolean; // 這球是晃動的機會球
+      attack: number; // 這球有多好殺（給接球方的殺球加成）
     }
   | { type: 'whiff'; player: 0 | 1; reason: WhiffReason; airborne: boolean }
   | { type: 'jump'; player: 0 | 1 }
@@ -110,6 +111,7 @@ export interface ShuttleState {
   stepDt: number; // 每 tick 羽球前進的物理時間（球速倍率）
   launchTime: number; // 擊出時的 match.time（prediction 的 t 從這裡算）
   wobble: boolean; // 勉強接回的機會球（會晃、比較慢、適合殺）
+  attack: number; // 這顆球有多好殺（0..1）：高球越短越好殺，機會球 = 1
 }
 
 const clamp = (x: number, a: number, b: number) => Math.max(a, Math.min(b, x));
@@ -153,6 +155,7 @@ export interface RemoteHit {
   jump: boolean;
   dive: boolean;
   wobble: boolean;
+  attack: number;
   netFault: boolean;
   powerShort: boolean;
 }
@@ -201,7 +204,7 @@ export class Match {
       reachMul: 1,
     });
     this.players = [mk(0, 1), mk(1, -1)];
-    this.shuttle = { pos: v3(), vel: v3(), mode: 'held', lastHitter: null, isServe: false, serveBoxSign: 1, prediction: null, stepDt: PHYS.dt, launchTime: 0, wobble: false };
+    this.shuttle = { pos: v3(), vel: v3(), mode: 'held', lastHitter: null, isServe: false, serveBoxSign: 1, prediction: null, stepDt: PHYS.dt, launchTime: 0, wobble: false, attack: 0 };
     if (settings.practice) this.enterDrillIdle();
     else this.setupServe();
   }
@@ -648,6 +651,7 @@ export class Match {
       vel: copy3(shot.vel),
       stepDt: shot.stepDt,
       wobble: false,
+      attack: 0,
     });
     this.phase = 'rally';
     this.phaseT = 0;
@@ -662,6 +666,7 @@ export class Match {
     sh.stepDt = stepDt;
     sh.launchTime = this.time;
     sh.wobble = false;
+    sh.attack = 0;
     sh.prediction = predict(sh.pos, sh.vel, stepDt);
     this.rallyHits++;
     this.hitSerial++;
@@ -757,23 +762,36 @@ export class Match {
       family = 'up';
       charge = clamp(charge, chargeForDepth(3.2), chargeForDepth(4.6));
     }
-    const chanceIn = sh.wobble; // 對方送來的是機會球
-    const shot = resolveShot({ side: p.side, contact, family, aimX: swing.aimX, charge, quality, serve: null, jump: p.airborne, kit: p.kit }, this.rng);
-    const chanceSmash = chanceIn && (shot.name === '殺球' || shot.name === '跳殺');
+    // 網前、球高於網時按平球（點一下／左右滑）→ 撲球：比一般撲球快一點，但打向對方中場、反應得過來還救得到
+    let killCap: number | undefined;
+    if (!weak && family === 'side' && Math.abs(contact.z) < GAME.netKill.zone && contact.y >= COURT.netTop + 0.05) {
+      family = 'down';
+      charge = chargeForDepth(GAME.netKill.depth);
+      killCap = GAME.netKill.maxSpeed;
+    }
+    const attackIn = sh.attack; // 對方送來的球有多好打（不到位的高球、機會球）
+    const shot = resolveShot({ side: p.side, contact, family, aimX: swing.aimX, charge, quality, serve: null, jump: p.airborne, kit: p.kit, killCap }, this.rng);
+    // 殺不到位的高球更兇
+    const bonus = shot.name === '殺球' || shot.name === '跳殺' ? attackIn : 0;
+    const chanceSmash = bonus >= 0.7;
     let stepDt = shot.stepDt;
     if (weak) stepDt *= 0.85; // 機會球飄比較慢
-    if (chanceSmash) stepDt *= 1.06; // 機會殺球更快
+    stepDt *= 1 + GAME.attackSmashBonus * bonus;
+    const killMul = killCap ? GAME.netKill.speedMul : 1;
+    stepDt *= killMul;
     swing.contacted = true;
     swing.contactPoint = contact;
     swing.contactT = swing.t;
     this.launch(p, shot.vel, stepDt, false);
     sh.wobble = weak;
+    // 這顆球有多好打：高球越短越好殺；機會球最好殺
+    sh.attack = weak ? 1 : family === 'up' ? clamp((5.8 - Math.abs(shot.target.z)) / 1.4, 0, 1) : 0;
     if (weak) this.events.push({ type: 'chance', player: p.id === 0 ? 1 : 0 });
     this.events.push({
       type: 'hit',
       player: p.id,
       name: chanceSmash ? '機會殺球' : shot.name,
-      speedKmh: Math.round(shot.speedKmh * (chanceSmash ? 1.06 : 1)),
+      speedKmh: Math.round(shot.speedKmh * (1 + GAME.attackSmashBonus * bonus) * killMul),
       pos: contact,
       family,
       charge,
@@ -787,6 +805,7 @@ export class Match {
       vel: copy3(shot.vel),
       stepDt,
       wobble: weak,
+      attack: sh.attack,
     });
   }
 
@@ -961,6 +980,7 @@ export class Match {
       vel: copy3(shot.vel),
       stepDt: shot.stepDt,
       wobble: false,
+      attack: 0,
     });
     this.phase = 'rally';
     this.phaseT = 0;
@@ -1079,6 +1099,7 @@ export class Match {
     sh.pos = copy3(h.contact);
     this.launch(p, h.vel, h.stepDt, h.serve);
     sh.wobble = h.wobble;
+    sh.attack = h.attack;
     const prev = p.swing;
     const s = this.syntheticSwing(p, h.family, prev && !prev.contacted ? prev.t : GAME.idealContactT, p.airborne);
     s.contacted = true;
@@ -1109,6 +1130,7 @@ export class Match {
       vel: copy3(h.vel),
       stepDt: h.stepDt,
       wobble: h.wobble,
+      attack: h.attack,
     });
     const n = Math.min(36, Math.round(lat / PHYS.dt));
     sh.launchTime -= n * PHYS.dt;

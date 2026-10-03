@@ -428,13 +428,15 @@ function loadSettings(): MatchSettings {
         s.autoMove = true;
         s.autoDive = false;
       }
-      s.settingsVersion = 2;
+      // v3：預設改成點擊滑放
+      if ((s.settingsVersion ?? 1) < 3) s.scheme = 'tap';
+      s.settingsVersion = 3;
       return s;
     }
   } catch {
     /* 私密模式等情況讀不到就用預設 */
   }
-  return { ...DEFAULT_SETTINGS, settingsVersion: 2 };
+  return { ...DEFAULT_SETTINGS, settingsVersion: 3 };
 }
 function saveSettings(): void {
   try {

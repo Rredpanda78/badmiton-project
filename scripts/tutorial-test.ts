@@ -12,11 +12,12 @@ const TAP: Record<string, Flick> = {
   '高遠球（上手）': { x: 0, y: 1, cmd: { family: 'up', depth: 6.0 } },
   '切球（上手）': { x: 0, y: -1, cmd: { family: 'down', depth: 1.5 } },
   平抽: { x: 1, y: 0, cmd: { family: 'side', depth: 5.0 } },
+  '撲球（網前）': { x: 0, y: 0, cmd: { family: 'side', depth: 5.0, soft: true } },
   '殺球（殺球搖桿）': { x: 0, y: -1, cmd: { family: 'down', depth: 'smash' } },
   假殺真切: { x: 0, y: 1, cmd: { family: 'down', depth: 1.4 } },
   跳殺: { x: 0, y: -1, cmd: { family: 'down', depth: 'smash' } },
 };
-const CHARGE_DIR: Record<string, [number, number]> = { '高遠球 ↑': [0, 1], '殺球 ↓': [0, -1], '切球 ↓': [0, -1], '放小球 ↓': [0, -1], '挑球 ↑': [0, 1], '平抽 ← →': [1, 0.05], 跳殺: [0, -1] };
+const CHARGE_DIR: Record<string, [number, number]> = { '撲球（網前）': [1, 0.05], '高遠球 ↑': [0, 1], '殺球 ↓': [0, -1], '切球 ↓': [0, -1], '放小球 ↓': [0, -1], '挑球 ↑': [0, 1], '平抽 ← →': [1, 0.05], 跳殺: [0, -1] };
 
 function run(scheme: ControlScheme, autoMove: boolean): void {
   const m = new Match({ ...DEFAULT_SETTINGS, practice: true, scheme, autoMove }, 7);

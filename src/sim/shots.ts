@@ -35,6 +35,7 @@ export interface ShotRequest {
   serve: null | { boxCenterX: number }; // 發球時對角發球區中心（世界座標 x）
   jump: boolean; // 在空中擊球
   kit?: Kit; // 球員特質＋球拍（沒給就是標準）
+  killCap?: number; // 撲球的初速上限（平球按鍵在網前變撲球時比較快）
 }
 
 export interface ShotResult {
@@ -88,7 +89,12 @@ export function resolveShot(req: ShotRequest, rng: Rng): ShotResult {
 
   const D0 = depthFromCharge(charge);
   const acc = req.kit?.accuracy ?? 1;
-  let D = D0 + rng.gauss() * (0.1 + err * 0.7) * acc;
+  // 擊球時機（品質）直接影響球質：完美的深球貼底線、小球貼網；時機差則深球變短、小球離網遠又高
+  const qp = req.serve ? 1 : Math.max(0, Math.min(1, (quality - 0.6) / 0.33));
+  let Dm = D0;
+  if (!req.serve && family !== 'down' && D0 >= 4.5) Dm = D0 - (1 - qp) * 1.5;
+  else if (!req.serve && D0 < 2.6 && D0 >= NET_FAULT_DEPTH) Dm = D0 + (1 - qp) * 1.1;
+  let D = Dm + rng.gauss() * (0.1 + err * 0.7) * acc;
   // 發球：在對角發球區內左右微調；一般擊球：左右分量決定落點
   const tx = req.serve
     ? req.serve.boxCenterX + side * req.aimX * 1.0 + rng.gauss() * 0.1
@@ -118,7 +124,9 @@ export function resolveShot(req: ShotRequest, rng: Rng): ShotResult {
   // 球員／球拍的球速加成：同一條軌跡跑更快
   // 發球不吃球速加成（避免平快發球被推壓手濫用）
   const kitMul = req.serve ? 1 : (req.kit?.speed[shotGroup(name)] ?? 1);
-  const dt = PHYS.dt * kitMul * (name === '跳殺' ? GAME.jump.smashBallMul : (SPEED_BY_NAME[name] ?? GAME.ballSpeedMul));
+  // 時機好的殺球、平抽更快
+  const qSpeed = name === '殺球' || name === '跳殺' || name === '下壓' ? 0.88 + 0.12 * qp : family === 'side' ? 0.9 + 0.1 * qp : 1;
+  const dt = PHYS.dt * kitMul * qSpeed * (name === '跳殺' ? GAME.jump.smashBallMul : (SPEED_BY_NAME[name] ?? GAME.ballSpeedMul));
 
   let th: number;
   let v: number;
@@ -135,16 +143,18 @@ export function resolveShot(req: ShotRequest, rng: Rng): ShotResult {
     ({ th, v } = solveCrossing(netY + clear, y0, L, sNet, -20 * DEG, 45 * DEG, dt));
     ({ th, v } = capSpeed(th, v, GAME.smashMaxSpeed / kitMul, y0, L, sNet, dt));
   } else {
-    ({ th, v } = solveCrossing(netY + 0.1, y0, L, sNet, -35 * DEG, 75 * DEG, dt));
+    // 小球：時機好的貼網過（低），時機差的飄高
+    const netClear = D < 2.6 ? 0.06 + (1 - qp) * 0.35 : 0.1;
+    ({ th, v } = solveCrossing(netY + netClear, y0, L, sNet, -35 * DEG, 75 * DEG, dt));
     // 上限要除以球速加成：加成是讓球「跑更快」，實際速度仍不能超過上限
-    const cap = name === '撲球' || name === '跳撲' ? GAME.killMaxSpeed : name === '跳殺' ? GAME.jump.smashMaxSpeed : GAME.smashMaxSpeed;
+    const cap = name === '撲球' || name === '跳撲' ? (req.killCap ?? GAME.killMaxSpeed) : name === '跳殺' ? GAME.jump.smashMaxSpeed : GAME.smashMaxSpeed;
     ({ th, v } = capSpeed(th, v, cap / kitMul, y0, L, sNet, dt));
   }
 
   const vh = v * Math.cos(th);
   const vel = v3(ux * vh, v * Math.sin(th), uz * vh);
   const powerShort = netFault && D0 < NET_FAULT_DEPTH + 0.3;
-  return { vel, name, family, target, speedKmh: Math.round(v * 3.6 * kitMul), netFault, powerShort, stepDt: dt };
+  return { vel, name, family, target, speedKmh: Math.round(v * 3.6 * kitMul * qSpeed), netFault, powerShort, stepDt: dt };
 }
 
 /** 初速超過上限時，把角度往 thTo 調（壓球往上抬、挑球往下壓到較省力的角度）直到初速降到上限內 */

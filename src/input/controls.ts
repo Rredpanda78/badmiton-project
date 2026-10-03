@@ -285,7 +285,7 @@ export class LocalControls {
     const nx = dx / Math.hypot(dx, dy);
     if (dy < 0 && Math.abs(nx) < 0.77) {
       // 往上 = 假殺球、真切球
-      this.pendingFlick = { x: dx, y: -dy, cmd: { family: 'down', depth: 1.4 } };
+      this.pendingFlick = { x: dx, y: -dy, cmd: { family: 'down', depth: 1.2 } };
     } else {
       // 往下或左右 = 殺球，左右分量瞄準
       this.pendingFlick = { x: dx, y: -Math.max(Math.abs(dy), 8), cmd: { family: 'down', depth: 'smash' } };
@@ -550,6 +550,6 @@ function mk(parent: HTMLElement, cls: string): HTMLElement {
 function tapShot(x: number, y: number, over: boolean): Flick {
   const nx = x / (Math.hypot(x, y) || 1);
   if (Math.abs(nx) >= 0.77) return { x, y, cmd: { family: 'side', depth: 5.0 } };
-  if (y > 0) return { x, y, cmd: { family: 'up', depth: over ? 6.0 : 5.7 } };
-  return { x, y, cmd: { family: 'down', depth: over ? 1.5 : 1.0 } };
+  if (y > 0) return { x, y, cmd: { family: 'up', depth: over ? 6.3 : 6.1 } };
+  return { x, y, cmd: { family: 'down', depth: over ? 1.2 : 0.9 } };
 }

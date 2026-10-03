@@ -59,6 +59,7 @@ export class OnlineSync {
         j: e.jump,
         d: e.dive,
         w: e.wobble,
+        ab: e.attack,
         nf: e.netFault,
         ps: e.powerShort,
       });
@@ -108,6 +109,7 @@ export class OnlineSync {
             jump: msg.j,
             dive: msg.d,
             wobble: msg.w,
+            attack: msg.ab ?? 0,
             netFault: msg.nf,
             powerShort: msg.ps,
           },

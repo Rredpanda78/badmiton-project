@@ -46,6 +46,8 @@ export interface TutUI {
 const HIGH = (depth: number): FeedSpec => ({ from: { x: 0, y: 0.9, z: -2.0 }, family: 'up', depth, aimX: 0.12, playerAt: { x: 0, z: 3.7 } });
 const NET: FeedSpec = { from: { x: 0, y: 1.0, z: -1.6 }, family: 'down', depth: 1.6, aimX: 0.08, playerAt: { x: 0, z: 2.4 } };
 const DRIVE: FeedSpec = { from: { x: 0, y: 1.3, z: -3.6 }, family: 'side', depth: 4.0, aimX: 0.3, playerAt: { x: 0, z: 3.6 } };
+// 撲球：對面把小球放太高，球在網前、高於網
+const NETPOP: FeedSpec = { from: { x: 0, y: 1.0, z: -1.2 }, family: 'up', depth: 1.9, aimX: 0.08, playerAt: { x: 0, z: 1.9 } };
 // 魚躍：殺到右邊邊線，人站在中間偏左，跑不到
 const WIDE: FeedSpec = { from: { x: 1.0, y: 2.6, z: -4.2 }, family: 'down', depth: 3.7, aimX: -0.95, playerAt: { x: -0.8, z: 3.8 } }; // aimX 是發球機自己的視角：負 = 玩家的右邊
 
@@ -104,6 +106,7 @@ export function buildTutorial(scheme: ControlScheme, autoMove: boolean): TutStep
     s.push(shot('放小球 ↓', '球打到網前、比網子低的時候：按住一下下（剛進綠色），<b>往下划</b> = 放網。', NET, '↓ 往下划！', [0.6, 2.3], is('放網', '推球', '切球'), '輕輕按一下就好，往下划'));
     s.push(shot('挑球 ↑', '網前的球也可以蓄力到綠色後<b>往上划</b>，把球挑到對面後場。', NET, '↑ 往上划！', [4.0, 6.5], is('挑球', '高遠球', '平高球'), '要往上划（蓄力到綠色）'));
     s.push(shot('平抽 ← →', '球平平飛到胸口高度時，蓄力到綠色，<b>往左或往右划</b> = 平抽。斜著划可以控制方向。', DRIVE, '← → 往左或往右划！', [3.0, 6.5], is('平抽', '平高球'), '要往左或往右划'));
+    s.push(shot('撲球（網前）', '對手的小球放太高、球在網前<b>比網子高</b>時：<b>往左或往右划</b>就會變成撲球，又快又往下壓。', NETPOP, '← → 往左或往右划！', [0.6, 6.5], is('撲球', '跳撲'), '球在網前比網高的時候往左右划'));
     s.push({
       ...shot('跳殺', '<b>點一下再按住</b>（連按兩下，圈變青色），球快到時會自動起跳；跳起來後<b>往下划</b>。', HIGH(4.4), '↓ 在空中往下划！', [3.0, 5.6], is('跳殺', '跳撲'), '要在球來之前「點一下再按住」才會起跳'),
       freeze: 'jump',
@@ -130,6 +133,7 @@ export function buildTutorial(scheme: ControlScheme, autoMove: boolean): TutStep
     s.push(shot('高遠球（上手）', '高球用<b>上手</b>：<b>點兩下按住</b> → 往上滑放開 = 高遠球。', HIGH(5.2), '點兩下按住 → ↑ 往上滑放開', is('高遠球', '平高球'), '要點兩下再按住，往上滑放開'));
     s.push(shot('切球（上手）', '<b>點兩下按住</b> → 往下滑放開 = 切球。', HIGH(4.2), '點兩下按住 → ↓ 往下滑放開', is('切球'), '要點兩下再按住，往下滑放開'));
     s.push(shot('平抽', '<b>左右滑</b>放開 = 平抽；球到身邊時<b>只點一下</b> = 平球。', DRIVE, '← → 左右滑放開（或只點一下）', is('平抽', '平高球'), '往左或往右滑再放開'));
+    s.push(shot('撲球（網前）', '對手的小球放太高、球在網前<b>比網子高</b>時：<b>只點一下</b>（平球）就會變成撲球，又快又往下壓。', NETPOP, '點一下！', is('撲球', '跳撲'), '球在網前比網高的時候點一下'));
     s.push(shot('殺球（殺球搖桿）', '右上方的<b>「殺」搖桿</b>：往下滑放開 = 殺球，往左右滑可以瞄準。', HIGH(4.2), '「殺」搖桿 ↓ 往下滑放開', SMASHES, '用「殺」搖桿往下滑放開', 'smash'));
     s.push(shot('假殺真切', '「殺」搖桿<b>往上滑</b>放開 = 假裝要殺、其實切球。', HIGH(4.2), '「殺」搖桿 ↑ 往上滑放開', is('切球'), '用「殺」搖桿往上滑放開', 'smash'));
     s.push({

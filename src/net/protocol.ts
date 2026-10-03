@@ -3,7 +3,7 @@ import type { Family } from '../sim/shots';
 import type { HitGrade } from '../sim/match';
 
 /** 兩邊版本不同就不能一起玩（改了訊息格式或物理就 +1） */
-export const PROTOCOL = 1;
+export const PROTOCOL = 2;
 
 type V3 = [number, number, number];
 
@@ -44,6 +44,7 @@ export type PeerMsg =
       j: boolean;
       d: boolean;
       w: boolean;
+      ab: number; // 這球有多好殺
       nf: boolean;
       ps: boolean;
     }
