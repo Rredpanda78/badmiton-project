@@ -49,7 +49,15 @@ export const GAME = {
 
   // 移動
   moveSpeed: 6.4,
-  moveAccel: 42,
+  moveAccel: 24, // 起步加速度（有慣性：從站定到全速約 0.27 秒）
+  moveBrake: 40, // 煞車／轉向比起步快（跨步煞停），但還是要時間
+  moveDirMul: { back: 0.86, side: 0.95 }, // 往後退（離網）、橫移的最高速倍率（往前衝 = 1）
+  // 被調動：對手擊球後要跑多遠、時間夠不夠。餘裕 = 經過時間 − 反應 − 最快跑到擊球點的時間；
+  // 餘裕 < easy 開始扣球質，少 span 秒扣到最多 penalty（大對角、到位的切球讓對手來不及站穩）
+  pressure: { reaction: 0.18, comfy: 0.7, easy: 0.25, span: 0.35, penalty: 0.3, backhandRear: 0.15 },
+  // 接快球：擊球當下來球（換算成球速倍率後）比 from m/s 快越多越難回好球，span 後到最大；
+  // 依回球種類扣：side = 反抽、up = 挑、down = 擋網；完美時機的寬度也跟著變窄 window
+  heat: { from: 10.5, span: 6, side: 0.45, up: 0.25, down: 0.2, window: 0.35 },
   chargeMoveMul: 0.65,
   swingMoveMul: 0.5,
 

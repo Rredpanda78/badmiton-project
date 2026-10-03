@@ -116,6 +116,7 @@ function idleState(): PlayerState {
     dive: null,
     downT: 0,
     reachMul: 1,
+    chase: null,
   };
 }
 

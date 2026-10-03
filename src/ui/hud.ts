@@ -46,7 +46,9 @@ export class Hud {
         const graded = mine && !e.netFault && !e.serve;
         const tag = e.timing !== undefined && e.timingFlat ? timingLabel(e.timing, e.timingFlat) : e.grade;
         const cls = e.jump ? 'jump' : mine ? (graded && tag === '完美' ? 'me perfect' : graded && (tag === '過早' || tag === '過晚') ? 'me off' : 'me') : mate ? 'mate' : 'opp';
-        this.float(graded ? `${txt} · ${tag}` : txt, at.x, at.y, cls);
+        // 時機再好、被調動或來球太快也打不出好球：告訴玩家為什麼
+        const why = (e.pressure ?? 0) >= 0.45 ? '被調動' : (e.heat ?? 0) >= 0.5 ? '來球太快' : '';
+        this.float(graded ? `${txt} · ${tag}${why ? `（${why}）` : ''}` : txt, at.x, at.y, cls);
         break;
       }
       case 'whiff':
