@@ -96,7 +96,7 @@ export function timeForCharge(c: number): number {
 /** charge = 按住蓄力＋划動；tap = 點一下下手／點兩下上手＋滑動、放開出拍，殺球鍵 */
 export type ControlScheme = 'charge' | 'tap';
 
-export type Venue = 'indoor' | 'bamboo' | 'sakura' | 'night';
+export type Venue = 'indoor' | 'bamboo' | 'sakura' | 'night' | 'market' | 'paddy' | 'beach';
 
 export type Difficulty = 'easy' | 'normal' | 'hard';
 

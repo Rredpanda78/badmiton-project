@@ -199,7 +199,7 @@ export class GameRenderer {
     this.target.scale.set(Math.abs(t.x1 - t.x0), Math.abs(t.z1 - t.z0), 1);
   }
 
-  /** 換場地（室內／竹林／櫻花園） */
+  /** 換場地（見 environment.ts 的 VENUE_IDS）；舊場地的幾何、材質、貼圖整個釋放 */
   setVenue(v: Venue): void {
     if (v === this.venue) return;
     this.venue = v;

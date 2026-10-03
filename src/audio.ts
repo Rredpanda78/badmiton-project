@@ -325,8 +325,32 @@ export const ambience = {
       this.bed(650, 0.7, 0.12, 0.08, 150); // 觀眾席的嗡嗡人聲
       this.every(6, 14, () => noise({ dur: 0.08, freq: 1800, q: 2, gain: 0.03, bus: ambBus, rev: 0.8 }));
     }
-    // 室內殘響大、戶外小
-    reverbSend.gain.setTargetAtTime(v === 'indoor' ? 0.32 : 0.12, ctx.currentTime, 0.3);
+    if (v === 'market') {
+      this.babble(); // 人聲嘈雜
+      this.every(4, 10, () => this.vendorCall()); // 遠處攤販的吆喝
+      this.every(2, 6, () => (Math.random() < 0.7 ? this.clatter() : this.chop())); // 碗盤碰撞／剁肉
+      this.every(16, 32, () => this.scooterPass()); // 偶爾騎過去的機車
+    }
+    if (v === 'paddy') {
+      this.bed(380, 0.5, 0.09, 0.07, 120); // 田野上的微風
+      this.insects();
+      this.every(0.35, 1.2, () => {
+        // 青蛙：此起彼落，偶爾有一隻跟著回應
+        this.croak(0);
+        if (Math.random() < 0.3) this.croak(0.15 + Math.random() * 0.35);
+      });
+      this.birds(0.35);
+    }
+    if (v === 'beach') {
+      this.surf(); // 一波一波的浪
+      this.bed(320, 0.5, 0.05, 0.05, 90); // 海風
+      this.every(5, 13, () => {
+        this.gull(0);
+        if (Math.random() < 0.35) this.gull(0.6 + Math.random() * 0.8);
+      });
+    }
+    // 室內殘響大、戶外小（市場四周有店面，稍微多一點）
+    reverbSend.gain.setTargetAtTime(v === 'indoor' ? 0.32 : v === 'market' ? 0.16 : 0.12, ctx.currentTime, 0.3);
   },
 
   stop() {
@@ -344,11 +368,268 @@ export const ambience = {
   },
 
   every(min: number, max: number, fn: () => void) {
-    const loop = () => {
+    this.loop(Math.random() * max, () => {
       fn();
-      this.timers.push(window.setTimeout(loop, (min + Math.random() * (max - min)) * 1000));
+      return min + Math.random() * (max - min);
+    });
+  },
+
+  /** 重複執行；fn 回傳下一次要隔幾秒。每個循環只佔 timers 裡的一格（不會越積越多） */
+  loop(first: number, fn: () => number) {
+    const i = this.timers.length;
+    const run = () => {
+      this.timers[i] = window.setTimeout(run, fn() * 1000);
     };
-    this.timers.push(window.setTimeout(loop, Math.random() * max * 1000));
+    this.timers.push(window.setTimeout(run, first * 1000));
+  },
+
+  /** 一個持續播放的雜訊來源（給環境音用；記下來，換場地時停掉） */
+  noiseSrc(rate = 1): AudioBufferSourceNode {
+    const src = ctx!.createBufferSource();
+    src.buffer = noiseBuf;
+    src.loop = true;
+    src.playbackRate.value = rate;
+    src.start(0, Math.random() * 1.9);
+    this.nodes.push(src);
+    return src;
+  },
+
+  /**
+   * 市場的人聲嘈雜：4 個帶通雜訊「聲部」（像母音的共振峰），音量各自被一條很慢的雜訊開開合合（像一個個音節），
+   * 共振峰位置也慢慢飄。
+   */
+  babble() {
+    const c = ctx!;
+    const voices: [number, number, number, number][] = [
+      // 中心頻率、Q、音量、調變雜訊的播放速度（不同速度 → 不會聽出 2 秒循環）
+      [430, 2.2, 0.2, 0.37],
+      [800, 2.6, 0.18, 0.53],
+      [1300, 3.0, 0.14, 0.71],
+      [2400, 3.5, 0.08, 0.29],
+    ];
+    for (const [f, q, gain, rate] of voices) {
+      const bp = c.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = f;
+      bp.Q.value = q;
+      const amp = c.createGain();
+      amp.gain.value = gain * 0.25;
+      // 音節：低通到 6 Hz 的雜訊（約 ±0.01）放大後加到音量上
+      const lp = c.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = 6;
+      const depth = c.createGain();
+      depth.gain.value = gain * 100;
+      this.noiseSrc(rate).connect(lp).connect(depth).connect(amp.gain);
+      // 共振峰慢慢飄
+      const drift = c.createOscillator();
+      drift.frequency.value = 0.25 + Math.random() * 0.5;
+      const dd = c.createGain();
+      dd.gain.value = f * 0.22;
+      drift.connect(dd).connect(bp.frequency);
+      drift.start();
+      this.nodes.push(drift);
+      this.noiseSrc().connect(bp).connect(amp).connect(ambBus);
+    }
+  },
+
+  /** 遠處攤販吆喝：2–4 個有音高起伏的音節（鋸齒波＋共振峰帶通），最後一個拉長往下掉；很小聲、帶殘響 */
+  vendorCall() {
+    const c = ctx!;
+    const n = 2 + Math.floor(Math.random() * 3);
+    const pitch = 210 + Math.random() * 170;
+    const formant = 750 + Math.random() * 650;
+    let t = c.currentTime + 0.05;
+    for (let i = 0; i < n; i++) {
+      const last = i === n - 1;
+      const dur = last ? 0.35 + Math.random() * 0.2 : 0.13 + Math.random() * 0.15;
+      const f0 = pitch * (0.92 + Math.random() * 0.3);
+      const osc = c.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(f0, t);
+      osc.frequency.linearRampToValueAtTime(last ? f0 * 0.74 : f0 * (0.95 + Math.random() * 0.15), t + dur);
+      const bp = c.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = formant * (0.9 + Math.random() * 0.2);
+      bp.Q.value = 2.5;
+      const g = c.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(0.03, t + 0.03);
+      g.gain.setValueAtTime(0.03, t + dur * 0.7);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      const send = c.createGain();
+      send.gain.value = 0.6;
+      osc.connect(bp).connect(g).connect(ambBus);
+      g.connect(send).connect(reverbSend);
+      osc.start(t);
+      osc.stop(t + dur + 0.05);
+      t += dur + 0.03 + Math.random() * 0.07;
+    }
+  },
+
+  /** 碗盤、鐵鍋碰撞的「叮噹」 */
+  clatter() {
+    const n = 2 + Math.floor(Math.random() * 3);
+    let d = 0;
+    for (let i = 0; i < n; i++) {
+      const f = 2300 + Math.random() * 2200;
+      tone({ freq: f, to: f * 0.985, dur: 0.07 + Math.random() * 0.09, gain: 0.01 + Math.random() * 0.01, delay: d, bus: ambBus, rev: 0.4 });
+      noise({ dur: 0.025, freq: f * 0.8, q: 5, gain: 0.025, delay: d, bus: ambBus, rev: 0.3 });
+      d += 0.05 + Math.random() * 0.12;
+    }
+  },
+
+  /** 菜刀剁在砧板上：幾下悶悶的「咚」 */
+  chop() {
+    const n = 3 + Math.floor(Math.random() * 4);
+    for (let i = 0; i < n; i++) noise({ dur: 0.05, freq: 420 + Math.random() * 120, q: 1.4, gain: 0.07, delay: i * (0.17 + Math.random() * 0.05), bus: ambBus, rev: 0.25 });
+  },
+
+  /** 遠處騎過去的機車：低沉的鋸齒波，先變大聲再變小、音高往下掉（像都卜勒效應） */
+  scooterPass() {
+    const c = ctx!;
+    const t = c.currentTime + 0.05;
+    const D = 2.8 + Math.random() * 1.2;
+    const f = 80 + Math.random() * 25;
+    const osc = c.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(f, t);
+    osc.frequency.linearRampToValueAtTime(f * 1.06, t + D * 0.45);
+    osc.frequency.linearRampToValueAtTime(f * 0.82, t + D);
+    const lp = c.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 480;
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.03, t + D * 0.5);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + D);
+    osc.connect(lp).connect(g).connect(ambBus);
+    osc.start(t);
+    osc.stop(t + D + 0.05);
+  },
+
+  /** 白天的蟲鳴：高頻帶通雜訊被 30 Hz 左右快速開合（嗡嗡的顫音），整體再很慢地一陣大一陣小 */
+  insects() {
+    const c = ctx!;
+    const bp = c.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 4700;
+    bp.Q.value = 5;
+    const amp = c.createGain();
+    amp.gain.value = 0.03;
+    const buzz = c.createOscillator();
+    buzz.frequency.value = 31;
+    const bd = c.createGain();
+    bd.gain.value = 0.026;
+    buzz.connect(bd).connect(amp.gain);
+    const out = c.createGain();
+    out.gain.value = 0.6;
+    const swell = c.createOscillator();
+    swell.frequency.value = 0.07;
+    const sd = c.createGain();
+    sd.gain.value = 0.4;
+    swell.connect(sd).connect(out.gain);
+    this.noiseSrc().connect(bp).connect(amp).connect(out).connect(ambBus);
+    buzz.start();
+    swell.start();
+    this.nodes.push(buzz, swell);
+  },
+
+  /** 青蛙：2–3 下短促的方波脈衝（經過帶通變得「呱呱」的），音高往下掉一點 */
+  croak(delay: number) {
+    const c = ctx!;
+    const f = 230 + Math.random() * 260;
+    const n = 2 + Math.floor(Math.random() * 2);
+    const gap = 0.06 + Math.random() * 0.035;
+    const t0 = c.currentTime + 0.02 + delay;
+    const vol = 0.018 + Math.random() * 0.017;
+    const osc = c.createOscillator();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(f, t0);
+    osc.frequency.linearRampToValueAtTime(f * 0.85, t0 + n * gap);
+    const bp = c.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = f * 2.4;
+    bp.Q.value = 3;
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.0001, t0);
+    for (let i = 0; i < n; i++) {
+      const t = t0 + i * gap;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(vol, t + 0.008);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + gap * 0.75);
+    }
+    osc.connect(bp).connect(g).connect(ambBus);
+    osc.start(t0);
+    osc.stop(t0 + n * gap + 0.05);
+  },
+
+  /**
+   * 海浪：低通雜訊（浪的轟聲）＋帶通雜訊（退潮時沙沙的水聲）。每 6–9 秒一波：
+   * 湧過來時慢慢變大聲、變亮 → 拍岸最大聲 → 退回去時轟聲變小、沙沙聲出來再淡掉。
+   */
+  surf() {
+    const c = ctx!;
+    const lp = c.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 450;
+    lp.Q.value = 0.5;
+    const roar = c.createGain();
+    roar.gain.value = 0.04;
+    this.noiseSrc().connect(lp).connect(roar).connect(ambBus);
+    const bp = c.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 2600;
+    bp.Q.value = 0.6;
+    const hiss = c.createGain();
+    hiss.gain.value = 0.0001;
+    this.noiseSrc(0.83).connect(bp).connect(hiss).connect(ambBus);
+    this.loop(0.3, () => {
+      const D = 6 + Math.random() * 3;
+      const t = c.currentTime;
+      const peak = 0.11 + Math.random() * 0.06;
+      roar.gain.setTargetAtTime(peak * 0.45, t, D * 0.15);
+      lp.frequency.setTargetAtTime(700, t, D * 0.15);
+      roar.gain.setTargetAtTime(peak, t + D * 0.38, 0.12);
+      lp.frequency.setTargetAtTime(2000 + Math.random() * 600, t + D * 0.38, 0.1);
+      roar.gain.setTargetAtTime(0.035, t + D * 0.48, D * 0.16);
+      lp.frequency.setTargetAtTime(420, t + D * 0.48, D * 0.2);
+      hiss.gain.setTargetAtTime(0.045 + Math.random() * 0.025, t + D * 0.42, 0.25);
+      hiss.gain.setTargetAtTime(0.0001, t + D * 0.6, D * 0.12);
+      return D;
+    });
+  },
+
+  /** 海鷗：「ㄎㄧ—歐」一聲聲，音高先往上衝再往下滑 */
+  gull(delay: number) {
+    const c = ctx!;
+    const n = 2 + Math.floor(Math.random() * 3);
+    const base = 950 + Math.random() * 500;
+    let t = c.currentTime + 0.02 + delay;
+    for (let i = 0; i < n; i++) {
+      const dur = 0.22 + Math.random() * 0.12;
+      const osc = c.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(base * 0.9, t);
+      osc.frequency.linearRampToValueAtTime(base * 1.45, t + 0.05);
+      osc.frequency.exponentialRampToValueAtTime(base * 0.75, t + dur);
+      const bp = c.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 1900;
+      bp.Q.value = 1.6;
+      const g = c.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(0.022, t + 0.02);
+      g.gain.setValueAtTime(0.022, t + dur * 0.5);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      const send = c.createGain();
+      send.gain.value = 0.3;
+      osc.connect(bp).connect(g).connect(ambBus);
+      g.connect(send).connect(reverbSend);
+      osc.start(t);
+      osc.stop(t + dur + 0.05);
+      t += dur + 0.1 + Math.random() * 0.12;
+    }
   },
 
   /** 持續的濾波雜訊（風、人聲嗡嗡），濾波頻率慢慢晃 */

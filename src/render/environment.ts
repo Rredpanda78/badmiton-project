@@ -19,11 +19,14 @@ import {
   Wind,
   type Blob,
 } from './envKit';
+import { beach } from './beach';
+import { market } from './market';
 import { nightGarden } from './nightGarden';
+import { paddy } from './paddy';
 
 export { hedgeRow } from './envKit';
 
-/** 場地外的場景：室內球館／竹林／櫻花園／夜櫻。全部程序產生，不用外部素材。 */
+/** 場地外的場景：室內球館／竹林／櫻花園／夜櫻／市場／稻田／海灘。全部程序產生，不用外部素材。 */
 export interface Environment {
   group: THREE.Group;
   background: number;
@@ -34,8 +37,8 @@ export interface Environment {
   update(dt: number): void;
 }
 
-/** buildVenue 認得的場地（'night' = 夜櫻庭園） */
-export const VENUE_IDS = ['indoor', 'bamboo', 'sakura', 'night'] as const;
+/** buildVenue 認得的場地（'night' = 夜櫻庭園、'paddy' = 稻田） */
+export const VENUE_IDS = ['indoor', 'bamboo', 'sakura', 'night', 'market', 'paddy', 'beach'] as const;
 export type VenueId = (typeof VENUE_IDS)[number];
 
 function indoor(): Environment {
@@ -183,12 +186,15 @@ function sakura(): Environment {
 }
 
 /**
- * 依名稱建場地：'indoor' | 'bamboo' | 'sakura' | 'night'（夜櫻）。
+ * 依名稱建場地：'indoor' | 'bamboo' | 'sakura' | 'night'（夜櫻）| 'market' | 'paddy'（稻田）| 'beach'。
  * 不認得的名稱一律退回室內。
  */
 export function buildVenue(v: string): Environment {
   if (v === 'bamboo') return bamboo();
   if (v === 'sakura') return sakura();
   if (v === 'night') return nightGarden();
+  if (v === 'market') return market();
+  if (v === 'paddy') return paddy();
+  if (v === 'beach') return beach();
   return indoor();
 }

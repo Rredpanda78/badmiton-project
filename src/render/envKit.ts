@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { merge } from './geo';
+import { merge, paint } from './geo';
 
 /**
  * 場景共用小工具：可重現的亂數、程序貼圖、風（樹梢搖擺＋陣風）、樹影、飄落花瓣、石燈籠。
@@ -69,7 +69,7 @@ export function disposeWith(mat: THREE.Material, ...extra: { dispose(): void }[]
 }
 
 // ---------- 程序貼圖 ----------
-function canvasTexture(w: number, h: number, draw: (g: CanvasRenderingContext2D) => void): THREE.CanvasTexture {
+export function canvasTexture(w: number, h: number, draw: (g: CanvasRenderingContext2D) => void): THREE.CanvasTexture {
   const c = document.createElement('canvas');
   c.width = w;
   c.height = h;
@@ -519,4 +519,184 @@ export function hedgeRow(colors: number[], z0: number, seedN: number, wind?: Win
     mesh.setColorAt(i, c.set(colors[i % colors.length]));
   }
   return mesh;
+}
+
+// ---------- 合併靜態零件（一整個場地的道具 = 1 個 draw call）----------
+const _mat4 = new THREE.Matrix4();
+const _eul = new THREE.Euler();
+const _vec = new THREE.Vector3();
+const _fc = new THREE.Color();
+
+/** 轉成非索引、拿掉 uv、塗單色：任何形狀的零件都能 merge 在一起 */
+export function solid(geo: THREE.BufferGeometry, hex: number): THREE.BufferGeometry {
+  const g = geo.index ? geo.toNonIndexed() : geo;
+  if (g !== geo) geo.dispose();
+  if (g.getAttribute('uv')) g.deleteAttribute('uv');
+  if (g.getAttribute('uv1')) g.deleteAttribute('uv1');
+  return paint(g, hex);
+}
+
+/** 依每個三角形的中心點（零件自己的座標）決定顏色：條紋遮陽棚、彩色洋傘、海灘球 */
+export function paintFaces(geo: THREE.BufferGeometry, fn: (x: number, y: number, z: number) => number): THREE.BufferGeometry {
+  const g = solid(geo, 0xffffff);
+  const p = g.attributes.position;
+  const c = g.attributes.color;
+  for (let i = 0; i + 2 < p.count; i += 3) {
+    const x = (p.getX(i) + p.getX(i + 1) + p.getX(i + 2)) / 3;
+    const y = (p.getY(i) + p.getY(i + 1) + p.getY(i + 2)) / 3;
+    const z = (p.getZ(i) + p.getZ(i + 1) + p.getZ(i + 2)) / 3;
+    _fc.set(fn(x, y, z));
+    for (let k = 0; k < 3; k++) c.setXYZ(i + k, _fc.r, _fc.g, _fc.b);
+  }
+  return g;
+}
+
+/**
+ * 靜態道具收集器：at() 設定目前的擺放座標系（位置＋繞 Y 轉），之後加的零件都放進這個座標系；
+ * build() 把全部零件合併成一個頂點色幾何。
+ */
+export class Parts {
+  private readonly list: THREE.BufferGeometry[] = [];
+  private readonly frame = new THREE.Matrix4();
+
+  at(x: number, z: number, ry = 0, y = 0, s = 1): this {
+    this.frame.makeRotationY(ry).scale(_vec.set(s, s, s)).setPosition(x, y, z);
+    return this;
+  }
+  /** 已經上好色（solid / paintFaces）的零件 */
+  raw(g: THREE.BufferGeometry): THREE.BufferGeometry {
+    g.applyMatrix4(this.frame);
+    this.list.push(g);
+    return g;
+  }
+  add(geo: THREE.BufferGeometry, color: number): THREE.BufferGeometry {
+    return this.raw(solid(geo, color));
+  }
+  /** 盒子：先依 rx/ry/rz 旋轉、再移到 (x, y, z) */
+  box(w: number, h: number, d: number, x: number, y: number, z: number, color: number, rx = 0, ry = 0, rz = 0): THREE.BufferGeometry {
+    const g = new THREE.BoxGeometry(w, h, d);
+    if (rx || ry || rz) g.applyMatrix4(_mat4.makeRotationFromEuler(_eul.set(rx, ry, rz)));
+    return this.add(g.translate(x, y, z), color);
+  }
+  /** 直立圓柱（seg 邊形），底部在 y */
+  cyl(rTop: number, rBot: number, h: number, seg: number, x: number, y: number, z: number, color: number): THREE.BufferGeometry {
+    return this.add(new THREE.CylinderGeometry(rTop, rBot, h, seg).translate(x, y + h / 2, z), color);
+  }
+  /** 低面數圓球（可壓扁） */
+  ball(r: number, x: number, y: number, z: number, color: number, sx = 1, sy = 1, sz = 1, detail = 1): THREE.BufferGeometry {
+    return this.add(new THREE.IcosahedronGeometry(r, detail).scale(sx, sy, sz).translate(x, y, z), color);
+  }
+  get count(): number {
+    return this.list.length;
+  }
+  build(): THREE.BufferGeometry {
+    return merge(this.list.splice(0));
+  }
+}
+
+// ---------- shader 用的雜訊（沒有 sin，手機上精度比較穩）----------
+export const GLSL_NOISE = /* glsl */ `
+float kHash( vec2 p ) {
+	p = fract( p * vec2( 123.34, 456.21 ) );
+	p += dot( p, p + 45.32 );
+	return fract( p.x * p.y );
+}
+float kNoise( vec2 p ) {
+	vec2 i = floor( p );
+	vec2 f = fract( p );
+	vec2 u = f * f * ( 3.0 - 2.0 * f );
+	return mix( mix( kHash( i ), kHash( i + vec2( 1.0, 0.0 ) ), u.x ), mix( kHash( i + vec2( 0.0, 1.0 ) ), kHash( i + vec2( 1.0, 1.0 ) ), u.x ), u.y );
+}
+`;
+
+// ---------- 飛鳥（海鷗、白鷺）----------
+export interface BirdPath {
+  cx: number; // 繞圈中心
+  cz: number;
+  r: number; // 半徑
+  y: number; // 高度
+  speed: number; // 公尺／秒
+  dir: 1 | -1; // 繞圈方向
+  phase: number;
+}
+
+/**
+ * 一群繞圈滑翔的鳥：一個 InstancedMesh（1 個 draw call）。
+ * 拍翅膀在 vertex shader 裡做（離身體越遠的頂點上下擺越多），一下拍、一下滑翔；每幀只更新幾個 instance 矩陣。
+ */
+export function flyingBirds(
+  paths: BirdPath[],
+  colors: { body: number; wing: number; tip: number; beak: number },
+  span: number,
+  wind: Wind,
+): { mesh: THREE.InstancedMesh; update(): void } {
+  // 鳥的座標：往 +z 飛、翅膀沿 x 展開，翼展 = 1（之後整個縮放成 span）
+  const wing = (s: 1 | -1): THREE.BufferGeometry[] => {
+    const rf = [0.03 * s, 0, 0.07];
+    const rb = [0.03 * s, 0, -0.08];
+    const ef = [0.25 * s, 0.03, 0.05];
+    const eb = [0.25 * s, 0.03, -0.09];
+    const tip = [0.5 * s, 0, -0.13];
+    const tri = (pts: number[][], color: number) => {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pts.flat(), 3));
+      g.computeVertexNormals();
+      return paint(g, color);
+    };
+    return [tri([rf, ef, rb], colors.wing), tri([rb, ef, eb], colors.wing), tri([ef, tip, eb], colors.tip)];
+  };
+  const body = new THREE.OctahedronGeometry(1, 0).scale(0.05, 0.045, 0.22);
+  const head = new THREE.IcosahedronGeometry(0.05, 0).translate(0, 0.03, 0.21);
+  const beak = new THREE.ConeGeometry(0.016, 0.08, 4).rotateX(Math.PI / 2).translate(0, 0.025, 0.29);
+  const tail = new THREE.ConeGeometry(0.05, 0.14, 3).rotateX(-Math.PI / 2).scale(1, 0.3, 1).translate(0, 0, -0.24);
+  const geo = merge([
+    solid(body, colors.body),
+    solid(head, colors.body),
+    solid(beak, colors.beak),
+    solid(tail, colors.body),
+    ...wing(1),
+    ...wing(-1),
+  ]).scale(span, span, span);
+  const mat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
+  mat.onBeforeCompile = (sh) => {
+    sh.uniforms.birdTime = wind.time;
+    sh.vertexShader =
+      'uniform float birdTime;\n' +
+      sh.vertexShader.replace(
+        '#include <begin_vertex>',
+        /* glsl */ `#include <begin_vertex>
+#ifdef USE_INSTANCING
+	float bph = float( gl_InstanceID ) * 2.13;
+#else
+	float bph = 0.0;
+#endif
+	// 一陣子拍翅、一陣子滑翔
+	float bflap = sin( birdTime * 8.5 + bph ) * ( 0.12 + 0.88 * smoothstep( -0.2, 0.4, sin( birdTime * 0.45 + bph ) ) );
+	transformed.y += bflap * abs( transformed.x ) * 1.1;`,
+      );
+  };
+  mat.customProgramCacheKey = () => 'birds1';
+  const mesh = new THREE.InstancedMesh(geo, mat, paths.length);
+  mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  mesh.frustumCulled = false;
+  disposeWith(mat, mesh);
+  const m = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const e = new THREE.Euler(0, 0, 0, 'YXZ');
+  const p = new THREE.Vector3();
+  const s = new THREE.Vector3(1, 1, 1);
+  const update = () => {
+    const t = wind.time.value;
+    for (let i = 0; i < paths.length; i++) {
+      const b = paths[i];
+      const a = b.phase + (t * b.speed * b.dir) / b.r;
+      p.set(b.cx + b.r * Math.cos(a), b.y + 0.35 * Math.sin(t * 0.6 + i * 1.7), b.cz + b.r * Math.sin(a));
+      // 朝切線方向飛，往圓心那側傾斜
+      e.set(0, Math.atan2(-Math.sin(a) * b.dir, Math.cos(a) * b.dir), 0.3 * b.dir);
+      mesh.setMatrixAt(i, m.compose(p, q.setFromEuler(e), s));
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+  };
+  update();
+  return { mesh, update };
 }

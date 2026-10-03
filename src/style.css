@@ -300,6 +300,7 @@ h2 {
 .row label {
   color: var(--muted);
   font-size: 14px;
+  white-space: nowrap;
 }
 .seg {
   display: flex;
@@ -319,6 +320,16 @@ h2 {
 .seg button.on {
   background: var(--me);
   color: #fff;
+}
+/* 選項多的（場地）：排成兩行，第一行 4 個、第二行 3 個平分寬度 */
+.seg.wrap {
+  flex-wrap: wrap;
+  flex: 0 1 272px;
+}
+.seg.wrap button {
+  flex: 1 0 25%;
+  padding: 7px 6px;
+  white-space: nowrap;
 }
 .panel > button,
 .panel.small button {
