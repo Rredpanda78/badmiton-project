@@ -236,8 +236,8 @@ export class GameRenderer {
 
   /** 擊球特效：品質越好越大越金，殺球加鏡頭震動與視角衝擊 */
   burst(p: Vec3, quality: number, smash: boolean, jump: boolean): void {
-    const perfect = quality >= 0.92;
-    const poor = quality < 0.78;
+    const perfect = quality >= 0.9;
+    const poor = quality < 0.74;
     const color = jump ? 0x7ff7ff : perfect ? 0xffd54a : poor ? 0x9aa4b0 : 0xffffff;
     const size = jump ? 1.8 : smash ? 1.4 : perfect ? 1.25 : poor ? 0.7 : 1;
     this.addFx(p, color, size, false);

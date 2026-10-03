@@ -164,7 +164,7 @@ export class AIController {
       const depth = long ? 5.9 : COURT.shortService + 0.5;
       const aim = (m.rng.next() - 0.5) * 1.2;
       this.serveChoice = {
-        charge: this.chargeFor(depth),
+        charge: this.chargeFor(depth, 0.4), // 發球比較穩
         flick: this.flickFor(long ? 'up' : 'down', aim),
       };
     }
@@ -176,8 +176,8 @@ export class AIController {
     return inp;
   }
 
-  private chargeFor(depth: number): number {
-    const c = chargeForDepth(depth + this.match.rng.gauss() * this.p.depthNoise * this.style.steady);
+  private chargeFor(depth: number, noiseMul = 1): number {
+    const c = chargeForDepth(depth + this.match.rng.gauss() * this.p.depthNoise * this.style.steady * noiseMul);
     return Math.max(0.02, Math.min(1, c));
   }
 

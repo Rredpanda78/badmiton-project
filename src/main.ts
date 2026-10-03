@@ -121,7 +121,7 @@ function buildCards(): void {
   for (const c of CHARACTERS) {
     const b = document.createElement('button');
     b.className = 'card' + (c.id === settings.character ? ' on' : '');
-    b.innerHTML = `<div class="swatch" style="background:#${c.shirt.toString(16).padStart(6, '0')}"></div><b>${c.name}</b><small>${c.title}</small><div class="bars mini">${bars(buildKit(c.id, 'balance'), false)}</div>`;
+    b.innerHTML = `<div class="swatch" style="background:#${c.shirt.toString(16).padStart(6, '0')}"></div><b>${c.name}</b><small>${c.title}</small><span>${c.desc}</span>`;
     b.addEventListener('click', () => {
       settings.character = c.id;
       saveSettings();
@@ -134,7 +134,7 @@ function buildCards(): void {
   for (const r of RACKETS) {
     const b = document.createElement('button');
     b.className = 'card' + (r.id === settings.racket ? ' on' : '');
-    b.innerHTML = `<div class="swatch" style="background:#${r.color.toString(16).padStart(6, '0')}"></div><b>${r.name}</b><div class="bars mini">${bars(buildKit('allround', r.id), false)}</div>`;
+    b.innerHTML = `<div class="swatch" style="background:#${r.color.toString(16).padStart(6, '0')}"></div><b>${r.name}</b><span>${r.desc}</span>`;
     b.addEventListener('click', () => {
       settings.racket = r.id;
       saveSettings();
@@ -402,7 +402,7 @@ function buildDrillList(): void {
     b.className = 'drill-item';
     const s = best[d.id] ?? 0;
     const stars = [1, 2, 3].map((i) => (i <= s ? '★' : '<i class="off">★</i>')).join('');
-    b.innerHTML = `<div><b>${d.name}</b><span>${d.goal}</span><span>${d.how}</span></div><div class="stars">${stars}</div>`;
+    b.innerHTML = `<div><b>${d.name}</b><span>${d.goal}</span><span>${settings.scheme === 'tap' ? d.howTap : d.how}</span></div><div class="stars">${stars}</div>`;
     b.addEventListener('click', () => startDrill(d));
     box.appendChild(b);
   }
@@ -422,7 +422,7 @@ function startDrill(d: Drill): void {
   renderer.setVenue(settings.venue);
   renderer.setTarget(d.target);
   hud.oppName = '發球機';
-  hud.drill = { name: d.name, rep: 0, reps: d.reps, ok: 0, goal: `${d.goal}｜${d.how}` };
+  hud.drill = { name: d.name, rep: 0, reps: d.reps, ok: 0, goal: `${d.goal}｜${settings.scheme === 'tap' ? d.howTap : d.how}` };
   hitStop = 0;
   clearTimeout(resultTimer);
   drill = new DrillRunner(

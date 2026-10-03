@@ -88,11 +88,11 @@ export function resolveShot(req: ShotRequest, rng: Rng): ShotResult {
 
   const D0 = depthFromCharge(charge);
   const acc = req.kit?.accuracy ?? 1;
-  let D = D0 + rng.gauss() * (0.12 + err * 1.0) * acc;
+  let D = D0 + rng.gauss() * (0.1 + err * 0.7) * acc;
   // 發球：在對角發球區內左右微調；一般擊球：左右分量決定落點
   const tx = req.serve
     ? req.serve.boxCenterX + side * req.aimX * 1.0 + rng.gauss() * 0.1
-    : side * (req.aimX * 2.3 + rng.gauss() * (0.1 + err * 0.8) * acc);
+    : side * (req.aimX * 2.3 + rng.gauss() * (0.08 + err * 0.6) * acc);
   let netFault = false;
   if (D < NET_FAULT_DEPTH) {
     // 深度太短：打進網子

@@ -51,7 +51,9 @@ export class LocalControls {
   scheme: ControlScheme = 'charge';
   private smashEl: HTMLButtonElement;
   private labelEl: HTMLElement;
-  private smashPtr: { id: number; x: number } | null = null;
+  private smashPad: Pad | null = null;
+  private lastSmashTap = 0;
+  private smashKnob!: HTMLElement;
   /** 按下蓄力鍵的瞬間（jump = 這次是連按兩下） */
   onPress: ((jump: boolean) => void) | null = null;
 
@@ -67,11 +69,12 @@ export class LocalControls {
     this.labelEl = mk(overlay, 'pad-label');
     this.smashEl = document.createElement('button');
     this.smashEl.className = 'smash-btn';
-    this.smashEl.textContent = '殺';
+    this.smashEl.innerHTML = '<span>殺</span>';
     overlay.appendChild(this.smashEl);
     this.smashEl.addEventListener('pointerdown', this.onSmashDown);
     this.smashEl.addEventListener('pointerup', this.onSmashUp);
-    this.smashEl.addEventListener('pointercancel', () => (this.smashPtr = null));
+    this.smashEl.addEventListener('pointercancel', () => (this.smashPad = null));
+    this.smashKnob = mk(this.smashEl, 'smash-knob');
 
     surface.addEventListener('pointerdown', this.onDown);
     window.addEventListener('pointermove', this.onMove);
@@ -153,6 +156,10 @@ export class LocalControls {
   }
 
   private onMove = (e: PointerEvent) => {
+    if (this.smashPad?.id === e.pointerId) {
+      this.smashPad.x = e.clientX;
+      this.smashPad.y = e.clientY;
+    }
     if (this.move?.id === e.pointerId) {
       this.move.x = e.clientX;
       this.move.y = e.clientY;
@@ -188,28 +195,50 @@ export class LocalControls {
     }
   };
 
-  /** 殺球鍵：後場殺球、前場撲球；放開時出拍（左右拖曳可以瞄左右） */
+  /**
+   * 殺球搖桿（點擊滑放模式）：按住拖曳、放開出拍。
+   * 往下／左右 = 殺球（左右決定落點）；往上 = 假殺真切（切球）。後場殺球、前場撲球。
+   * 點一下再按住 = 跳殺待命（球快到時自動起跳，滯空時放開）
+   */
   private onSmashDown = (e: PointerEvent) => {
     if (!this.enabled) return;
     e.preventDefault();
     e.stopPropagation();
-    this.smashPtr = { id: e.pointerId, x: e.clientX };
+    const now = performance.now();
+    const lt = this.lastSmashTap;
+    const jump = now - lt < DOUBLE_TAP_MS;
+    this.lastSmashTap = 0;
+    this.smashPad = { id: e.pointerId, ox: e.clientX, oy: e.clientY, x: e.clientX, y: e.clientY, flicked: false, jump, downAt: now };
     this.smashEl.classList.add('down');
     try {
       this.smashEl.setPointerCapture(e.pointerId);
     } catch {
       /* ignore */
     }
-    this.onPress?.(false);
+    this.onPress?.(jump);
   };
 
   private onSmashUp = (e: PointerEvent) => {
-    const s = this.smashPtr;
+    const s = this.smashPad;
     this.smashEl.classList.remove('down');
-    if (!s || s.id !== e.pointerId || !this.enabled) return;
-    this.smashPtr = null;
-    const aim = Math.max(-1, Math.min(1, (e.clientX - s.x) / 60));
-    this.pendingFlick = { x: aim * 0.6, y: -1, cmd: { family: 'down', depth: 'smash' } };
+    if (!s || s.id !== e.pointerId) return;
+    this.smashPad = null;
+    if (!this.enabled) return;
+    const dx = e.clientX - s.ox;
+    const dy = e.clientY - s.oy;
+    if (Math.hypot(dx, dy) <= SLIDE_PX) {
+      // 沒拖曳：快速點一下 = 跳殺的第一下
+      if (performance.now() - s.downAt < TAP_MAX_MS) this.lastSmashTap = performance.now();
+      return;
+    }
+    const nx = dx / Math.hypot(dx, dy);
+    if (dy < 0 && Math.abs(nx) < 0.77) {
+      // 往上 = 假殺球、真切球
+      this.pendingFlick = { x: dx, y: -dy, cmd: { family: 'down', depth: 1.4 } };
+    } else {
+      // 往下或左右 = 殺球，左右分量瞄準
+      this.pendingFlick = { x: dx, y: -Math.max(Math.abs(dy), 8), cmd: { family: 'down', depth: 'smash' } };
+    }
   };
 
   private reconcile = (e: TouchEvent) => {
@@ -327,7 +356,7 @@ export class LocalControls {
     if (this.scheme === 'tap') {
       // 點擊滑放不用蓄力
       inp.charging = false;
-      inp.jump = false;
+      inp.jump = !!this.smashPad?.jump; // 殺球搖桿點一下再按住 = 跳殺待命
     }
     if (this.pendingFlick) {
       inp.flick = this.pendingFlick;
@@ -387,13 +416,36 @@ export class LocalControls {
       this.smashEl.style.left = `${w - restX}px`;
       this.smashEl.style.top = `${restY - 112}px`;
     }
-    const showLabel = tap && !!a;
+    // 殺球搖桿：小搖桿頭跟著手指，最多偏 30 px
+    const sp = this.smashPad;
+    let kx = 0;
+    let ky = 0;
+    if (sp) {
+      kx = sp.x - sp.ox;
+      ky = sp.y - sp.oy;
+      const d = Math.hypot(kx, ky);
+      if (d > 30) {
+        kx *= 30 / d;
+        ky *= 30 / d;
+      }
+    }
+    this.smashKnob.style.transform = `translate(${kx}px, ${ky}px)`;
+    this.smashEl.classList.toggle('jump', !!sp?.jump);
+
+    const showLabel = tap && (!!a || !!sp);
     this.labelEl.style.display = showLabel ? 'block' : 'none';
-    if (showLabel) {
-      this.labelEl.textContent = a!.jump ? '上手　↑高遠球　↓切球' : '下手　↑挑球　↓放小球';
-      this.labelEl.classList.toggle('over', a!.jump);
-      this.labelEl.style.left = `${a!.ox}px`;
-      this.labelEl.style.top = `${a!.oy - 86}px`;
+    if (showLabel && sp) {
+      this.labelEl.textContent = sp.jump ? '跳殺　↓殺球　↑切球' : '殺球　←→瞄準　↓殺　↑假殺真切';
+      this.labelEl.classList.toggle('over', sp.jump);
+      // 置中在殺球搖桿上方，但不能超出螢幕
+      const half = this.labelEl.offsetWidth / 2 + 8;
+      this.labelEl.style.left = `${Math.max(half, Math.min(w - half, w - restX))}px`;
+      this.labelEl.style.top = `${restY - 170}px`;
+    } else if (showLabel && a) {
+      this.labelEl.textContent = a.jump ? '上手　↑高遠球　↓切球' : '下手　↑挑球　↓放小球';
+      this.labelEl.classList.toggle('over', a.jump);
+      this.labelEl.style.left = `${a.ox}px`;
+      this.labelEl.style.top = `${a.oy - 86}px`;
     }
   }
 }

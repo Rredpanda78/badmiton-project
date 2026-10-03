@@ -236,7 +236,7 @@ export class Match {
     if (p.landRecover > 0) p.landRecover -= dt;
 
     // 連按兩下 = 跳殺模式（放開蓄力就取消）
-    if (input.charging && input.jump && !p.airborne && !p.jumpUsed) p.jumpArmed = true;
+    if (input.jump && !p.airborne && !p.jumpUsed) p.jumpArmed = true;
 
     // 出拍（揮拍或硬直中划動會先暫存一下，避免太早划被吃掉）
     if (input.flick) {
@@ -306,8 +306,11 @@ export class Match {
       p.charging = false;
       p.charge = 0;
       p.chargeT = 0;
-      p.jumpUsed = false;
-      if (!p.swing) p.jumpArmed = false;
+      // 點擊滑放的跳殺不蓄力，只要還按著殺球搖桿（jump）就保持待命
+      if (!input.jump) {
+        p.jumpUsed = false;
+        if (!p.swing) p.jumpArmed = false;
+      }
     }
 
     // 跳殺自動起跳：羽球預計進入「跳起來的擊球範圍」前 apex 時間起跳
@@ -601,7 +604,7 @@ export class Match {
     let charge = swing.preset ? swing.charge : Math.max(swing.charge, reboundCharge(incoming));
     // 勉強接到（品質差、不是往下壓）→ 只能把球撈成一顆又高又慢、會晃的「機會球」到中場
     let family = swing.family;
-    const weak = quality < 0.72 && !p.airborne && family !== 'down';
+    const weak = quality < 0.6 && !p.airborne && family !== 'down';
     if (weak) {
       family = 'up';
       charge = clamp(charge, chargeForDepth(3.2), chargeForDepth(4.6));
@@ -611,7 +614,7 @@ export class Match {
     const chanceSmash = chanceIn && (shot.name === '殺球' || shot.name === '跳殺');
     let stepDt = shot.stepDt;
     if (weak) stepDt *= 0.85; // 機會球飄比較慢
-    if (chanceSmash) stepDt *= 1.12; // 機會殺球更快
+    if (chanceSmash) stepDt *= 1.06; // 機會殺球更快
     swing.contacted = true;
     swing.contactPoint = contact;
     swing.contactT = swing.t;
@@ -622,14 +625,14 @@ export class Match {
       type: 'hit',
       player: p.id,
       name: chanceSmash ? '機會殺球' : shot.name,
-      speedKmh: Math.round(shot.speedKmh * (chanceSmash ? 1.12 : 1)),
+      speedKmh: Math.round(shot.speedKmh * (chanceSmash ? 1.06 : 1)),
       pos: contact,
       family,
       charge,
       netFault: shot.netFault,
       powerShort: shot.powerShort,
       quality,
-      grade: quality >= 0.92 ? '完美' : quality >= 0.78 ? '不錯' : '勉強',
+      grade: quality >= 0.9 ? '完美' : quality >= 0.74 ? '不錯' : '勉強',
       jump: shot.name === '跳殺' || shot.name === '跳撲' || chanceSmash,
       serve: false,
     });
@@ -844,15 +847,17 @@ function setFactor(p: PlayerState): number {
 }
 
 function timeQuality(t: number, f = 1): number {
+  // 理想時機前後各 0.035 秒內都算滿分；超出後扣分也比較溫和（判定放寬）
   const ideal = GAME.idealContactT;
-  const late = ((ideal - t) / ideal) / f;
-  const early = (t - ideal) / (GAME.swingWindow - ideal) / f;
-  return t < ideal ? 1 - 0.25 * clamp(late, 0, 1) : 1 - 0.35 * clamp(early, 0, 1);
+  const flat = 0.035 * f;
+  if (Math.abs(t - ideal) <= flat) return 1;
+  if (t < ideal) return 1 - 0.2 * clamp((ideal - flat - t) / Math.max(0.01, ideal - flat) / f, 0, 1);
+  return 1 - 0.28 * clamp((t - ideal - flat) / (GAME.swingWindow - ideal) / f, 0, 1);
 }
 
 /** 位置分數：離身體 0.25~0.85 m 最好，太遠或太擠扣分 */
 function posQuality(dist: number): number {
-  if (dist > 0.85) return 1 - 0.3 * ((dist - 0.85) / (GAME.reach - 0.85));
-  if (dist < 0.25) return 0.85;
+  if (dist > 0.92) return 1 - 0.2 * ((dist - 0.92) / (GAME.reach - 0.92));
+  if (dist < 0.2) return 0.9;
   return 1;
 }

@@ -31,7 +31,7 @@ export const GAME = {
   // 球速：殺球／撲球／下壓維持原速，其他球的飛行時間縮短為 1/ballSpeedMul
   ballSpeedMul: 1.5,
   killMaxSpeed: 16, // 網前撲球初速上限（m/s），避免近網撲殺快到無法反應
-  smashMaxSpeed: 64, // 殺球／平抽初速上限（m/s，約 230 km/h）
+  smashMaxSpeed: 54, // 殺球／平抽初速上限（m/s，約 195 km/h）
   liftMaxSpeed: 45, // 高遠／挑球初速上限（m/s，約 160 km/h）
 
   // 擊球判定
@@ -53,14 +53,14 @@ export const GAME = {
 
   // 跳殺：右手連按兩下並按住 → 羽球快到時自動起跳
   jump: {
-    height: 0.42, // 起跳高度（m），擊球範圍跟著往上加
-    gravity: 16, // 跳躍用的重力（比真實大，跳起來比較俐落）
+    height: 0.5, // 起跳高度（m），擊球範圍跟著往上加
+    gravity: 12, // 跳躍用的重力（調小 = 滯空久一點，比較好抓擊球時機）
     lead: 0.0, // 起跳時機微調（秒）：正值 = 更早跳，負值 = 更晚跳
     minShuttleY: 2.3, // 羽球至少這麼高才會自動起跳（平抽、低挑不會誤跳）
     landRecover: 0.2, // 落地硬直（秒）
     landMoveMul: 0.3,
     smashBallMul: 1.15, // 跳殺球速倍率
-    smashMaxSpeed: 72, // 跳殺初速上限（m/s，約 260 km/h）
+    smashMaxSpeed: 62, // 跳殺初速上限（m/s，約 225 km/h）
   },
 
   serveContactY: 0.95,

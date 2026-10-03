@@ -55,7 +55,7 @@ export const sfx = {
   /** 擊球：品質越好越清脆、球越快越重；跳殺最大聲 */
   hit(quality: number, speedKmh: number, jump: boolean) {
     const p = Math.min(1, speedKmh / 220);
-    if (quality < 0.78) {
+    if (quality < 0.74) {
       // 沒打好：悶悶的
       noiseBurst(0.06, 800, 0.8, 0.5 + p * 0.4);
       tone(300, 0.05, 0.1, 0, 'triangle');
@@ -63,7 +63,7 @@ export const sfx = {
     }
     noiseBurst(0.05 + p * 0.03, 2200 + p * 1000, 1.1 - p * 0.3, 0.55 + p * 0.9 + (jump ? 0.4 : 0));
     tone(260 - p * 60, 0.06 + p * 0.04, 0.12 + p * 0.15, 0, 'triangle');
-    if (quality >= 0.92) tone(2900, 0.06, 0.08, 0.005); // 完美擊球的「叮」
+    if (quality >= 0.9) tone(2900, 0.06, 0.08, 0.005); // 完美擊球的「叮」
   },
   /** 划動出拍的揮拍聲 */
   whoosh() {

@@ -22,7 +22,8 @@ export interface Drill {
   id: string;
   name: string;
   goal: string; // 一句話說明要做什麼
-  how: string; // 手勢提示
+  how: string; // 手勢提示（蓄力划動）
+  howTap: string; // 手勢提示（點擊滑放）
   reps: number;
   stars: [number, number, number]; // 1/2/3 星需要的成功數
   target: DrillTarget | null; // 對面要打進的區域（世界座標）
@@ -50,13 +51,14 @@ export const DRILLS: Drill[] = [
     name: '高遠球',
     goal: '把高球打到對面後場（黃色區）',
     how: '往上划，蓄力到深綠色',
+    howTap: '點兩下按住，往上滑放開',
     reps: 10,
     stars: [5, 7, 9],
     target: { x0: -W, x1: W, z0: -L, z1: -(L - 1.7) },
     feed: (rnd) => liftTo(rnd, [4.6, 6.2]),
     judge: (name, p) => {
-      if (name !== '高遠球' && name !== '平高球' && name !== '挑球') return { ok: false, msg: '要往上划打高遠球' };
-      return depthOf(p) >= L - 1.7 ? { ok: true, msg: '漂亮的深球！' } : { ok: false, msg: '不夠深，多蓄一點力' };
+      if (name !== '高遠球' && name !== '平高球' && name !== '挑球') return { ok: false, msg: '要打高遠球' };
+      return depthOf(p) >= L - 1.7 ? { ok: true, msg: '漂亮的深球！' } : { ok: false, msg: '不夠深' };
     },
   },
   {
@@ -64,20 +66,22 @@ export const DRILLS: Drill[] = [
     name: '殺球',
     goal: '把高球殺進對面場內',
     how: '往下划，蓄力多一點；站到球的落點下方',
+    howTap: '用「殺」搖桿往下滑放開；站到球的落點下方',
     reps: 10,
     stars: [5, 7, 9],
     target: { x0: -W, x1: W, z0: -L, z1: 0 },
     feed: (rnd) => liftTo(rnd, [3.4, 4.8]),
     judge: (name) =>
-      name === '殺球' || name === '跳殺' || name === '機會殺球' || name === '下壓'
+      name === '殺球' || name === '跳殺' || name === '機會殺球' || name === '下壓' || name === '撲球' || name === '跳撲'
         ? { ok: true, msg: '殺得好！' }
-        : { ok: false, msg: name === '切球' ? '那是切球，蓄力再多一點' : '要往下划殺球' },
+        : { ok: false, msg: name === '切球' ? '那是切球，要殺球' : '要殺球' },
   },
   {
     id: 'net',
     name: '網前放小球',
     goal: '把網前球輕輕放回對面網前（黃色區）',
     how: '往下划、蓄力少一點點',
+    howTap: '點一下按住，往下滑放開',
     reps: 10,
     stars: [5, 7, 9],
     target: { x0: -W, x1: W, z0: -2.4, z1: 0 },
@@ -89,8 +93,8 @@ export const DRILLS: Drill[] = [
       playerAt: { x: 0, z: 2.5 },
     }),
     judge: (name, p) => {
-      if (name !== '放網' && name !== '切球' && name !== '推球') return { ok: false, msg: '要往下划放小球' };
-      return depthOf(p) <= 2.4 ? { ok: true, msg: '貼網！' } : { ok: false, msg: '太深了，輕一點' };
+      if (name !== '放網' && name !== '切球' && name !== '推球') return { ok: false, msg: '要放小球' };
+      return depthOf(p) <= 2.4 ? { ok: true, msg: '貼網！' } : { ok: false, msg: '太深了' };
     },
   },
   {
@@ -98,6 +102,7 @@ export const DRILLS: Drill[] = [
     name: '接殺球',
     goal: '把對面的殺球接回場內',
     how: '一看到殺球就按住；來球快，輕輕一划就能擋回去',
+    howTap: '點一下按住，往上滑放開挑回去',
     reps: 10,
     stars: [4, 6, 8],
     target: { x0: -W, x1: W, z0: -L, z1: 0 },
@@ -115,6 +120,7 @@ export const DRILLS: Drill[] = [
     name: '平抽',
     goal: '把平球抽回對面中後場（黃色區）',
     how: '往左或往右划',
+    howTap: '按住往左或往右滑放開',
     reps: 10,
     stars: [5, 7, 9],
     target: { x0: -W, x1: W, z0: -L, z1: -3.4 },
@@ -126,7 +132,7 @@ export const DRILLS: Drill[] = [
       playerAt: { x: 0, z: 3.6 },
     }),
     judge: (name, p) => {
-      if (name !== '平抽' && name !== '平高球') return { ok: false, msg: '要往左右划平抽' };
+      if (name !== '平抽' && name !== '平高球') return { ok: false, msg: '要平抽' };
       return depthOf(p) >= 3.4 ? { ok: true, msg: '又平又快！' } : { ok: false, msg: '太短了' };
     },
   },
@@ -134,12 +140,13 @@ export const DRILLS: Drill[] = [
     id: 'jump',
     name: '跳殺',
     goal: '用跳殺把高球殺進場內',
-    how: '點一下再按住，起跳後約 0.25 秒往下划',
+    how: '點一下再按住，起跳後約 0.35 秒往下划',
+    howTap: '「殺」搖桿點一下再按住，起跳後往下滑放開',
     reps: 10,
     stars: [4, 6, 8],
     target: { x0: -W, x1: W, z0: -L, z1: 0 },
     feed: (rnd) => liftTo(rnd, [3.8, 5.2]),
-    judge: (name) => (name === '跳殺' || name === '跳撲' ? { ok: true, msg: '跳殺！' } : { ok: false, msg: '要連按兩下跳起來殺' }),
+    judge: (name) => (name === '跳殺' || name === '跳撲' ? { ok: true, msg: '跳殺！' } : { ok: false, msg: '要跳殺' }),
   },
 ];
 
