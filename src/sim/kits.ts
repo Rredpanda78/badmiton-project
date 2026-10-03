@@ -40,8 +40,8 @@ export interface Racket {
 export const CHARACTERS: Character[] = [
   {
     id: 'allround',
-    name: '小羽',
-    title: '全能型',
+    name: '全能型',
+    title: '均衡',
     desc: '沒有弱點，什麼都會一點',
     shirt: 0x2f7fe0,
     shorts: 0x1b2a44,
@@ -49,8 +49,8 @@ export const CHARACTERS: Character[] = [
   },
   {
     id: 'power',
-    name: '阿豪',
-    title: '重砲手',
+    name: '重砲手',
+    title: '殺球專精',
     desc: '殺球更快；跑得慢一點',
     shirt: 0xe0483a,
     shorts: 0x3a1b1b,
@@ -58,8 +58,8 @@ export const CHARACTERS: Character[] = [
   },
   {
     id: 'touch',
-    name: '小櫻',
-    title: '網前魔術師',
+    name: '網前魔術師',
+    title: '網前專精',
     desc: '切球、放網更快更準；殺球、高遠球較慢',
     shirt: 0xf27fb0,
     shorts: 0x5a2340,
@@ -67,8 +67,8 @@ export const CHARACTERS: Character[] = [
   },
   {
     id: 'driver',
-    name: '阿哲',
-    title: '推壓手',
+    name: '推壓手',
+    title: '平抽專精',
     desc: '推球、平抽更快；高遠球較慢',
     shirt: 0xf2a23a,
     shorts: 0x4a3010,
@@ -76,8 +76,8 @@ export const CHARACTERS: Character[] = [
   },
   {
     id: 'runner',
-    name: '小風',
-    title: '快腿',
+    name: '快腿',
+    title: '速度專精',
     desc: '移動與起步最快；球速稍慢',
     shirt: 0x34c38f,
     shorts: 0x14402f,

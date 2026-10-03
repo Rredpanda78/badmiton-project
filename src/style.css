@@ -664,3 +664,123 @@ h2 {
   max-width: 86vw;
   white-space: normal;
 }
+
+/* 點擊滑放：殺球鍵與上／下手提示 */
+.smash-btn {
+  display: none;
+  position: absolute;
+  width: 74px;
+  height: 74px;
+  margin: -37px 0 0 -37px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.85);
+  background: radial-gradient(circle at 35% 30%, #ff8a6a, #d9342b);
+  color: #fff;
+  font: inherit;
+  font-size: 24px;
+  font-weight: 800;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: pointer;
+}
+.smash-btn.down {
+  transform: scale(0.9);
+  filter: brightness(1.25);
+}
+.pad-label {
+  display: none;
+  position: absolute;
+  transform: translate(-50%, -50%);
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(10, 16, 24, 0.8);
+  color: #c8f5d0;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.pad-label.over {
+  color: #8ff7ff;
+}
+
+/* 能力長條圖 */
+.bars {
+  display: grid;
+  gap: 3px;
+  margin-top: 6px;
+}
+.bar {
+  display: grid;
+  grid-template-columns: 74px 1fr 40px;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.bars.mini .bar {
+  grid-template-columns: 12px 1fr;
+  gap: 4px;
+  font-size: 10px;
+}
+.bar label {
+  color: var(--muted);
+}
+.bar .track {
+  position: relative;
+  height: 7px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.bars.mini .bar .track {
+  height: 5px;
+}
+.bar .mid {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.35);
+}
+.bar .fill {
+  height: 100%;
+  border-radius: 4px;
+  background: #7f93ad;
+}
+.bar.up .fill {
+  background: linear-gradient(90deg, #3a9e6a, #7dffb0);
+}
+.bar.down .fill {
+  background: linear-gradient(90deg, #a2463a, #ff9a8a);
+}
+.bar em {
+  font-style: normal;
+  font-size: 11px;
+  text-align: right;
+  color: var(--muted);
+}
+.bar.up em {
+  color: #7dffb0;
+}
+.bar.down em {
+  color: #ff9a8a;
+}
+.kit-summary {
+  display: block;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.kit-title {
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 2px;
+}
+.card {
+  width: 104px;
+}

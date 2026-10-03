@@ -9,6 +9,8 @@ export type Family = 'up' | 'down' | 'side';
 export interface Flick {
   x: number; // 往右為正（擊球者自己的視角）
   y: number; // 往上（往對面）為正
+  /** 第二種操作（點擊滑放）直接指定球種與深度；smash = 依位置自動選殺球或撲球 */
+  cmd?: { family: Family; depth: number | 'smash' };
 }
 
 export function classifyFlick(f: Flick): { family: Family; aimX: number } {

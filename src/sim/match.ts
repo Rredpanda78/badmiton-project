@@ -18,6 +18,7 @@ export interface Swing {
   t: number;
   window: number; // 這次揮拍可擊中的時間長度
   charge: number;
+  preset: boolean; // 點擊滑放：深度已指定，不吃反彈力
   family: Family;
   aimX: number;
   contacted: boolean;
@@ -245,7 +246,22 @@ export class Match {
     const flick = p.bufferT > 0 ? p.bufferedFlick : null;
     if (flick && !p.swing && p.recover <= 0 && this.phase !== 'matchOver') {
       p.bufferT = 0;
-      const { family, aimX } = classifyFlick(flick);
+      const cls = classifyFlick(flick);
+      const aimX = cls.aimX;
+      let family = cls.family;
+      let charge = p.charge;
+      const preset = !!flick.cmd;
+      if (flick.cmd) {
+        // 點擊滑放：不用蓄力，球種與深度由手勢決定；品質只看放開的時機
+        family = flick.cmd.family;
+        const dn = Math.abs(p.pos.z);
+        charge = chargeForDepth(flick.cmd.depth === 'smash' ? (dn > 2.5 ? 4.6 : 3.0) : flick.cmd.depth);
+        if (this.phase === 'serve' && p.id === this.server) {
+          // 發球：往上 = 發高遠球、其他 = 發小球（剛好過前發球線）
+          family = family === 'up' ? 'up' : 'down';
+          charge = chargeForDepth(family === 'up' ? 6.0 : COURT.shortService + 0.45);
+        }
+      }
       // 在空中出拍：揮拍時間至少涵蓋到落地前，避免剛起跳就划結果時間不夠
       const baseWindow = GAME.swingWindow * p.kit.window;
       let window = p.airborne ? Math.max(baseWindow, airTimeLeft(p) - 0.02) : baseWindow;
@@ -260,7 +276,8 @@ export class Match {
       p.swing = {
         t: 0,
         window,
-        charge: p.charge,
+        charge,
+        preset,
         family,
         aimX,
         contacted: false,
@@ -581,7 +598,7 @@ export class Match {
     const quality = qTime * posQuality(dist);
     const contact = copy3(sh.pos);
     const incoming = Math.hypot(sh.vel.x, sh.vel.y, sh.vel.z);
-    let charge = Math.max(swing.charge, reboundCharge(incoming));
+    let charge = swing.preset ? swing.charge : Math.max(swing.charge, reboundCharge(incoming));
     // 勉強接到（品質差、不是往下壓）→ 只能把球撈成一顆又高又慢、會晃的「機會球」到中場
     let family = swing.family;
     const weak = quality < 0.72 && !p.airborne && family !== 'down';
@@ -748,6 +765,7 @@ export class Match {
       t: 0,
       window: GAME.swingWindow,
       charge: 0,
+      preset: true,
       family: spec.family,
       aimX: spec.aimX,
       contacted: true,

@@ -1,4 +1,5 @@
 import { idleInput, type PlayerInput } from '../sim/match';
+import type { ControlScheme } from '../config';
 import type { Flick } from '../sim/shots';
 
 const STICK_RADIUS = 60; // 左搖桿最大半徑（px）
@@ -7,6 +8,7 @@ const FLICK_PX_MOUSE = 26;
 const DOUBLE_TAP_MS = 320; // 兩次按下的間隔在這之內 = 連按兩下（跳殺）
 const TAP_MAX_MS = 260; // 按住少於這麼久就放開才算「點一下」
 const DOUBLE_TAP_PX = 80;
+const SLIDE_PX = 22; // 點擊滑放：放開時滑超過這個距離才算出拍
 
 interface Pad {
   id: number;
@@ -45,6 +47,11 @@ export class LocalControls {
   enabled = true;
   /** 簡單模式：自動跑位，整個螢幕都是擊球區 */
   autoMove = false;
+  /** 擊球操作方式：charge = 蓄力划動、tap = 點擊滑放＋殺球鍵 */
+  scheme: ControlScheme = 'charge';
+  private smashEl: HTMLButtonElement;
+  private labelEl: HTMLElement;
+  private smashPtr: { id: number; x: number } | null = null;
   /** 按下蓄力鍵的瞬間（jump = 這次是連按兩下） */
   onPress: ((jump: boolean) => void) | null = null;
 
@@ -57,6 +64,14 @@ export class LocalControls {
     this.baseEl = mk(overlay, 'stick-base');
     this.knobEl = mk(this.baseEl, 'stick-knob');
     this.ringEl = mk(overlay, 'action-ring');
+    this.labelEl = mk(overlay, 'pad-label');
+    this.smashEl = document.createElement('button');
+    this.smashEl.className = 'smash-btn';
+    this.smashEl.textContent = '殺';
+    overlay.appendChild(this.smashEl);
+    this.smashEl.addEventListener('pointerdown', this.onSmashDown);
+    this.smashEl.addEventListener('pointerup', this.onSmashUp);
+    this.smashEl.addEventListener('pointercancel', () => (this.smashPtr = null));
 
     surface.addEventListener('pointerdown', this.onDown);
     window.addEventListener('pointermove', this.onMove);
@@ -149,7 +164,7 @@ export class LocalControls {
       const dx = a.x - a.ox;
       const dy = a.y - a.oy;
       const th = e.pointerType === 'mouse' ? FLICK_PX_MOUSE : FLICK_PX_TOUCH;
-      if (!a.flicked && Math.hypot(dx, dy) > th) {
+      if (this.scheme === 'charge' && !a.flicked && Math.hypot(dx, dy) > th) {
         a.flicked = true;
         this.pendingFlick = { x: dx, y: -dy };
       }
@@ -160,10 +175,41 @@ export class LocalControls {
     if (this.move?.id === e.pointerId) this.move = null;
     const a = this.action;
     if (a?.id === e.pointerId) {
-      // 沒划動、很快放開 = 點一下（可能是連按兩下的第一下）
-      if (!a.flicked && performance.now() - a.downAt < TAP_MAX_MS) this.lastTap = { t: performance.now(), x: a.ox, y: a.oy };
+      const dx = a.x - a.ox;
+      const dy = a.y - a.oy;
+      if (this.scheme === 'tap' && Math.hypot(dx, dy) > SLIDE_PX) {
+        // 點擊滑放：放開的那一刻出拍。點一下 = 下手、點兩下 = 上手
+        this.pendingFlick = tapShot(dx, -dy, a.jump);
+      } else if (!a.flicked && performance.now() - a.downAt < TAP_MAX_MS) {
+        // 沒划動、很快放開 = 點一下（可能是連按兩下的第一下）
+        this.lastTap = { t: performance.now(), x: a.ox, y: a.oy };
+      }
       this.action = null;
     }
+  };
+
+  /** 殺球鍵：後場殺球、前場撲球；放開時出拍（左右拖曳可以瞄左右） */
+  private onSmashDown = (e: PointerEvent) => {
+    if (!this.enabled) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this.smashPtr = { id: e.pointerId, x: e.clientX };
+    this.smashEl.classList.add('down');
+    try {
+      this.smashEl.setPointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    this.onPress?.(false);
+  };
+
+  private onSmashUp = (e: PointerEvent) => {
+    const s = this.smashPtr;
+    this.smashEl.classList.remove('down');
+    if (!s || s.id !== e.pointerId || !this.enabled) return;
+    this.smashPtr = null;
+    const aim = Math.max(-1, Math.min(1, (e.clientX - s.x) / 60));
+    this.pendingFlick = { x: aim * 0.6, y: -1, cmd: { family: 'down', depth: 'smash' } };
   };
 
   private reconcile = (e: TouchEvent) => {
@@ -177,6 +223,11 @@ export class LocalControls {
     if (e.repeat) return;
     this.keys.add(e.code);
     if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();
+    if (e.code === 'Space' && this.enabled && this.scheme === 'tap') {
+      this.smashEl.classList.add('down');
+      this.onPress?.(false);
+      return;
+    }
     if (e.code === 'Space' && this.enabled) {
       const now = performance.now();
       this.kbJump = now - this.lastSpaceTap < DOUBLE_TAP_MS;
@@ -197,6 +248,12 @@ export class LocalControls {
   };
 
   private onKeyUp = (e: KeyboardEvent) => {
+    if (e.code === 'Space' && this.scheme === 'tap' && this.enabled) {
+      this.keys.delete(e.code);
+      this.smashEl.classList.remove('down');
+      this.pendingFlick = { x: 0, y: -1, cmd: { family: 'down', depth: 'smash' } };
+      return;
+    }
     this.keys.delete(e.code);
     if (e.code === 'Space') {
       const now = performance.now();
@@ -267,6 +324,11 @@ export class LocalControls {
       }
     }
 
+    if (this.scheme === 'tap') {
+      // 點擊滑放不用蓄力
+      inp.charging = false;
+      inp.jump = false;
+    }
     if (this.pendingFlick) {
       inp.flick = this.pendingFlick;
       inp.charging = false;
@@ -317,6 +379,22 @@ export class LocalControls {
     }
     this.ringEl.classList.toggle('jump', !!a?.jump || this.kbJump || this.gpJump);
     this.ringEl.style.setProperty('--charge', `${(charging ? charge : 0) * 360}deg`);
+
+    // 點擊滑放：殺球鍵放在右手圈上方；按住時顯示目前是下手還是上手
+    const tap = this.scheme === 'tap';
+    this.smashEl.style.display = tap && this.enabled ? 'block' : 'none';
+    if (tap) {
+      this.smashEl.style.left = `${w - restX}px`;
+      this.smashEl.style.top = `${restY - 112}px`;
+    }
+    const showLabel = tap && !!a;
+    this.labelEl.style.display = showLabel ? 'block' : 'none';
+    if (showLabel) {
+      this.labelEl.textContent = a!.jump ? '上手　↑高遠球　↓切球' : '下手　↑挑球　↓放小球';
+      this.labelEl.classList.toggle('over', a!.jump);
+      this.labelEl.style.left = `${a!.ox}px`;
+      this.labelEl.style.top = `${a!.oy - 86}px`;
+    }
   }
 }
 
@@ -325,4 +403,12 @@ function mk(parent: HTMLElement, cls: string): HTMLElement {
   el.className = cls;
   parent.appendChild(el);
   return el;
+}
+
+/** 點擊滑放的手勢 → 球種：下手（點一下）↑挑球 ↓放小球；上手（點兩下）↑高遠球 ↓切球；左右 = 平抽 */
+function tapShot(x: number, y: number, over: boolean): Flick {
+  const nx = x / (Math.hypot(x, y) || 1);
+  if (Math.abs(nx) >= 0.77) return { x, y, cmd: { family: 'side', depth: 5.0 } };
+  if (y > 0) return { x, y, cmd: { family: 'up', depth: over ? 6.0 : 5.7 } };
+  return { x, y, cmd: { family: 'down', depth: over ? 1.5 : 1.0 } };
 }

@@ -80,6 +80,9 @@ export function timeForCharge(c: number): number {
   return GAME.chargeDelay + GAME.chargeTime * (1 - Math.pow(1 - Math.min(1, Math.max(0, c)), 1 / CHARGE_EXP));
 }
 
+/** charge = 按住蓄力＋划動；tap = 點一下下手／點兩下上手＋滑動、放開出拍，殺球鍵 */
+export type ControlScheme = 'charge' | 'tap';
+
 export type Venue = 'indoor' | 'bamboo' | 'sakura' | 'night';
 
 export type Difficulty = 'easy' | 'normal' | 'hard';
@@ -93,6 +96,7 @@ export interface MatchSettings {
   character: string; // 自己的球員
   racket: string; // 自己的球拍
   autoMove: boolean; // 簡單模式：自動跑位，只控制擊球
+  scheme: ControlScheme; // 擊球操作方式
   venue: Venue; // 場地
   aiCharacter?: string; // 對手（每場隨機）
   aiRacket?: string;
@@ -108,6 +112,7 @@ export const DEFAULT_SETTINGS: MatchSettings = {
   character: 'allround',
   racket: 'balance',
   autoMove: false,
+  scheme: 'charge',
   venue: 'sakura',
 };
 

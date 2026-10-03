@@ -115,6 +115,11 @@ export class Hud {
     // 發球提示
     const myServe = match.phase === 'serve' && match.server === humanId;
     this.hint.style.display = myServe && match.phaseT > 0.4 ? 'block' : 'none';
+    if (myServe)
+      this.hint.innerHTML =
+        match.settings.scheme === 'tap'
+          ? '發球：按住 → <b>往上滑放開</b> 發高遠球、<b>往下滑放開</b> 發小球'
+          : '發球：按住蓄力 → <b>往上划</b> 發高遠球、<b>往下划</b> 發小球';
 
     // 蓄力條：跟著自己，顯示掛網／好球／出界區間
     const me = match.players[humanId];

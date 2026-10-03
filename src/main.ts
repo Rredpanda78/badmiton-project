@@ -7,7 +7,7 @@ import { GameRenderer } from './render/scene';
 import { idleInput, Match, type MatchEvent } from './sim/match';
 import { DRILLS, DrillRunner, loadBest, saveBest, type Drill } from './modes/drills';
 import { loadTour, saveTourWin, stopUnlocked, TOUR, type TourOpponent } from './modes/tour';
-import { buildKit, CHARACTERS, characterById, racketById, RACKETS } from './sim/kits';
+import { buildKit, CHARACTERS, characterById, racketById, RACKETS, type Kit } from './sim/kits';
 import { Hud } from './ui/hud';
 import { chargeZones } from './sim/shots';
 
@@ -71,12 +71,13 @@ function newMatch(demo: boolean, tourOpp?: TourOpponent, venue?: Venue): void {
   demoPlayer = demo ? new AIController(match, 0, 'hard') : null;
   assist = !demo && settings.autoMove ? new AIController(match, 0, 'hard', true) : null;
   controls.autoMove = !!assist;
+  controls.scheme = settings.scheme;
   renderer.setLooks([
     { ...me, racketColor: racketById(s.racket).color },
     { ...opp, racketColor: racketById(s.aiRacket!).color },
   ]);
   renderer.setVenue(venue ?? settings.venue);
-  hud.oppName = tourOpp ? `${opp.name}・${tourOpp.title}` : opp.name;
+  hud.oppName = tourOpp ? tourOpp.title : opp.name;
   hud.drill = null;
   drill = null;
   renderer.setTarget(null);
@@ -85,13 +86,42 @@ function newMatch(demo: boolean, tourOpp?: TourOpponent, venue?: Venue): void {
 }
 
 /** 選球員／球拍的卡片 */
+/** 能力值（倍率）→ 長條百分比：1.0 = 一半，±20% 到底 */
+const barPct = (v: number) => Math.max(4, Math.min(100, 50 + (v - 1) * 250));
+
+/** 7 項能力：殺球、切球、推球、高遠、速度（跑速＋起步）、判定（揮拍時間）、準度 */
+function kitStats(k: Kit): [string, string, number][] {
+  return [
+    ['殺', '殺球', k.speed.smash],
+    ['切', '切球／放網', k.speed.drop],
+    ['推', '推球／平抽', k.speed.push],
+    ['高', '高遠／挑球', k.speed.clear],
+    ['速', '跑速／起步', (k.move + k.accel) / 2],
+    ['判', '揮拍判定', k.window],
+    ['準', '落點準度', 1 / k.accuracy],
+  ];
+}
+
+function bars(k: Kit, full: boolean): string {
+  return kitStats(k)
+    .map(([short, long, v]) => {
+      const d = Math.round((v - 1) * 100);
+      const cls = d > 0 ? 'up' : d < 0 ? 'down' : '';
+      const label = full ? long : short;
+      const val = full ? `<em>${d > 0 ? '+' : ''}${d}%</em>` : '';
+      return `<div class="bar ${cls}"><label>${label}</label><div class="track"><div class="mid"></div><div class="fill" style="width:${barPct(v)}%"></div></div>${val}</div>`;
+    })
+    .join('');
+}
+
+/** 選球員／球拍的卡片（附能力長條圖） */
 function buildCards(): void {
   const charBox = $('charCards');
   charBox.innerHTML = '';
   for (const c of CHARACTERS) {
     const b = document.createElement('button');
     b.className = 'card' + (c.id === settings.character ? ' on' : '');
-    b.innerHTML = `<div class="swatch" style="background:#${c.shirt.toString(16).padStart(6, '0')}"></div><b>${c.name}</b><small>${c.title}</small><span>${c.desc}</span>`;
+    b.innerHTML = `<div class="swatch" style="background:#${c.shirt.toString(16).padStart(6, '0')}"></div><b>${c.name}</b><small>${c.title}</small><div class="bars mini">${bars(buildKit(c.id, 'balance'), false)}</div>`;
     b.addEventListener('click', () => {
       settings.character = c.id;
       saveSettings();
@@ -104,7 +134,7 @@ function buildCards(): void {
   for (const r of RACKETS) {
     const b = document.createElement('button');
     b.className = 'card' + (r.id === settings.racket ? ' on' : '');
-    b.innerHTML = `<div class="swatch" style="background:#${r.color.toString(16).padStart(6, '0')}"></div><b>${r.name}</b><span>${r.desc}</span>`;
+    b.innerHTML = `<div class="swatch" style="background:#${r.color.toString(16).padStart(6, '0')}"></div><b>${r.name}</b><div class="bars mini">${bars(buildKit('allround', r.id), false)}</div>`;
     b.addEventListener('click', () => {
       settings.racket = r.id;
       saveSettings();
@@ -112,22 +142,10 @@ function buildCards(): void {
     });
     rBox.appendChild(b);
   }
-  // 組合後的實際加成
-  const k = buildKit(settings.character, settings.racket);
-  const chips: string[] = [];
-  const pct = (label: string, v: number) => {
-    const d = Math.round((v - 1) * 100);
-    if (d !== 0) chips.push(`<i class="${d > 0 ? 'up' : 'down'}">${label} ${d > 0 ? '+' : ''}${d}%</i>`);
-  };
-  pct('殺球', k.speed.smash);
-  pct('切球／放網', k.speed.drop);
-  pct('推球／平抽', k.speed.push);
-  pct('高遠／挑球', k.speed.clear);
-  pct('跑速', k.move);
-  pct('起步', k.accel);
-  pct('揮拍判定', k.window);
-  if (k.accuracy !== 1) chips.push(`<i class="up">落點誤差 ${Math.round((k.accuracy - 1) * 100)}%</i>`);
-  $('kitSummary').innerHTML = chips.length ? chips.join('') : '<i>標準數值</i>';
+  // 球員 × 球拍 組合後的實際能力
+  const me = characterById(settings.character);
+  const rk = racketById(settings.racket);
+  $('kitSummary').innerHTML = `<div class="kit-title">${me.name} ＋ ${rk.name}</div><div class="bars">${bars(buildKit(me.id, rk.id), true)}</div>`;
 }
 
 function setMode(m: Mode): void {
@@ -399,6 +417,7 @@ function startDrill(d: Drill): void {
   demoPlayer = null;
   assist = settings.autoMove ? new AIController(match, 0, 'hard', true) : null;
   controls.autoMove = !!assist;
+  controls.scheme = settings.scheme;
   renderer.setLooks([{ ...me, racketColor: racketById(settings.racket).color }, { shirt: 0x8a96a8, shorts: 0x2a2f38 }]); // 對面是灰色的發球機教練
   renderer.setVenue(settings.venue);
   renderer.setTarget(d.target);
@@ -460,7 +479,7 @@ function buildTourList(): void {
       b.className = 'tour-opp' + (o.boss ? ' boss' : '');
       b.disabled = !open || oi > done;
       const state = oi < done ? '✔' : oi === done && open ? '▶' : '🔒';
-      b.innerHTML = `<div class="swatch" style="background:#${c.shirt.toString(16).padStart(6, '0')}"></div><div><b>${o.boss ? '👑 ' : ''}${c.name}・${o.title}</b><span>${STYLES[o.style].name}｜${o.points} 分｜${o.intro}</span></div><div class="state">${state}</div>`;
+      b.innerHTML = `<div class="swatch" style="background:#${c.shirt.toString(16).padStart(6, '0')}"></div><div><b>${o.boss ? '👑 ' : ''}${o.title}</b><span>${c.name}・${STYLES[o.style].name}｜${o.points} 分｜${o.intro}</span></div><div class="state">${state}</div>`;
       b.addEventListener('click', () => startTour(si, oi));
       div.appendChild(b);
     });
