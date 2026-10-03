@@ -1,6 +1,6 @@
 import './style.css';
 import { AIController, STYLES } from './ai/ai';
-import { sfx, unlockAudio } from './audio';
+import { ambience, callScore, music, setMusicOn, setSfxOn, setSpeechOn, sfx, unlockAudio } from './audio';
 import { DEFAULT_SETTINGS, GAME, PHYS, type MatchSettings, type Venue } from './config';
 import { LocalControls } from './input/controls';
 import { GameRenderer } from './render/scene';
@@ -76,7 +76,7 @@ function newMatch(demo: boolean, tourOpp?: TourOpponent, venue?: Venue): void {
     { ...me, racketColor: racketById(s.racket).color },
     { ...opp, racketColor: racketById(s.aiRacket!).color },
   ]);
-  renderer.setVenue(venue ?? settings.venue);
+  applyVenue(venue ?? settings.venue);
   hud.oppName = tourOpp ? tourOpp.title : opp.name;
   hud.drill = null;
   drill = null;
@@ -149,6 +149,7 @@ function buildCards(): void {
 }
 
 function setMode(m: Mode): void {
+  music.setIntensity(m === 'menu' || m === 'result' ? 1 : 0.4); // 比賽中音樂小聲一點
   mode = m;
   $('tour').classList.remove('show');
   if (m !== 'result') $('nextBtn').style.display = 'none';
@@ -193,7 +194,10 @@ function handleEvent(e: MatchEvent): void {
       if (live) sfx.land();
       break;
     case 'point':
-      if (live) sfx.point(e.winner === HUMAN);
+      if (live) {
+        sfx.point(e.winner === HUMAN);
+        onPointAudio(e.winner, e.reason);
+      }
       break;
     case 'match':
       if (live) {
@@ -258,6 +262,7 @@ function tick(now: number): void {
         buzz(8);
       }
       match.step([mine, opponent ? opponent.input() : idleInput()]);
+      if (!demoPlayer) shoeSqueaks();
       acc -= PHYS.dt;
       for (const e of match.drainEvents()) handleEvent(e);
     }
@@ -318,7 +323,8 @@ document.querySelectorAll<HTMLElement>('.seg').forEach((seg) => {
       (settings as unknown as Record<string, unknown>)[key] = v === 'true' ? true : v === 'false' ? false : /^\d+$/.test(v) ? Number(v) : v;
       saveSettings();
       sync();
-      if (key === 'venue') renderer.setVenue(settings.venue);
+      if (key === 'venue') applyVenue(settings.venue);
+      applyAudioSettings();
     }),
   );
   sync();
@@ -374,6 +380,7 @@ function saveSettings(): void {
   }
 }
 
+applyAudioSettings();
 buildCards();
 newMatch(true);
 setMode('menu');
@@ -419,7 +426,7 @@ function startDrill(d: Drill): void {
   controls.autoMove = !!assist;
   controls.scheme = settings.scheme;
   renderer.setLooks([{ ...me, racketColor: racketById(settings.racket).color }, { shirt: 0x8a96a8, shorts: 0x2a2f38 }]); // 對面是灰色的發球機教練
-  renderer.setVenue(settings.venue);
+  applyVenue(settings.venue);
   renderer.setTarget(d.target);
   hud.oppName = '發球機';
   hud.drill = { name: d.name, rep: 0, reps: d.reps, ok: 0, goal: `${d.goal}｜${settings.scheme === 'tap' ? d.howTap : d.how}` };
@@ -510,3 +517,67 @@ $('tourBackBtn').addEventListener('click', () => {
   $('tour').classList.remove('show');
   $('menu').classList.add('show');
 });
+
+// ---------- 音效 ----------
+
+/** 換場地：畫面＋環境音一起換 */
+function applyVenue(v: Venue): void {
+  renderer.setVenue(v);
+  ambience.setVenue(v);
+}
+
+function applyAudioSettings(): void {
+  setSfxOn(settings.sound);
+  setMusicOn(settings.music);
+  setSpeechOn(settings.umpire);
+}
+
+// 第一次碰螢幕就解鎖音訊（瀏覽器規定要使用者操作後才能出聲），選單音樂也從這時開始
+window.addEventListener('pointerdown', () => unlockAudio());
+window.addEventListener('keydown', () => unlockAudio());
+// 選單按鈕的點擊聲
+document.addEventListener('click', (e) => {
+  if ((e.target as HTMLElement).closest('.overlay button')) sfx.click();
+});
+
+/** 球鞋吱吱聲：急停或急轉時 */
+const lastVel: { x: number; z: number; t: number }[] = [
+  { x: 0, z: 0, t: 0 },
+  { x: 0, z: 0, t: 0 },
+];
+function shoeSqueaks(): void {
+  match.players.forEach((p, i) => {
+    const lv = lastVel[i];
+    const sp0 = Math.hypot(lv.x, lv.z);
+    const sp1 = Math.hypot(p.vel.x, p.vel.z);
+    const braking = sp0 > 2.6 && (sp0 - sp1) / PHYS.dt > 22;
+    const turning = sp0 > 2 && sp1 > 1 && (lv.x * p.vel.x + lv.z * p.vel.z) / (sp0 * sp1) < 0.2;
+    if ((braking || turning) && match.time - lv.t > 0.35 && !p.airborne) {
+      sfx.squeak(i === HUMAN ? 1 : 0.55);
+      lv.t = match.time;
+    }
+    lv.x = p.vel.x;
+    lv.z = p.vel.z;
+  });
+}
+
+/** 得分後：觀眾掌聲（回合越長越熱烈）＋裁判報分 */
+function onPointAudio(winner: 0 | 1, reason: string): void {
+  const rally = match.rallyHits;
+  const big = reason === '落地得分' && rally >= 8;
+  sfx.applause(Math.min(1, 0.25 + rally / 16 + (winner === HUMAN ? 0.15 : 0) + (big ? 0.2 : 0)));
+  if (match.settings.practice) return;
+  const s = match.score;
+  const srv = match.server; // 得分的人下一球發球，先報發球方的分數
+  const a = s[srv];
+  const b = s[srv === 0 ? 1 : 0];
+  const target = match.settings.points;
+  const cap = target === 21 ? 30 : target === 15 ? 21 : 15;
+  const gameWon = (a >= target && a - b >= 2) || a >= cap;
+  let extra = '';
+  if (match.phase === 'matchOver') extra = '，比賽結束';
+  else if (gameWon) extra = '，本局結束';
+  else if ((a >= target - 1 && a > b) || a === cap - 1) extra = match.games[srv] + 1 > match.settings.games / 2 ? '，賽點' : '，局點';
+  const text = a === 0 && b === 0 ? '新的一局，零比零' : `${a} 比 ${b}${extra}`;
+  window.setTimeout(() => callScore(text), 750);
+}

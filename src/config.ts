@@ -93,6 +93,9 @@ export interface MatchSettings {
   games: 1 | 3;
   landingHint: boolean;
   vibration: boolean;
+  sound: boolean; // 音效＋環境音
+  music: boolean; // 背景音樂
+  umpire: boolean; // 裁判報分語音
   character: string; // 自己的球員
   racket: string; // 自己的球拍
   autoMove: boolean; // 簡單模式：自動跑位，只控制擊球
@@ -109,6 +112,9 @@ export const DEFAULT_SETTINGS: MatchSettings = {
   games: 1,
   landingHint: true,
   vibration: true,
+  sound: true,
+  music: true,
+  umpire: true,
   character: 'allround',
   racket: 'balance',
   autoMove: false,
