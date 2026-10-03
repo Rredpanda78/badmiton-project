@@ -122,6 +122,9 @@ export type Difficulty = 'easy' | 'normal' | 'hard' | 'extreme' | 'hell';
 
 export type MoveMode = 'auto' | 'assist' | 'manual';
 
+/** 背景音樂：auto = 依場地自動（每個場地自己的撥弦曲風）；其他 = 固定一首（src/audio.ts 的 MUSIC_TRACKS） */
+export type MusicTrack = 'auto' | 'sakura' | 'sports' | 'synth' | 'lofi' | 'bossa';
+
 export interface MatchSettings {
   difficulty: Difficulty;
   points: 11 | 15 | 21;
@@ -130,6 +133,7 @@ export interface MatchSettings {
   vibration: boolean;
   sound: boolean; // 音效＋環境音
   music: boolean; // 背景音樂
+  musicTrack: MusicTrack; // 背景音樂選曲
   umpire: boolean; // 裁判報分語音
   character: string; // 自己的球員
   racket: string; // 自己的球拍
@@ -163,6 +167,7 @@ export const DEFAULT_SETTINGS: MatchSettings = {
   vibration: true,
   sound: true,
   music: true,
+  musicTrack: 'auto',
   umpire: true,
   character: 'allround',
   racket: 'balance',

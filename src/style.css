@@ -1451,4 +1451,42 @@ textarea {
 .join-row button {
   width: 100%;
   height: 48px;
+/* 背景音樂選曲（設定畫面） */
+.music-pick-ctl {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+.music-pick select {
+  min-width: 0;
+  max-width: 190px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+}
+.music-pick select option {
+  background: #1b2533;
+  color: var(--text);
+}
+.music-pick .music-try {
+  flex: none;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.music-pick .music-try:active {
+  background: var(--me);
+}
+.music-hint {
+  margin-top: -4px;
 }

@@ -1489,3 +1489,57 @@ function onlineWaitTick(dt: number): boolean {
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) online?.room.wake();
 });
+
+// ---------- 背景音樂選曲（設定畫面；一選就換成那首，可以試聽） ----------
+import { MUSIC_TRACKS } from './audio';
+{
+  const choices: [MatchSettings['musicTrack'], string, string][] = [
+    ['auto', '依場地自動', '每個場地自己的撥弦曲風（櫻花園都節音階、市場宮調輪指、海灘反拍刷弦…）'],
+    ...MUSIC_TRACKS.map((t): [MatchSettings['musicTrack'], string, string] => [t.id, t.name, t.desc]),
+  ];
+  if (!choices.some(([id]) => id === settings.musicTrack)) settings.musicTrack = 'auto'; // 舊存檔／拿掉的曲目
+  music.setTrack(settings.musicTrack);
+
+  const panel = document.querySelector('#settings .panel');
+  if (panel) {
+    const row = document.createElement('div');
+    row.className = 'row music-pick';
+    const label = document.createElement('label');
+    label.textContent = '背景音樂';
+    label.htmlFor = 'musicTrackSel';
+    const sel = document.createElement('select');
+    sel.id = 'musicTrackSel';
+    for (const [id, name] of choices) sel.add(new Option(name, id, false, id === settings.musicTrack));
+    const tryBtn = document.createElement('button');
+    tryBtn.type = 'button';
+    tryBtn.className = 'music-try';
+    tryBtn.textContent = '▶ 試聽';
+    const ctl = document.createElement('div');
+    ctl.className = 'music-pick-ctl';
+    ctl.append(sel, tryBtn);
+    row.append(label, ctl);
+    const hint = document.createElement('p');
+    hint.className = 'hint-line music-hint';
+    const showHint = () => (hint.textContent = choices.find(([id]) => id === sel.value)?.[2] ?? '');
+    showHint();
+    sel.addEventListener('change', () => {
+      settings.musicTrack = sel.value as MatchSettings['musicTrack'];
+      saveSettings();
+      showHint();
+      unlockAudio();
+      music.setTrack(settings.musicTrack); // 選單本來就有音樂：馬上換成這首從頭播
+      if (!settings.music) music.preview(); // 音樂關著：試聽 20 秒
+    });
+    tryBtn.addEventListener('click', () => {
+      unlockAudio();
+      music.preview(); // 從頭播（音樂關著也播 20 秒）
+    });
+    // 放在「音樂 開／關」那一列下面；找不到就放「完成」前面；再找不到就放最後
+    const musicRow = panel.querySelector('.seg[data-key="music"]')?.closest('.row');
+    const done = document.getElementById('settingsDoneBtn');
+    if (musicRow) musicRow.after(row, hint);
+    else if (done && panel.contains(done)) done.before(row, hint);
+    else panel.append(row, hint);
+    done?.addEventListener('click', () => music.endPreview());
+  }
+}
