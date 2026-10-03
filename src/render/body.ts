@@ -353,8 +353,8 @@ export function buildRig(o: BodyOpts): Rig {
     for (const s of [-1, 1]) P.add(new THREE.SphereGeometry(0.017, 8, 6).scale(0.45, 1, 0.9).translate(s * 0.106, 0.065, 0.012), head, skin, 0.25);
     // 眼睛：白眼球（扁）＋深色瞳孔（卡通大瞳）
     for (const s of [-1, 1]) {
-      P.add(new THREE.SphereGeometry(0.019, 10, 8).scale(1.1, 0.78, 0.55).translate(s * 0.037, 0.058, -0.098), head, 0xf6f6f6, 0.9);
-      P.add(new THREE.SphereGeometry(0.0105, 8, 6).scale(1, 1.15, 0.6).translate(s * 0.038, 0.056, -0.111), head, 0x201714, 1);
+      P.add(new THREE.SphereGeometry(0.019, 8, 6).scale(1.1, 0.78, 0.42).translate(s * 0.037, 0.058, -0.1), head, 0xf6f6f6, 0.9);
+      P.add(new THREE.SphereGeometry(0.0105, 8, 6).scale(1, 1.15, 0.45).translate(s * 0.038, 0.056, -0.109), head, 0x201714, 1);
     }
     // 眉毛（外側略高）
     for (const s of [-1, 1]) {
@@ -362,7 +362,7 @@ export function buildRig(o: BodyOpts): Rig {
     }
     // 鼻子、嘴
     P.add(new THREE.SphereGeometry(0.0115, 8, 6).scale(0.85, 1.1, 1).translate(0, 0.04, -0.111), head, skin, 0.25);
-    P.add(new THREE.BoxGeometry(0.03, 0.0055, 0.006).translate(0, 0.012, -0.093), head, mix(skin, 0x8a3a3a, 0.6), 0.4);
+    P.add(new THREE.BoxGeometry(0.03, 0.0055, 0.005).translate(0, 0.012, -0.0915), head, mix(skin, 0x8a3a3a, 0.6), 0.4);
     buildHair(P, head, ponytail, o, HC);
   }
 
@@ -553,9 +553,9 @@ function buildHair(P: Parts, head: THREE.Bone, ponytail: THREE.Bone | null, o: B
     spike(0.95, Math.PI - 0.35, 0.075);
     spike(0.95, Math.PI + 0.35, 0.075);
   } else if (kind === 'undercut') {
-    // 兩側、後腦削短（髮色混膚色的「青皮」），頭頂一撮往後梳的厚髮
-    dome(0.113, 0.45, Math.PI * 0.5, mix(hairC, o.skin, 0.5), 1, 1, 1.06);
-    dome(0.122, 0.12, Math.PI * 0.36, hairC, 0.9, 1.16, 1.2, 0.012);
+    // 兩側、後腦削短（髮色混膚色的「青皮」，貼著頭），頭頂一撮往後梳的厚髮
+    dome(0.1115, 0.42, Math.PI * 0.5, mix(hairC, o.skin, 0.62), 1, 1, 1.05);
+    dome(0.12, 0.22, Math.PI * 0.42, hairC, 0.95, 1.08, 1.16, 0.01);
   } else {
     // short／ponytail：頭頂與後腦的短髮＋瀏海
     dome(0.12, kind === 'ponytail' ? 0.42 : 0.5, Math.PI / 2, hairC);
