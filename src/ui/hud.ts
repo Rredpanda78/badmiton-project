@@ -1,4 +1,4 @@
-import type { Match, MatchEvent } from '../sim/match';
+import type { Match, MatchEvent, PlayerId } from '../sim/match';
 import { v3 } from '../sim/physics';
 import { chargeZones } from '../sim/shots';
 import type { GameRenderer } from '../render/scene';
@@ -31,17 +31,20 @@ export class Hud {
     this.goal = root.querySelector('#drillGoal')!;
   }
 
-  onEvent(e: MatchEvent, match: Match, r: GameRenderer, humanId: 0 | 1): void {
+  onEvent(e: MatchEvent, match: Match, r: GameRenderer, humanId: PlayerId): void {
+    const myTeam = match.teamOf(humanId);
+    const we = match.doubles ? '你們' : '你';
     switch (e.type) {
       case 'hit': {
         const mine = e.player === humanId;
+        const mate = !mine && match.teamOf(e.player) === myTeam; // 雙打隊友
         const at = r.project(v3(e.pos.x, e.pos.y + 0.6, e.pos.z));
         const fast = (e.family === 'down' && e.speedKmh > 120) || e.jump;
         let txt = (e.dive ? '魚躍救球・' : '') + e.name + (fast ? ` ${e.speedKmh} km/h` : '');
         if (e.netFault) txt = `${e.name}（${e.powerShort ? '力道不足' : '擊球不佳'}）`;
         // 自己的球：附上擊球評價，讓玩家知道時機好不好
         const graded = mine && !e.netFault && !e.serve;
-        const cls = e.jump ? 'jump' : mine ? (graded && e.grade === '完美' ? 'me perfect' : 'me') : 'opp';
+        const cls = e.jump ? 'jump' : mine ? (graded && e.grade === '完美' ? 'me perfect' : 'me') : mate ? 'mate' : 'opp';
         this.float(graded ? `${txt} · ${e.grade}` : txt, at.x, at.y, cls);
         break;
       }
@@ -54,14 +57,14 @@ export class Hud {
         }
         break;
       case 'point': {
-        const win = e.winner === humanId;
-        this.showBanner(e.reason, win ? '你得分！' : `${this.oppName} 得分`, win ? 'win' : 'lose', 1.6);
+        const win = e.winner === myTeam;
+        this.showBanner(e.reason, win ? `${we}得分！` : `${this.oppName} 得分`, win ? 'win' : 'lose', 1.6);
         break;
       }
       case 'game':
         if (match.phase !== 'matchOver') {
-          const win = e.winner === humanId;
-          this.showBanner(win ? '你贏得這局！' : `${this.oppName} 贏得這局`, `局數 ${match.games[humanId]} : ${match.games[humanId === 0 ? 1 : 0]}`, win ? 'win' : 'lose', 1.8);
+          const win = e.winner === myTeam;
+          this.showBanner(win ? `${we}贏得這局！` : `${this.oppName} 贏得這局`, `局數 ${match.games[myTeam]} : ${match.games[myTeam === 0 ? 1 : 0]}`, win ? 'win' : 'lose', 1.8);
         }
         break;
     }
@@ -94,9 +97,11 @@ export class Hud {
     setTimeout(() => el.remove(), 1100);
   }
 
-  update(match: Match, r: GameRenderer, dt: number, humanId: 0 | 1): void {
-    const opp = humanId === 0 ? 1 : 0;
-    const serveDot = (id: number) => (match.server === id && match.phase !== 'matchOver' ? '<i class="dot"></i>' : '');
+  update(match: Match, r: GameRenderer, dt: number, humanId: PlayerId): void {
+    // 比分、局數以隊伍為索引（單打：隊伍 = 球員編號）；發球點標在發球的那一隊
+    const mine = match.teamOf(humanId);
+    const opp = mine === 0 ? 1 : 0;
+    const serveDot = (team: number) => (match.teamOf(match.server) === team && match.phase !== 'matchOver' ? '<i class="dot"></i>' : '');
     const multi = match.settings.games > 1;
     const d = this.drill;
     this.goal.style.display = d && d.goal ? 'block' : 'none';
@@ -105,7 +110,7 @@ export class Hud {
       this.goal.textContent = d.goal;
     } else
       this.score.innerHTML =
-        `<span class="me">${serveDot(humanId)}你${multi ? `<small>${match.games[humanId]}</small>` : ''}<b>${match.score[humanId]}</b></span>` +
+        `<span class="me">${serveDot(mine)}${match.doubles ? '你們' : '你'}${multi ? `<small>${match.games[mine]}</small>` : ''}<b>${match.score[mine]}</b></span>` +
         `<span class="sep">:</span>` +
         `<span class="opp"><b>${match.score[opp]}</b>${multi ? `<small>${match.games[opp]}</small>` : ''}${this.oppName}<em>${this.oppTag}</em>${serveDot(opp)}</span>`;
 
@@ -133,7 +138,7 @@ export class Hud {
     this.meter.style.display = visible ? 'block' : 'none';
     if (visible) {
       const serving = match.phase === 'serve' && match.server === humanId;
-      const z = chargeZones(serving);
+      const z = chargeZones(serving, match.doubles);
       const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
       this.meter.style.background = `linear-gradient(to top,
         #e5484d 0 ${pct(z.net)}, #9be37b ${pct(z.net)} ${pct(z.front)},

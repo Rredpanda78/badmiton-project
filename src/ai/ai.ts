@@ -1,7 +1,8 @@
 import { chargeFromTime, COURT, GAME, PHYS, timeForCharge, type Difficulty } from '../config';
-import { idleInput, type Match, type PlayerInput } from '../sim/match';
+import { idleInput, type Match, type PlayerId, type PlayerInput } from '../sim/match';
 import type { Prediction } from '../sim/physics';
 import { chargeForDepth, depthFromCharge, reboundCharge, type Family, type Flick } from '../sim/shots';
+import { ballTaker, formationSpot } from './doubles';
 
 interface AIParams {
   reaction: number; // 對手出拍後多久才開始動
@@ -84,6 +85,7 @@ export class AIController {
   private plan: Plan | null = null;
   private seenHits = -1;
   private seenServeT = -1;
+  private reactAt = 0; // 對方這一拍之後，什麼時候開始動（雙打補位也照反應時間）
   private serveDelay = 1;
   private serveChoice: { charge: number; flick: Flick } | null = null;
   /** 會不會魚躍（自動跑位時看設定「自動魚躍」） */
@@ -94,7 +96,7 @@ export class AIController {
    */
   constructor(
     private match: Match,
-    private id: 0 | 1,
+    private id: PlayerId,
     difficulty: Difficulty | number,
     private moveOnly = false,
     private style: AIStyle = STYLES.allround,
@@ -125,14 +127,19 @@ export class AIController {
     if (m.phase !== 'rally') return inp;
 
     const sh = m.shuttle;
-    if (sh.lastHitter !== this.id && sh.lastHitter !== null && m.hitSerial !== this.seenHits) {
+    // 對方（單打：對手；雙打：對方兩人之一）剛打過來
+    const theirs = sh.lastHitter !== null && m.teamOf(sh.lastHitter) !== this.me.team;
+    if (theirs && m.hitSerial !== this.seenHits) {
       this.seenHits = m.hitSerial;
-      this.plan = this.makePlan();
+      this.reactAt = m.time + this.p.reaction;
+      // 雙打：只有分到這一球的人去接，另一人照陣型補位
+      this.plan = this.takesBall() ? this.makePlan() : null;
     }
 
-    const plan = sh.lastHitter === this.id || !this.plan || this.plan.leave || this.plan.done ? null : this.plan;
+    const plan = !theirs || !this.plan || this.plan.leave || this.plan.done ? null : this.plan;
     if (!plan) {
-      this.moveTo(inp, 0, this.me.side * 3.6, 0.6);
+      const h = this.home();
+      this.moveTo(inp, h.x, h.z, m.doubles && m.time < this.reactAt ? 0.4 : 0.6);
       return inp;
     }
 
@@ -150,7 +157,10 @@ export class AIController {
       return inp;
     }
     if (now >= plan.reactAt) this.moveTo(inp, plan.standX, plan.standZ, 1);
-    else this.moveTo(inp, 0, this.me.side * 3.6, 0.4);
+    else {
+      const h = this.home();
+      this.moveTo(inp, h.x, h.z, 0.4);
+    }
 
     // 假動作：先蓄力一下再放掉（腳下光圈會亮又熄），然後才真的蓄力
     const feinting = plan.feint && now >= plan.chargeAt - 0.5 && now < plan.chargeAt - 0.2;
@@ -168,6 +178,17 @@ export class AIController {
     return inp;
   }
 
+  /** 沒球要接時站的位置：單打 = 中場；雙打 = 陣型位置 */
+  private home(): { x: number; z: number } {
+    return this.match.doubles ? formationSpot(this.match, this.id) : { x: 0, z: this.me.side * 3.6 };
+  }
+
+  /** 這一球是不是我接（單打一定是；雙打看分工） */
+  private takesBall(): boolean {
+    if (!this.match.doubles) return true;
+    return ballTaker(this.match, this.me.team)?.id === this.id;
+  }
+
   private serveInput(inp: PlayerInput): PlayerInput {
     const m = this.match;
     if (m.server !== this.id) return inp;
@@ -178,8 +199,9 @@ export class AIController {
     this.seenServeT = m.phaseT;
     if (m.phaseT < this.serveDelay) return inp;
     if (!this.serveChoice) {
-      const long = m.rng.chance(0.35);
-      const depth = long ? 5.9 : COURT.shortService + 0.5;
+      // 雙打發球多發小球；發高遠要落在雙打後發球線（5.94 m）以內
+      const long = m.rng.chance(m.doubles ? 0.15 : 0.35);
+      const depth = long ? (m.doubles ? COURT.doublesLongService - 0.45 : 5.9) : COURT.shortService + 0.5;
       const aim = (m.rng.next() - 0.5) * 1.2;
       this.serveChoice = {
         charge: this.chargeFor(depth, 0.4), // 發球比較穩
@@ -232,10 +254,10 @@ export class AIController {
     // 出界球判斷
     if (pred.landing) {
       const L = pred.landing;
-      const marginX = COURT.singlesHalfWidth - Math.abs(L.x);
+      const marginX = m.halfWidth - Math.abs(L.x);
       const marginZ = COURT.halfLength - Math.abs(L.z);
       let margin = Math.min(marginX, marginZ);
-      if (sh.isServe) margin = Math.min(margin, Math.abs(L.z) - COURT.shortService, L.x * sh.serveBoxSign);
+      if (sh.isServe) margin = Math.min(margin, Math.abs(L.z) - COURT.shortService, L.x * sh.serveBoxSign, m.serveLongLine - Math.abs(L.z));
       if (margin < -0.05 && rng.chance(p.outJudge)) return leavePlan();
       if (margin >= 0 && margin < 0.3 && rng.chance((1 - p.outJudge) * 0.4)) return leavePlan();
     }
@@ -281,22 +303,45 @@ export class AIController {
     const inSpeed = j > pick.i ? Math.hypot(pts[j].p.x - pt.x, pts[j].p.y - pt.y, pts[j].p.z - pt.z) / (pts[j].t - pts[pick.i].t) / speedMul : 0;
     const maxCharge = Math.max(chargeFromTime(flickAt - (now + p.reaction)), reboundCharge(inSpeed));
     let shot = this.chooseShot(pt.y, dn);
-    if (chargeForDepth(shot.depth) > maxCharge) {
-      const depth = Math.max(0.9, depthFromCharge(maxCharge) - 0.3);
-      shot = { family: 'down', depth, aimX: shot.aimX };
+    // 雙打網前撲球：前場兩人距離近、來不及蓄力，跟玩家一樣用「網前平球 = 撲球」（不用蓄力）
+    const netKill =
+      m.doubles && shot.family === 'down' && shot.depth >= 2.6 && dn < GAME.netKill.zone - 0.1 && pt.y >= COURT.netTop + 0.15
+        ? { x: Math.max(-0.7, Math.min(0.7, shot.aimX / 1.15)), y: 0.7, cmd: { family: 'side' as const, depth: GAME.netKill.depth } }
+        : null;
+    let flick: Flick;
+    let charge: number;
+    if (netKill) {
+      flick = netKill;
+      charge = 0;
+    } else if (m.doubles) {
+      // 雙打：跟預設的點擊滑放一樣直接指定球種與深度（不用蓄力；前場兩人距離近，蓄力常來不及），落點誤差照難度
+      // 小球（< 2.6 m）誤差減半、不會短到直接掛網（玩家點擊滑放的小球深度也是固定的，只吃擊球品質）
+      const short = shot.depth < 2.6;
+      let depth = shot.depth + rng.gauss() * p.depthNoise * this.style.steady * (short ? 0.5 : 1);
+      if (short) depth = Math.max(0.75, depth);
+      flick = { ...this.flickFor(shot.family, shot.aimX), cmd: { family: shot.family, depth } };
+      charge = 0;
+    } else {
+      if (chargeForDepth(shot.depth) > maxCharge) {
+        const depth = Math.max(0.9, depthFromCharge(maxCharge) - 0.3);
+        shot = { family: 'down', depth, aimX: shot.aimX };
+      }
+      charge = this.chargeFor(shot.depth);
+      flick = this.flickFor(shot.family, shot.aimX);
     }
-    const charge = this.chargeFor(shot.depth);
+    const jump = !netKill && shot.family === 'down' && shot.depth >= 2.6 && pt.y >= 2.1 && rng.chance(p.jumpRate + this.style.jump);
     return {
       reactAt: now + p.reaction,
       standX: pick.sx,
       standZ: pick.sz,
       contactAt,
-      chargeAt: flickAt - timeForCharge(charge),
+      // 不用蓄力的跳殺也要先按住一陣子（連按兩下待命）才會自動起跳
+      chargeAt: flickAt - (charge === 0 && jump ? 0.45 : timeForCharge(charge)),
       flickAt,
       charge,
-      flick: this.flickFor(shot.family, shot.aimX),
+      flick,
       leave: false,
-      jump: shot.family === 'down' && shot.depth >= 2.6 && pt.y >= 2.1 && rng.chance(p.jumpRate + this.style.jump),
+      jump,
       feint: rng.chance(this.style.feint) && flickAt - timeForCharge(charge) - 0.55 > now + p.reaction,
       done: false,
       dive: null,
@@ -350,27 +395,65 @@ export class AIController {
     return null;
   }
 
+  /**
+   * 雙打落點（自己視角的 aimX）：看兩位對手的左右位置，找最大的空檔——
+   * 兩人中間（容易互相讓）或邊線那一側；判斷不準時就隨便打
+   */
+  private doublesAim(opps: { pos: { x: number } }[]): number {
+    const rng = this.match.rng;
+    if (!rng.chance(this.p.smartAim)) return rng.range(-0.8, 0.8);
+    const side = this.me.side;
+    const xs = opps.map((o) => o.pos.x * side).sort((a, b) => a - b);
+    const W = 2.1; // AI 瞄得到的最外側（再外面容易出界）
+    const gaps: [number, number][] = [
+      [-W, xs[0]],
+      [xs[0], xs[1]],
+      [xs[1], W],
+    ];
+    let bestC = 0;
+    let bestW = -Infinity;
+    gaps.forEach(([a, b], i) => {
+      const w = b - a + (i === 1 ? 0.5 : 0); // 中間的空檔多加一點：兩人容易互相讓
+      if (w > bestW) {
+        bestW = w;
+        bestC = (a + b) / 2;
+      }
+    });
+    const tx = Math.max(-W, Math.min(W, bestC + rng.gauss() * 0.25));
+    return tx / 2.3;
+  }
+
   private chooseShot(y: number, dn: number): ShotChoice {
     const m = this.match;
     const rng = m.rng;
     const me = this.me;
-    const opp = m.players[this.id === 0 ? 1 : 0];
-    const oppDeep = Math.abs(opp.pos.z) > 4.6;
-    const oppFront = Math.abs(opp.pos.z) < 3.0;
-
-    // 打對手空檔：對手在我視角的左右
-    const oppAim = (opp.pos.x * me.side) / 2.3;
-    const aimX = rng.chance(this.p.smartAim)
-      ? -Math.sign(oppAim || rng.next() - 0.5) * rng.range(0.45, 0.85)
-      : rng.range(-0.8, 0.8);
+    let oppDeep: boolean;
+    let oppFront: boolean;
+    let aimX: number;
+    if (m.doubles) {
+      // 雙打：兩位對手都在後面才放短、兩位都在前面才挑後場；落點打兩人中間或空檔
+      const opps = m.players.filter((o) => o.team !== me.team);
+      oppDeep = Math.min(...opps.map((o) => Math.abs(o.pos.z))) > 4.2;
+      oppFront = Math.max(...opps.map((o) => Math.abs(o.pos.z))) < 3.2;
+      aimX = this.doublesAim(opps);
+    } else {
+      const opp = m.players[this.id === 0 ? 1 : 0];
+      oppDeep = Math.abs(opp.pos.z) > 4.6;
+      oppFront = Math.abs(opp.pos.z) < 3.0;
+      // 打對手空檔：對手在我視角的左右
+      const oppAim = (opp.pos.x * me.side) / 2.3;
+      aimX = rng.chance(this.p.smartAim) ? -Math.sign(oppAim || rng.next() - 0.5) * rng.range(0.45, 0.85) : rng.range(-0.8, 0.8);
+    }
 
     // 權重再乘上「打法個性」和「自己哪種球比較快」（會多打自己的強項）
     const st = this.style;
     const ks = me.kit.speed;
+    // 雙打打法更積極：多殺、多平抽，中高點少挑高（挑高就換對方殺）；網前低點的貼網小球還是要挑
+    const dbl = m.doubles ? { side: 1.3, up: y < 1.3 ? 1 : 0.6, smash: 1.6, drop: 1 } : null;
     const bias = (family: Family, depth: number) => {
-      if (family === 'side') return st.drive * ks.push ** 4;
-      if (family === 'up') return st.clear * ks.clear ** 4;
-      return depth >= 2.6 ? st.smash * ks.smash ** 4 : st.drop * ks.drop ** 4;
+      if (family === 'side') return st.drive * ks.push ** 4 * (dbl?.side ?? 1);
+      if (family === 'up') return st.clear * ks.clear ** 4 * (dbl?.up ?? 1);
+      return depth >= 2.6 ? st.smash * ks.smash ** 4 * (dbl?.smash ?? 1) : st.drop * ks.drop ** 4 * (dbl?.drop ?? 1);
     };
     const pick = (opts: [number, ShotChoice['family'], number][]): ShotChoice => {
       const ws = opts.map(([w, f, d]) => w * bias(f, d));
@@ -389,6 +472,14 @@ export class AIController {
       const kill = this.p.killRate;
       return pick([[kill, 'down', 3.2], [1 - kill, 'down', 1.1], [oppFront ? 0.3 : 0.1, 'up', 5.6]]);
     }
+    if (m.doubles && dn < 2.3) {
+      // 雙打網前：球高過網帶就撲（前場兩人近，不撲會一直來回放網）；網帶以下放網、推後場空檔或挑
+      if (y >= COURT.netTop + 0.1) {
+        const kill = Math.min(0.85, this.p.killRate * 1.5);
+        return pick([[kill, 'down', 3.2], [1 - kill, 'down', 1.1], [oppFront ? 0.3 : 0.1, 'up', 5.6]]);
+      }
+      if (y >= 1.0) return pick([[0.5, 'down', 1.1], [0.35, 'down', 4.6], [oppFront ? 0.4 : 0.25, 'up', 5.6]]);
+    }
     if (y >= GAME.highZoneY) {
       if (dn < 4.5) return pick([[0.6 * sb, 'down', 4.3], [oppDeep ? 0.35 : 0.2, 'down', 1.3], [oppFront ? 0.3 : 0.12, 'up', 5.8]]);
       return pick([[oppFront ? 0.55 : 0.4, 'up', 5.8], [0.3 * sb, 'down', 4.6], [oppDeep ? 0.45 : 0.25, 'down', 1.4]]);
@@ -397,6 +488,8 @@ export class AIController {
       if (dn < 2.3) return pick([[0.7, 'down', 1.1], [0.3, 'up', 5.6]]);
       return pick([[0.4, 'side', 5.2], [oppFront ? 0.5 : 0.3, 'up', 5.6], [oppDeep ? 0.35 : 0.2, 'down', 1.5]]);
     }
+    // 雙打：中後場的低球多一個「擋網前」（防守時把殺球擋到對方前場）
+    if (m.doubles && dn >= 2.5) return pick([[0.65, 'up', 5.6], [0.35, 'side', 5.0], [oppDeep ? 0.45 : 0.25, 'down', 1.4]]);
     if (dn < 2.5) return pick([[oppDeep ? 0.65 : 0.45, 'down', 1.1], [oppFront ? 0.65 : 0.45, 'up', 5.6]]);
     return pick([[0.65, 'up', 5.6], [0.35, 'side', 5.0]]);
   }

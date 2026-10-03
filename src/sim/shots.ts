@@ -69,14 +69,15 @@ export function reboundCharge(incomingSpeed: number): number {
   return Math.min(0.45, incomingSpeed * 0.028);
 }
 
-/** 蓄力條上各區段（0..1）——UI 用 */
-export function chargeZones(serve = false) {
+/** 蓄力條上各區段（0..1）——UI 用；雙打發球的後界是雙打後發球線 */
+export function chargeZones(serve = false, doubles = false) {
   const c = (d: number) => Math.max(0, Math.min(1, chargeForDepth(d)));
+  const back = serve && doubles ? COURT.doublesLongService : COURT.halfLength;
   return {
     net: c(serve ? COURT.shortService : NET_FAULT_DEPTH), // 小於此值：掛網（發球則是沒過前發球線）
     front: c(serve ? COURT.shortService + 0.6 : 2.2), // 網前
-    deep: c(COURT.halfLength - 1.4), // 底線前 1.4 m：深球
-    out: c(COURT.halfLength), // 大於此值：出界
+    deep: c(back - (serve && doubles ? 0.9 : 1.4)), // 底線前 1.4 m：深球
+    out: c(back), // 大於此值：出界
   };
 }
 

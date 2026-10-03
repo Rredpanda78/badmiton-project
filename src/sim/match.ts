@@ -35,9 +35,19 @@ export interface Swing {
   auto?: boolean; // 點擊滑放：深度等擊中時依擊球點高低決定（上手高遠／切球、下手挑球／放網）
 }
 
+/**
+ * 球員編號。單打：0 = 近側（畫面下方）、1 = 遠側。
+ * 雙打：0、2 = 近側一隊，1、3 = 遠側一隊（隊伍 = id % 2，所以單打時隊伍 = 球員編號）
+ */
+export type PlayerId = 0 | 1 | 2 | 3;
+/** 隊伍：0 = 近側（z>0）、1 = 遠側。比分、局數都以隊伍為索引 */
+export type TeamId = 0 | 1;
+
 export interface PlayerState {
-  id: 0 | 1;
+  id: PlayerId;
+  team: TeamId;
   side: 1 | -1; // 1 = z>0 半場（畫面下方）
+  court: 1 | -1; // 雙打：目前站的發球區（自己視角 1 = 右、-1 = 左），得分換位用；單打不用
   pos: Vec3; // y = 腳離地高度（跳躍時 > 0）
   vel: Vec3;
   charge: number;
@@ -67,7 +77,7 @@ export type HitGrade = '完美' | '不錯' | '勉強';
 export type MatchEvent =
   | {
       type: 'hit';
-      player: 0 | 1;
+      player: PlayerId;
       name: string;
       speedKmh: number;
       pos: Vec3;
@@ -85,19 +95,19 @@ export type MatchEvent =
       wobble: boolean; // 這球是晃動的機會球
       attack: number; // 這球有多好殺（給接球方的殺球加成）
     }
-  | { type: 'whiff'; player: 0 | 1; reason: WhiffReason; airborne: boolean }
-  | { type: 'jump'; player: 0 | 1 }
-  | { type: 'jumpLand'; player: 0 | 1 }
-  | { type: 'dive'; player: 0 | 1; dx: number; dz: number }
-  | { type: 'diveLand'; player: 0 | 1 }
+  | { type: 'whiff'; player: PlayerId; reason: WhiffReason; airborne: boolean }
+  | { type: 'jump'; player: PlayerId }
+  | { type: 'jumpLand'; player: PlayerId }
+  | { type: 'dive'; player: PlayerId; dx: number; dz: number }
+  | { type: 'diveLand'; player: PlayerId }
   | { type: 'net'; pos: Vec3 }
   | { type: 'land'; pos: Vec3; inBounds: boolean }
-  | { type: 'drillLand'; hitter: 0 | 1; pos: Vec3; inBounds: boolean; net: boolean }
-  | { type: 'chance'; player: 0 | 1 } // 打出晃動的機會球
-  | { type: 'point'; winner: 0 | 1; reason: string; byRemote?: boolean }
-  | { type: 'game'; winner: 0 | 1 }
-  | { type: 'match'; winner: 0 | 1 }
-  | { type: 'serveStart'; server: 0 | 1 };
+  | { type: 'drillLand'; hitter: PlayerId; pos: Vec3; inBounds: boolean; net: boolean }
+  | { type: 'chance'; player: TeamId } // 打出晃動的機會球；player = 拿到機會球的一方（隊伍，單打 = 球員編號）
+  | { type: 'point'; winner: TeamId; reason: string; byRemote?: boolean } // winner 是隊伍（單打 = 球員編號）
+  | { type: 'game'; winner: TeamId }
+  | { type: 'match'; winner: TeamId }
+  | { type: 'serveStart'; server: PlayerId };
 
 export type ShuttleMode = 'held' | 'flight' | 'netfall' | 'down';
 
@@ -105,7 +115,7 @@ export interface ShuttleState {
   pos: Vec3;
   vel: Vec3;
   mode: ShuttleMode;
-  lastHitter: 0 | 1 | null;
+  lastHitter: PlayerId | null;
   isServe: boolean;
   serveBoxSign: number; // 發球時對角發球區在 x 的正負號
   prediction: Prediction | null;
@@ -163,17 +173,18 @@ export interface RemoteHit {
 }
 export class Match {
   readonly rng: Rng;
-  players: [PlayerState, PlayerState];
+  /** 單打 2 人、雙打 4 人；陣列索引 = 球員編號 */
+  players: PlayerState[];
   shuttle: ShuttleState;
-  score: [number, number] = [0, 0];
+  score: [number, number] = [0, 0]; // 以隊伍為索引（單打 = 球員編號）
   games: [number, number] = [0, 0];
-  server: 0 | 1 = 0;
+  server: PlayerId = 0;
   phase: Phase = 'serve';
   phaseT = 0;
   time = 0;
   rallyHits = 0;
   hitSerial = 0; // 整場累計擊球數（不歸零，給 AI/網路偵測新擊球用）
-  lastPoint: { winner: 0 | 1; reason: string } | null = null;
+  lastPoint: { winner: TeamId; reason: string } | null = null;
   events: MatchEvent[] = [];
   private gameJustEnded = false;
   /** 線上對戰：遠端玩家的 id（移動、擊球都由網路訊息決定）；離線 = null */
@@ -182,11 +193,21 @@ export class Match {
 
   constructor(readonly settings: MatchSettings, seed = Date.now()) {
     this.rng = new Rng(seed);
-    const mk = (id: 0 | 1, side: 1 | -1): PlayerState => ({
+    const kitOf = (id: PlayerId): Kit =>
+      id === 0
+        ? buildKit(settings.character, settings.racket)
+        : id === 1
+          ? buildKit(settings.aiCharacter ?? 'allround', settings.aiRacket ?? 'balance')
+          : id === 2
+            ? buildKit(settings.partnerCharacter ?? 'allround', settings.partnerRacket ?? 'balance')
+            : buildKit(settings.ai2Character ?? 'allround', settings.ai2Racket ?? 'balance');
+    const mk = (id: PlayerId, side: 1 | -1): PlayerState => ({
       id,
+      team: (id % 2) as TeamId,
       side,
-      kit: id === 0 ? buildKit(settings.character, settings.racket) : buildKit(settings.aiCharacter ?? 'allround', settings.aiRacket ?? 'balance'),
-      pos: v3(0, 0, side * 4),
+      court: id < 2 ? 1 : -1, // 雙打開局：0、1 號站右區，2、3 號站左區
+      kit: kitOf(id),
+      pos: v3(id < 2 ? 0 : -side * 1.3, 0, side * 4),
       vel: v3(),
       charge: 0,
       chargeT: 0,
@@ -205,19 +226,51 @@ export class Match {
       downT: 0,
       reachMul: 1,
     });
-    this.players = [mk(0, 1), mk(1, -1)];
+    this.players = settings.doubles && !settings.practice ? [mk(0, 1), mk(1, -1), mk(2, 1), mk(3, -1)] : [mk(0, 1), mk(1, -1)];
     this.shuttle = { pos: v3(), vel: v3(), mode: 'held', lastHitter: null, isServe: false, serveBoxSign: 1, prediction: null, stepDt: PHYS.dt, launchTime: 0, wobble: false, attack: 0, pace: 0 };
     if (settings.practice) this.enterDrillIdle();
     else this.setupServe();
   }
 
-  get receiver(): 0 | 1 {
-    return this.server === 0 ? 1 : 0;
+  /** 雙打（4 人） */
+  get doubles(): boolean {
+    return this.players.length === 4;
+  }
+
+  teamOf(id: PlayerId): TeamId {
+    return this.players[id].team;
+  }
+
+  /** 雙打的隊友；單打 = null */
+  partnerOf(id: PlayerId): PlayerState | null {
+    return this.doubles ? this.players[id ^ 2] : null;
+  }
+
+  /** 這一隊的球員（單打 1 人、雙打 2 人） */
+  teamPlayers(team: TeamId): PlayerState[] {
+    return this.players.filter((p) => p.team === team);
+  }
+
+  /** 邊線：單打 2.59 m、雙打 3.05 m */
+  get halfWidth(): number {
+    return this.doubles ? COURT.doublesHalfWidth : COURT.singlesHalfWidth;
+  }
+
+  /** 發球區的後界：單打 = 底線、雙打 = 雙打後發球線 */
+  get serveLongLine(): number {
+    return this.doubles ? COURT.doublesLongService : COURT.halfLength;
+  }
+
+  /** 接發球的人：單打 = 對手；雙打 = 對角發球區（同樣是自己視角右區或左區）的那位對手 */
+  get receiver(): PlayerId {
+    if (!this.doubles) return this.server === 0 ? 1 : 0;
+    const s = this.players[this.server];
+    return this.players.find((p) => p.team !== s.team && p.court === s.court)!.id;
   }
 
   /** 發球方分數偶數 → 從自己的右半場發 */
   private serveCourtSign(): 1 | -1 {
-    return this.score[this.server] % 2 === 0 ? 1 : -1;
+    return this.score[this.teamOf(this.server)] % 2 === 0 ? 1 : -1;
   }
 
   setupServe(): void {
@@ -225,8 +278,18 @@ export class Match {
     const r = this.players[this.receiver];
     const court = this.serveCourtSign();
     this.remoteState = null; // 線上：舊位置作廢，等對方送新的發球站位
-    s.pos = v3(s.side * court * 0.7, 0, s.side * (COURT.shortService + 1.2));
-    r.pos = v3(r.side * court * 0.9, 0, r.side * (COURT.shortService + 1.7));
+    if (this.doubles) {
+      // 雙打：發球的人靠前發球線，夥伴站後面；接發球的人站前一點壓發球，夥伴在另一半場後面
+      const sp = this.partnerOf(s.id)!;
+      const rp = this.partnerOf(r.id)!;
+      s.pos = v3(s.side * court * 0.55, 0, s.side * (COURT.shortService + 0.55));
+      sp.pos = v3(-s.side * court * 0.4, 0, s.side * 4.3);
+      r.pos = v3(r.side * court * 0.95, 0, r.side * (COURT.shortService + 0.9));
+      rp.pos = v3(-r.side * court * 1.35, 0, r.side * 4.0);
+    } else {
+      s.pos = v3(s.side * court * 0.7, 0, s.side * (COURT.shortService + 1.2));
+      r.pos = v3(r.side * court * 0.9, 0, r.side * (COURT.shortService + 1.7));
+    }
     for (const p of this.players) {
       p.vel = v3();
       p.swing = null;
@@ -256,13 +319,14 @@ export class Match {
     this.events.push({ type: 'serveStart', server: this.server });
   }
 
-  private placeHeldShuttle(who: 0 | 1 = this.server): void {
+  private placeHeldShuttle(who: PlayerId = this.server): void {
     const s = this.players[who];
     this.shuttle.pos = v3(s.pos.x + s.side * 0.35, GAME.serveContactY, s.pos.z - s.side * 0.4);
   }
 
   /** 推進一個固定 tick（PHYS.dt 模擬秒） */
-  step(inputs: [PlayerInput, PlayerInput]): void {
+  /** inputs[i] = i 號球員的輸入（單打 2 個、雙打 4 個） */
+  step(inputs: PlayerInput[]): void {
     const dt = PHYS.dt;
     this.time += dt;
     this.phaseT += dt;
@@ -330,7 +394,7 @@ export class Match {
         if (this.phase === 'serve' && p.id === this.server) {
           // 發球：往上 = 發高遠球、其他 = 發小球（剛好過前發球線）
           family = family === 'up' ? 'up' : 'down';
-          charge = chargeForDepth(family === 'up' ? 6.0 : COURT.shortService + 0.45);
+          charge = chargeForDepth(family === 'up' ? (this.doubles ? COURT.doublesLongService - 0.4 : 6.0) : COURT.shortService + 0.45);
         }
       }
       // 在空中出拍：揮拍時間至少涵蓋到落地前，避免剛起跳就划結果時間不夠
@@ -458,14 +522,15 @@ export class Match {
 
     // 活動範圍（撞到邊界就把那個方向的速度歸零，往回走才不會卡一下）
     let x0: number, x1: number, zA: number, zB: number;
-    if (this.phase === 'serve') {
+    if (this.phase === 'serve' && (!this.doubles || p.id === this.server || p.id === this.receiver)) {
+      // 發球／接發球的人要站在自己的發球區裡（雙打的夥伴不限）
       const isServer = p.id === this.server;
       const sign = isServer ? p.side * this.serveCourtSign() : this.shuttle.serveBoxSign;
       const a = 0.15 * sign;
-      const b = (COURT.singlesHalfWidth - 0.15) * sign;
+      const b = (this.halfWidth - 0.15) * sign;
       [x0, x1] = [Math.min(a, b), Math.max(a, b)];
       zA = COURT.shortService + 0.3;
-      zB = COURT.halfLength - 0.3;
+      zB = this.serveLongLine - 0.3;
     } else {
       [x0, x1] = [-3.6, 3.6];
       zA = 0.3;
@@ -484,14 +549,15 @@ export class Match {
   }
 
   /** 發球時自己被限制在哪個區域（UI 畫框用）：回傳世界座標 x0,x1,z0,z1 */
-  serveBox(id: 0 | 1): { x0: number; x1: number; z0: number; z1: number } | null {
+  serveBox(id: PlayerId): { x0: number; x1: number; z0: number; z1: number } | null {
     if (this.phase !== 'serve') return null;
+    if (this.doubles && id !== this.server && id !== this.receiver) return null;
     const p = this.players[id];
     const sign = id === this.server ? p.side * this.serveCourtSign() : this.shuttle.serveBoxSign;
     const xa = 0;
-    const xb = COURT.singlesHalfWidth * sign;
+    const xb = this.halfWidth * sign;
     const za = COURT.shortService * p.side;
-    const zb = COURT.halfLength * p.side;
+    const zb = this.serveLongLine * p.side;
     return { x0: Math.min(xa, xb), x1: Math.max(xa, xb), z0: Math.min(za, zb), z1: Math.max(za, zb) };
   }
 
@@ -553,7 +619,7 @@ export class Match {
   /** 羽球還要多久才會進入「跳起來後」的擊球範圍；不會進入則 null */
   private timeUntilJumpReach(p: PlayerState): number | null {
     const sh = this.shuttle;
-    if (sh.mode !== 'flight' || sh.lastHitter === p.id || !sh.prediction) return null;
+    if (sh.mode !== 'flight' || this.hitByTeam(p.team) || !sh.prediction) return null;
     const elapsed = this.time - sh.launchTime;
     const top = GAME.reachMaxY + GAME.jump.height;
     for (const pt of sh.prediction.points) {
@@ -573,7 +639,7 @@ export class Match {
     const sh = this.shuttle;
     const s = p.swing!;
     const pred = sh.prediction;
-    if (!pred || sh.lastHitter === p.id || sh.mode === 'held') return '太遠';
+    if (!pred || this.hitByTeam(p.team) || sh.mode === 'held') return '太遠';
     const flickAt = this.time - s.t;
     // 跳起來的那一下：腳的高度隨時間變化（起跳→最高點→落地）
     const v0 = Math.sqrt(2 * GAME.jump.gravity * GAME.jump.height);
@@ -626,7 +692,7 @@ export class Match {
         aimX: swing.aimX,
         charge: swing.charge,
         quality: 1,
-        serve: { boxCenterX: this.shuttle.serveBoxSign * 1.3 },
+        serve: { boxCenterX: this.shuttle.serveBoxSign * (this.doubles ? 1.45 : 1.3) },
         kit: p.kit,
         jump: false,
       },
@@ -702,9 +768,12 @@ export class Match {
     const dt = PHYS.dt;
     // 擊球判定（先判定再移動，避免高速球穿過）
     if (sh.mode === 'flight') {
+      const serveOnly = sh.isServe && this.doubles ? this.receiver : null; // 雙打發球只有接發球的人能接
       for (const p of this.players) {
         const s = p.swing;
-        if (p.id === sh.lastHitter || p.id === this.remote || !s || s.contacted || s.whiffed || s.isServe) continue;
+        // 每一邊只能打一拍：剛打過的那一隊（自己或隊友）要等對方回球
+        if (this.hitByTeam(p.team) || p.id === this.remote || !s || s.contacted || s.whiffed || s.isServe) continue;
+        if (serveOnly !== null && p.id !== serveOnly) continue;
         if (s.t > s.window) continue;
         const d = this.inReach(p, sh.pos);
         if (d === null) continue;
@@ -812,7 +881,7 @@ export class Match {
     sh.pace = paceOf(shot.name);
     // 這顆球有多好打：高球越短越好殺；機會球最好殺
     sh.attack = weak ? 1 : family === 'up' ? clamp((5.8 - Math.abs(shot.target.z)) / 1.4, 0, 1) : 0;
-    if (weak) this.events.push({ type: 'chance', player: p.id === 0 ? 1 : 0 });
+    if (weak) this.events.push({ type: 'chance', player: p.team === 0 ? 1 : 0 });
     this.events.push({
       type: 'hit',
       player: p.id,
@@ -842,12 +911,13 @@ export class Match {
     sh.mode = 'down';
     sh.vel = v3();
     const hitter = sh.lastHitter ?? this.server;
-    const other: 0 | 1 = hitter === 0 ? 1 : 0;
+    const hitTeam = this.teamOf(hitter);
+    const other: TeamId = hitTeam === 0 ? 1 : 0;
     const hitterSide = this.players[hitter].side;
     const landSide = sh.pos.z >= 0 ? 1 : -1;
 
     let inBounds = false;
-    let winner: 0 | 1;
+    let winner: TeamId;
     let reason: string;
     if (wasNet) {
       winner = other;
@@ -859,10 +929,11 @@ export class Match {
       const ax = Math.abs(sh.pos.x);
       const az = Math.abs(sh.pos.z);
       const tol = 0.03; // 壓線算好球
-      inBounds = ax <= COURT.singlesHalfWidth + tol && az <= COURT.halfLength + tol;
-      if (sh.isServe) inBounds = inBounds && az >= COURT.shortService - tol && sh.pos.x * sh.serveBoxSign >= -tol;
+      // 雙打用雙打邊線；發球要落在對角發球區（雙打：前發球線～雙打後發球線）
+      inBounds = ax <= this.halfWidth + tol && az <= COURT.halfLength + tol;
+      if (sh.isServe) inBounds = inBounds && az >= COURT.shortService - tol && az <= this.serveLongLine + tol && sh.pos.x * sh.serveBoxSign >= -tol;
       if (inBounds) {
-        winner = hitter;
+        winner = hitTeam;
         reason = sh.isServe ? '發球得分' : '落地得分';
       } else {
         winner = other;
@@ -886,9 +957,10 @@ export class Match {
     this.awardPoint(winner, reason);
   }
 
-  private awardPoint(winner: 0 | 1, reason: string, byRemote = false): void {
+  private awardPoint(winner: TeamId, reason: string, byRemote = false): void {
     this.score[winner]++;
-    this.server = winner;
+    if (this.doubles) this.rotateServe(winner);
+    else this.server = winner;
     this.lastPoint = { winner, reason };
     this.events.push({ type: 'point', winner, reason, byRemote });
     this.phase = 'point';
@@ -914,11 +986,29 @@ export class Match {
     }
   }
 
+  /**
+   * 雙打發球輪轉（BWF）：
+   * - 發球方得分 → 同一人繼續發，和夥伴交換左右發球區
+   * - 接發球方得分 → 換他們發球，所有人都不換位；新比分偶數由站右區的人發、奇數由站左區的人發
+   */
+  private rotateServe(winner: TeamId): void {
+    const s = this.players[this.server];
+    if (s.team === winner) {
+      const mate = this.partnerOf(s.id)!;
+      [s.court, mate.court] = [mate.court, s.court];
+    } else {
+      const want = this.score[winner] % 2 === 0 ? 1 : -1;
+      this.server = this.teamPlayers(winner).find((p) => p.court === want)!.id;
+    }
+  }
+
   private afterPoint(): void {
     if (this.settings.practice) return this.enterDrillIdle();
     if (this.gameJustEnded) {
       this.gameJustEnded = false;
       this.score = [0, 0];
+      // 雙打新的一局：贏的那隊先發，0 分 → 由目前站右區的人發
+      if (this.doubles) this.server = this.teamPlayers(this.teamOf(this.server)).find((p) => p.court === 1)!.id;
     }
     this.setupServe();
   }
@@ -1028,7 +1118,7 @@ export class Match {
   /** 羽球是否在 softTapLead 秒內會飛到這位球員附近（比擊球範圍寬一點，邊跑邊點也算） */
   private softTapLive(p: PlayerState): boolean {
     const sh = this.shuttle;
-    if (this.phase !== 'rally' || sh.mode !== 'flight' || sh.lastHitter === p.id || !sh.prediction) return false;
+    if (this.phase !== 'rally' || sh.mode !== 'flight' || this.hitByTeam(p.team) || !sh.prediction) return false;
     const elapsed = this.time - sh.launchTime;
     for (const pt of sh.prediction.points) {
       if (pt.t < elapsed) continue;
@@ -1041,7 +1131,7 @@ export class Match {
   }
 
   /** 教學暫停時：世界停住，只讓這位球員繼續蓄力（放開就歸零） */
-  holdCharge(id: 0 | 1, charging: boolean, dt: number): void {
+  holdCharge(id: PlayerId, charging: boolean, dt: number): void {
     const p = this.players[id];
     if (charging && !p.swing) {
       p.charging = true;
@@ -1139,7 +1229,7 @@ export class Match {
       this.phase = 'rally';
       this.phaseT = 0;
     }
-    if (h.wobble) this.events.push({ type: 'chance', player: p.id === 0 ? 1 : 0 });
+    if (h.wobble) this.events.push({ type: 'chance', player: p.team === 0 ? 1 : 0 });
     this.events.push({
       type: 'hit',
       player: p.id,
@@ -1168,7 +1258,7 @@ export class Match {
   /** 對方（接球方）判定這一分；score/games 是判定後的比分（本機 id 順序），以判定方為準 */
   applyRemoteVerdict(v: { remoteWon: boolean; reason: string; score: [number, number]; games: [number, number] }): void {
     if (this.remote === null || this.phase === 'point' || this.phase === 'matchOver') return;
-    const local: 0 | 1 = this.remote === 0 ? 1 : 0;
+    const local: TeamId = this.remote === 0 ? 1 : 0;
     if (this.shuttle.mode !== 'down') {
       this.shuttle.mode = 'down';
       this.shuttle.vel = v3();
@@ -1179,6 +1269,12 @@ export class Match {
     this.games = [v.games[0], v.games[1]];
   }
 
+  /** 這顆球最後是不是這一隊打的（同一隊不能連打兩拍） */
+  hitByTeam(team: TeamId): boolean {
+    const h = this.shuttle.lastHitter;
+    return h !== null && this.players[h].team === team;
+  }
+
   drainEvents(): MatchEvent[] {
     const e = this.events;
     this.events = [];
@@ -1187,10 +1283,10 @@ export class Match {
 }
 
 /** 羽球還要多久會進入這位球員目前的擊球範圍（UI 提示用）；不會進入則 null */
-export function timeUntilInReach(m: Match, id: 0 | 1): number | null {
+export function timeUntilInReach(m: Match, id: PlayerId): number | null {
   const sh = m.shuttle;
   const p = m.players[id];
-  if (sh.mode !== 'flight' || sh.lastHitter === id || !sh.prediction) return null;
+  if (sh.mode !== 'flight' || m.hitByTeam(p.team) || !sh.prediction) return null;
   const elapsed = m.time - sh.launchTime;
   for (const pt of sh.prediction.points) {
     if (pt.t < elapsed) continue;

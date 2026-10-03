@@ -1,5 +1,5 @@
 import { GAME, PHYS } from '../../config';
-import type { Match } from '../../sim/match';
+import type { Match, PlayerId } from '../../sim/match';
 
 /**
  * 預估「這位球員接下來在哪裡、多久後擊球」，只給步法動畫用（唯讀，不影響模擬）。
@@ -18,11 +18,11 @@ const HIT_R = 0.9; // 羽球進到這麼近通常就會被打到（模擬的位�
 const LOOK_AHEAD = 1.1; // 只看這麼遠的未來（模擬秒）
 const MOVE_LEAD = 0.1; // 球員再沿目前速度移動這麼久就會停下來（減速）
 
-export function predictContact(m: Match, id: 0 | 1, out: ContactHint): ContactHint | null {
+export function predictContact(m: Match, id: PlayerId, out: ContactHint): ContactHint | null {
   const sh = m.shuttle;
   const pred = sh.prediction;
-  if (m.phase !== 'rally' || sh.mode !== 'flight' || sh.lastHitter === id || !pred) return null;
   const p = m.players[id];
+  if (m.phase !== 'rally' || sh.mode !== 'flight' || m.hitByTeam(p.team) || !pred) return null;
   const pts = pred.points;
   const elapsed = m.time - sh.launchTime;
   let best = -1;

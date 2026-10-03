@@ -3,11 +3,11 @@ import { AIController, STYLES } from './ai/ai';
 import { ambience, callScore, music, setMusicOn, setSfxOn, setSpeechOn, sfx, unlockAudio } from './audio';
 import { DEFAULT_SETTINGS, GAME, PHYS, type MatchSettings, type Venue } from './config';
 import { LocalControls } from './input/controls';
-import { GameRenderer } from './render/scene';
-import { idleInput, Match, type MatchEvent } from './sim/match';
+import { GameRenderer, type Look } from './render/scene';
+import { idleInput, Match, type MatchEvent, type TeamId } from './sim/match';
 import { DRILLS, DrillRunner, loadBest, saveBest, type Drill } from './modes/drills';
 import { loadTour, saveTourWin, stopUnlocked, TOUR, type TourOpponent } from './modes/tour';
-import { buildKit, CHARACTERS, characterById, racketById, RACKETS, type Kit } from './sim/kits';
+import { buildKit, CHARACTERS, characterById, racketById, RACKETS, type Character, type Kit } from './sim/kits';
 import { Hud } from './ui/hud';
 import { chargeZones } from './sim/shots';
 import { OnlineSync } from './net/sync';
@@ -28,7 +28,8 @@ const hud = new Hud($('hud'));
 
 let mode: Mode = 'menu';
 let match!: Match;
-let opponent: AIController | null = null; // 練習模式沒有對手 AI
+/** 電腦控制的球員，索引 = 球員編號（null = 玩家自己／線上對手；練習模式沒有） */
+let bots: (AIController | null)[] = [];
 let drill: DrillRunner | null = null; // 目前的訓練關卡
 let tourCtx: { stop: number; idx: number } | null = null; // 目前的巡迴賽場次
 let again: () => void = () => startGame(); // 「再來一次」要重開什麼
@@ -61,12 +62,13 @@ let lastZone = 0; // 蓄力目前在哪一區：0 掛網 1 好球 2 出界
 let assist: AIController | null = null; // 簡單模式：幫玩家自動跑位
 const pick = <T,>(xs: T[]) => xs[Math.floor(Math.random() * xs.length)];
 
-function newMatch(demo: boolean, tourOpp?: TourOpponent, venue?: Venue): void {
+/** 開一場對 AI 的比賽；doubles = 雙打（自己＋AI 夥伴 對 兩位 AI）。回傳這場的球員（開場介紹用） */
+function newMatch(demo: boolean, tourOpp?: TourOpponent, venue?: Venue, doubles = false): { partner: Character | null; opps: Character[] } {
   endTutorial();
   // 對手每場隨機換一位球員、一支球拍（不跟自己同一位）
   const me = demo ? pick(CHARACTERS) : characterById(settings.character);
   const opp = tourOpp ? characterById(tourOpp.character) : pick(CHARACTERS.filter((c) => c.id !== me.id));
-  const s: MatchSettings = { ...settings, aiCharacter: opp.id, aiRacket: tourOpp ? tourOpp.racket : pick(RACKETS).id };
+  const s: MatchSettings = { ...settings, aiCharacter: opp.id, aiRacket: tourOpp ? tourOpp.racket : pick(RACKETS).id, doubles };
   if (tourOpp) {
     s.points = tourOpp.points;
     s.games = 1;
@@ -75,26 +77,82 @@ function newMatch(demo: boolean, tourOpp?: TourOpponent, venue?: Venue): void {
     s.character = me.id;
     s.racket = pick(RACKETS).id;
   }
+  // 雙打：夥伴、第二位對手也隨機（四個人都不同）
+  let partner: Character | null = null;
+  let opp2: Character | null = null;
+  if (doubles) {
+    partner = pick(CHARACTERS.filter((c) => c.id !== me.id && c.id !== opp.id));
+    opp2 = pick(CHARACTERS.filter((c) => c.id !== me.id && c.id !== opp.id && c.id !== partner!.id));
+    s.partnerCharacter = partner.id;
+    s.partnerRacket = pick(RACKETS).id;
+    s.ai2Character = opp2.id;
+    s.ai2Racket = pick(RACKETS).id;
+  }
   match = new Match(s, (Date.now() ^ (Math.random() * 1e9)) >>> 0);
-  opponent = tourOpp
-    ? new AIController(match, 1, tourOpp.level, false, STYLES[tourOpp.style])
-    : new AIController(match, 1, demo ? 'hard' : settings.difficulty);
   tourCtx = null;
   demoPlayer = demo ? new AIController(match, 0, 'hard') : null;
+  bots = [
+    demoPlayer,
+    tourOpp ? new AIController(match, 1, tourOpp.level, false, STYLES[tourOpp.style]) : new AIController(match, 1, demo ? 'hard' : settings.difficulty),
+  ];
+  if (doubles) {
+    // 夥伴至少「普通」（簡單難度時自己這隊不要太弱）；第二位對手跟難度設定
+    bots[2] = new AIController(match, 2, settings.difficulty === 'easy' ? 'normal' : settings.difficulty);
+    bots[3] = new AIController(match, 3, settings.difficulty);
+  }
   setupAssist(demo);
   controls.scheme = settings.scheme;
-  renderer.setLooks([
-    { ...me, racketColor: racketById(s.racket).color },
-    { ...opp, racketColor: racketById(s.aiRacket!).color },
-  ]);
+  const look = (c: Character, racket: string): Look => ({ ...c, racketColor: racketById(racket).color });
+  renderer.setLooks(
+    doubles
+      ? teamLooks([look(me, s.racket), look(opp, s.aiRacket!), look(partner!, s.partnerRacket!), look(opp2!, s.ai2Racket!)])
+      : [look(me, s.racket), look(opp, s.aiRacket!)],
+  );
   applyVenue(venue ?? settings.venue);
-  hud.oppName = tourOpp ? tourOpp.title : opp.name;
+  hud.oppName = tourOpp ? tourOpp.title : doubles ? '對手' : opp.name;
   hud.oppTag = 'AI';
   hud.drill = null;
   drill = null;
   renderer.setTarget(null);
   clearTimeout(resultTimer);
   hitStop = 0;
+  return { partner, opps: opp2 ? [opp, opp2] : [opp] };
+}
+
+/** 顏色往黑（k<0）或往白（k>0）調 */
+function shade(c: number, k: number): number {
+  const ch = (v: number) => Math.round(k < 0 ? v * (1 + k) : v + (255 - v) * k);
+  return (ch((c >> 16) & 255) << 16) | (ch((c >> 8) & 255) << 8) | ch(c & 255);
+}
+
+/** 色相（0..360），選對手隊色用 */
+function hueOf(c: number): number {
+  const r = ((c >> 16) & 255) / 255;
+  const g = ((c >> 8) & 255) / 255;
+  const b = (c & 255) / 255;
+  const mx = Math.max(r, g, b);
+  const d = mx - Math.min(r, g, b);
+  if (d < 1e-6) return 0;
+  const h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return (h * 60 + 360) % 360;
+}
+
+/**
+ * 雙打隊服：自己這隊穿自己球員的球衣顏色（夥伴深一點），對手那隊穿對比色（藍或紅，選離自己色相遠的），
+ * 一眼分得出兩隊；髮型、身高、背號、球拍還是各自的。looks 的順序 = 球員編號（0 自己、1 對手、2 夥伴、3 對手）
+ */
+function teamLooks(looks: Look[]): Look[] {
+  const mine = looks[0].shirt;
+  const hd = (a: number, b: number) => {
+    const d = Math.abs(hueOf(a) - hueOf(b));
+    return Math.min(d, 360 - d);
+  };
+  const theirs = hd(mine, 0x2f7fe0) >= hd(mine, 0xe0483a) ? { shirt: 0x2f7fe0, shorts: 0x1b2a44 } : { shirt: 0xe0483a, shorts: 0x3a1b1b };
+  return looks.map((l, i) => {
+    const partner = i >= 2;
+    const base = i % 2 === 0 ? { shirt: mine, shorts: looks[0].shorts } : theirs;
+    return { ...l, shirt: partner ? shade(base.shirt, -0.32) : base.shirt, shorts: base.shorts };
+  });
 }
 
 /** 選球員／球拍的卡片 */
@@ -222,7 +280,7 @@ function handleEvent(e: MatchEvent): void {
       break;
     case 'point':
       if (live) {
-        sfx.point(e.winner === HUMAN);
+        sfx.point(e.winner === match.teamOf(HUMAN));
         onPointAudio(e.winner, e.reason);
       }
       break;
@@ -230,9 +288,10 @@ function handleEvent(e: MatchEvent): void {
       if (live) {
         const ctx = tourCtx;
         resultTimer = window.setTimeout(() => {
-          const win = e.winner === HUMAN;
+          const win = e.winner === match.teamOf(HUMAN);
+          // 比分、局數以隊伍為索引：0 = 自己這隊
           const sc = match.settings.games > 1 ? `局數 ${match.games[0]} : ${match.games[1]}` : `比分 ${match.score[0]} : ${match.score[1]}`;
-          $('resultTitle').textContent = win ? '🏆 你贏了！' : `${hud.oppName} 獲勝`;
+          $('resultTitle').textContent = win ? (match.doubles ? '🏆 你們贏了！' : '🏆 你贏了！') : `${hud.oppName} 獲勝`;
           $('resultScore').textContent = sc;
           if (ctx) {
             const stop = TOUR[ctx.stop];
@@ -270,7 +329,8 @@ function handleEvent(e: MatchEvent): void {
 let last = performance.now();
 let acc = 0;
 function tick(now: number): void {
-  const dt = Math.min(0.1, (now - last) / 1000);
+  // 不小於 0：console 的 game.advance() 會把 last 推到未來，之後的真實畫格不能算出負的 dt
+  const dt = Math.max(0, Math.min(0.1, (now - last) / 1000));
   last = now;
   if (drill && mode === 'play' && hitStop <= 0) drill.tick(dt);
   if (tutorial && mode === 'play') {
@@ -299,7 +359,8 @@ function tick(now: number): void {
         mine.dive ??= a.dive;
       }
       const prevSwing = match.players[HUMAN].swing;
-      match.step([mine, opponent ? opponent.input() : idleInput()]);
+      // 依球員編號順序取輸入（AI 會用比賽的亂數，順序固定才可重現）
+      match.step(match.players.map((p) => (p.id === HUMAN ? mine : (bots[p.id]?.input() ?? idleInput()))));
       // 真的開始揮拍才出聲（只點不滑但球還沒來 = 連按兩下的第一下，不算）
       const sw = match.players[HUMAN].swing;
       if (!demoPlayer && sw && sw !== prevSwing) {
@@ -322,7 +383,7 @@ function tick(now: number): void {
     if (hitStop > 0) acc = 0;
   }
   const me = match.players[HUMAN];
-  if (!demoPlayer) chargeZoneTicks(me.charging, me.charge, match.phase === 'serve' && match.server === HUMAN);
+  if (!demoPlayer) chargeZoneTicks(me.charging, me.charge, match.phase === 'serve' && match.server === HUMAN, match.doubles);
   renderer.update(match, mode === 'paused' || mode === 'result' ? 0 : dt, settings.landingHint && !demoPlayer, HUMAN);
   if (mode !== 'menu') hud.update(match, renderer, dt, HUMAN);
   controls.draw(me.charge, me.charging && !demoPlayer, renderer.bottomReserve);
@@ -331,12 +392,12 @@ function tick(now: number): void {
 }
 
 /** 蓄力跨進「好球區」或「出界區」時給一下聲音＋震動（iPhone 沒震動，靠聲音） */
-function chargeZoneTicks(charging: boolean, charge: number, serving: boolean): void {
+function chargeZoneTicks(charging: boolean, charge: number, serving: boolean, doubles: boolean): void {
   if (!charging) {
     lastZone = 0;
     return;
   }
-  const z = chargeZones(serving);
+  const z = chargeZones(serving, doubles);
   const zone = charge >= z.out ? 2 : charge >= z.net ? 1 : 0;
   if (zone > lastZone) {
     if (zone === 1) {
@@ -384,7 +445,19 @@ document.querySelectorAll<HTMLElement>('.seg').forEach((seg) => {
   sync();
 });
 
+/** 雙打（自己＋AI 夥伴 對 兩位 AI），難度／分數／局數／場地照設定 */
+function startDoubles(): void {
+  unlockAudio();
+  if (controls.isTouch || matchMedia('(pointer: coarse)').matches) document.documentElement.requestFullscreen?.().catch(() => {});
+  const { partner, opps } = newMatch(false, undefined, undefined, true);
+  again = () => startDoubles();
+  acc = 0;
+  setMode('play');
+  hud.intro('雙打', `夥伴：${partner!.name}\n對手：${opps.map((o) => o.name).join('、')}`);
+}
+
 $('startBtn').addEventListener('click', startGame);
+$('doublesBtn').addEventListener('click', startDoubles);
 $('againBtn').addEventListener('click', () => again());
 $('restartBtn').addEventListener('click', () => again());
 $('pauseBtn').addEventListener('click', () => mode === 'play' && setMode('paused'));
@@ -460,6 +533,9 @@ requestAnimationFrame(frame);
   get tutorial() {
     return tutorial;
   },
+  get bots() {
+    return bots;
+  },
   settings,
   renderer,
   controls,
@@ -490,7 +566,7 @@ function startDrill(d: Drill): void {
   if (controls.isTouch || matchMedia('(pointer: coarse)').matches) document.documentElement.requestFullscreen?.().catch(() => {});
   const me = characterById(settings.character);
   match = new Match({ ...settings, practice: true, aiCharacter: 'allround', aiRacket: 'balance' }, (Date.now() ^ (Math.random() * 1e9)) >>> 0);
-  opponent = null;
+  bots = [];
   demoPlayer = null;
   setupAssist(false);
   controls.scheme = settings.scheme;
@@ -619,11 +695,8 @@ document.addEventListener('click', (e) => {
   if ((e.target as HTMLElement).closest('.overlay button')) sfx.click();
 });
 
-/** 球鞋吱吱聲：急停或急轉時 */
-const lastVel: { x: number; z: number; t: number }[] = [
-  { x: 0, z: 0, t: 0 },
-  { x: 0, z: 0, t: 0 },
-];
+/** 球鞋吱吱聲：急停或急轉時（索引 = 球員編號，雙打 4 人） */
+const lastVel: { x: number; z: number; t: number }[] = [0, 1, 2, 3].map(() => ({ x: 0, z: 0, t: 0 }));
 function shoeSqueaks(): void {
   match.players.forEach((p, i) => {
     const lv = lastVel[i];
@@ -641,13 +714,13 @@ function shoeSqueaks(): void {
 }
 
 /** 得分後：觀眾掌聲（回合越長越熱烈）＋裁判報分 */
-function onPointAudio(winner: 0 | 1, reason: string): void {
+function onPointAudio(winner: TeamId, reason: string): void {
   const rally = match.rallyHits;
   const big = reason === '落地得分' && rally >= 8;
-  sfx.applause(Math.min(1, 0.25 + rally / 16 + (winner === HUMAN ? 0.15 : 0) + (big ? 0.2 : 0)));
+  sfx.applause(Math.min(1, 0.25 + rally / 16 + (winner === match.teamOf(HUMAN) ? 0.15 : 0) + (big ? 0.2 : 0)));
   if (match.settings.practice) return;
   const s = match.score;
-  const srv = match.server; // 得分的人下一球發球，先報發球方的分數
+  const srv = match.teamOf(match.server); // 得分的那一隊下一球發球，先報發球方的分數（比分以隊伍為索引）
   const a = s[srv];
   const b = s[srv === 0 ? 1 : 0];
   const target = match.settings.points;
@@ -736,7 +809,7 @@ function startOnlineMatch(start: StartInfo, peer: Hello, host: boolean): void {
   match.server = host ? 0 : 1; // 房主先發
   match.setupServe();
   match.drainEvents();
-  opponent = null;
+  bots = [];
   demoPlayer = null;
   tourCtx = null;
   drill = null;
@@ -898,7 +971,7 @@ function startTutorial(): void {
   endTutorial();
   const me = characterById(settings.character);
   match = new Match({ ...settings, practice: true, aiCharacter: 'allround', aiRacket: 'balance' }, (Date.now() ^ (Math.random() * 1e9)) >>> 0);
-  opponent = null;
+  bots = [];
   demoPlayer = null;
   drill = null;
   tourCtx = null;

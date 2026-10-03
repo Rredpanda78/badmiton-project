@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { CAMERA, COURT, GAME, type Venue } from '../config';
-import { timeUntilInReach, type Match } from '../sim/match';
+import { ballTaker } from '../ai/doubles';
+import { timeUntilInReach, type Match, type PlayerId } from '../sim/match';
 import { v3, type Vec3 } from '../sim/physics';
 import { predictContact, type ContactHint } from './anim/contact';
 import { makeCourt } from './court';
@@ -23,11 +24,9 @@ export class GameRenderer {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
   readonly camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
-  private models: [PlayerModel, PlayerModel];
-  private hints: [ContactHint, ContactHint] = [
-    { t: 0, x: 0, y: 0, z: 0, d: 0 },
-    { t: 0, x: 0, y: 0, z: 0, d: 0 },
-  ];
+  private models: PlayerModel[]; // 索引 = 球員編號（單打 2 個、雙打 4 個）
+  private hints: ContactHint[] = [0, 1, 2, 3].map(() => ({ t: 0, x: 0, y: 0, z: 0, d: 0 }));
+  private youMark: THREE.Group; // 雙打：自己頭上的小箭頭＋腳下的圈（四個人才認得出自己）
   private shuttle = new THREE.Group();
   private shuttleShadow: THREE.Mesh;
   private trail: THREE.Line;
@@ -119,6 +118,23 @@ export class GameRenderer {
     this.target.rotation.x = -Math.PI / 2;
     this.target.visible = false;
     this.scene.add(this.target);
+
+    // 雙打的「你」標記：頭上一個朝下的黃色箭頭（會上下浮動）＋腳下一個黃圈
+    this.youMark = new THREE.Group();
+    const markMat = new THREE.MeshBasicMaterial({ color: 0xffd54a, transparent: true, opacity: 0.95, depthWrite: false });
+    const arrow = new THREE.Mesh(new THREE.ConeGeometry(0.15, 0.3, 4), markMat);
+    arrow.rotation.x = Math.PI; // 尖端朝下
+    arrow.name = 'arrow';
+    this.youMark.add(arrow);
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(0.42, 0.5, 40),
+      new THREE.MeshBasicMaterial({ color: 0xffd54a, transparent: true, opacity: 0.55, depthWrite: false }),
+    );
+    ring.rotation.x = -Math.PI / 2;
+    ring.name = 'ring';
+    this.youMark.add(ring);
+    this.youMark.visible = false;
+    this.scene.add(this.youMark);
 
     this.resize();
   }
@@ -225,14 +241,14 @@ export class GameRenderer {
     this.sun.color.set(env.sun);
   }
 
-  /** 換球員外觀（球衣顏色） */
-  setLooks(looks: [Look, Look]): void {
-    looks.forEach((l, i) => {
-      this.scene.remove(this.models[i].root);
-      this.models[i].dispose();
-      this.models[i] = new PlayerModel(l.shirt, l.shorts, l.id ? playerStyle(l.id, l.racketColor) : undefined);
-      this.scene.add(this.models[i].root);
-    });
+  /** 換球員外觀（球衣顏色）；looks[i] = i 號球員（單打 2 個、雙打 4 個） */
+  setLooks(looks: Look[]): void {
+    for (const m of this.models) {
+      this.scene.remove(m.root);
+      m.dispose();
+    }
+    this.models = looks.map((l) => new PlayerModel(l.shirt, l.shorts, l.id ? playerStyle(l.id, l.racketColor) : undefined));
+    for (const m of this.models) this.scene.add(m.root);
   }
 
   resetTrail(p: Vec3): void {
@@ -270,8 +286,15 @@ export class GameRenderer {
     this.bursts.push({ mesh, t: -delay });
   }
 
-  update(match: Match, dt: number, showHint: boolean, humanId: 0 | 1): void {
+  update(match: Match, dt: number, showHint: boolean, humanId: PlayerId): void {
     const me = match.players[humanId];
+    // 比賽人數跟模型數不同（例如還沒 setLooks）就補上預設外觀
+    while (this.models.length < match.players.length) {
+      const m = new PlayerModel(0x8a96a8, 0x2a2f38);
+      this.models.push(m);
+      this.scene.add(m.root);
+    }
+    this.models.forEach((m, i) => (m.root.visible = i < match.players.length));
 
     // 鏡頭：在自己這側後上方，稍微跟著自己左右移動
     this.camX += (me.pos.x * this.pose.follow - this.camX) * Math.min(1, dt * 3);
@@ -285,11 +308,23 @@ export class GameRenderer {
       this.camera.updateProjectionMatrix();
     }
 
-    // 步法動畫：預估每位球員多久後、在哪裡擊球（唯讀）；發球階段：1 = 發球的人、2 = 接發球的人
+    // 步法動畫：預估每位球員多久後、在哪裡擊球（唯讀）；發球階段：1 = 發球的人、2 = 接發球的人（雙打的夥伴 = 0）
+    // 雙打：只有分到這一球的人做擊球步法，另一人照常移動
+    const lh = match.shuttle.lastHitter;
+    const taker = match.doubles && lh !== null ? (ballTaker(match, match.teamOf(lh) === 0 ? 1 : 0)?.id ?? null) : null;
     match.players.forEach((p, i) => {
-      const serve = match.phase === 'serve' ? (match.server === p.id ? 1 : 2) : 0;
-      this.models[i].update(p, dt, match.shuttle.pos, predictContact(match, p.id, this.hints[i]), serve);
+      const serve = match.phase === 'serve' ? (match.server === p.id ? 1 : match.receiver === p.id ? 2 : 0) : 0;
+      const hint = !match.doubles || p.id === taker ? predictContact(match, p.id, this.hints[i]) : null;
+      this.models[i].update(p, dt, match.shuttle.pos, hint, serve);
     });
+    // 雙打：標出自己
+    this.youMark.visible = match.doubles;
+    if (match.doubles) {
+      const bob = Math.sin(performance.now() / 260) * 0.06;
+      this.youMark.position.set(me.pos.x, 0, me.pos.z);
+      this.youMark.getObjectByName('arrow')!.position.y = 2.3 + me.pos.y + bob;
+      this.youMark.getObjectByName('ring')!.position.y = 0.014;
+    }
     this.env?.update(dt);
 
     // 羽球
@@ -324,13 +359,13 @@ export class GameRenderer {
 
     // 落點提示：對方打來的球（黃／紅）；自己剛打出去的球短暫顯示白色虛影
     const pred = sh.prediction;
-    const incoming = flying && sh.lastHitter !== null && sh.lastHitter !== humanId;
+    const incoming = flying && sh.lastHitter !== null && !match.hitByTeam(me.team);
     const mineJustHit = flying && sh.lastHitter === humanId && match.time - sh.launchTime < 0.45;
     if (showHint && (incoming || mineJustHit) && pred?.landing) {
       const L = pred.landing;
       this.marker.visible = true;
       this.marker.position.set(L.x, 0.012, L.z);
-      const out = Math.abs(L.x) > COURT.singlesHalfWidth + 0.03 || Math.abs(L.z) > COURT.halfLength + 0.03;
+      const out = Math.abs(L.x) > match.halfWidth + 0.03 || Math.abs(L.z) > COURT.halfLength + 0.03;
       const mat = this.marker.material as THREE.MeshBasicMaterial;
       mat.color.set(out ? 0xff5a5a : incoming ? 0xffd54a : 0xffffff);
       mat.opacity = incoming ? 0.8 : 0.45;
@@ -338,8 +373,10 @@ export class GameRenderer {
 
     // 擊球範圍圈：球打過來時顯示；羽球即將進入範圍（現在划剛好）時變綠
     const rr = this.reachRing.material as THREE.MeshBasicMaterial;
-    if (incoming && match.phase === 'rally') {
-      const tIn = timeUntilInReach(match, humanId);
+    // 雙打：分給隊友的球不顯示（除非球真的會飛進自己的範圍）
+    const tIn = incoming && match.phase === 'rally' ? timeUntilInReach(match, humanId) : null;
+    const mineToTake = !match.doubles || taker === humanId || tIn !== null;
+    if (incoming && match.phase === 'rally' && mineToTake) {
       const now = tIn !== null && tIn <= GAME.idealContactT + 0.05;
       this.reachRing.visible = true;
       this.reachRing.position.set(me.pos.x, 0.011, me.pos.z);

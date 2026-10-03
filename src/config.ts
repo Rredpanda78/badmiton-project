@@ -123,6 +123,11 @@ export interface MatchSettings {
   aiCharacter?: string; // 對手（每場隨機）
   aiRacket?: string;
   practice?: boolean; // 練習模式：發球機餵球、不計分
+  doubles?: boolean; // 雙打：0 號（自己）＋2 號（夥伴）在近側，1、3 號在遠側
+  partnerCharacter?: string; // 雙打：2 號（夥伴）
+  partnerRacket?: string;
+  ai2Character?: string; // 雙打：3 號（第二位對手）
+  ai2Racket?: string;
   settingsVersion?: number; // 存檔格式版本（改預設值時用來遷移舊存檔）
 }
 

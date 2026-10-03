@@ -193,6 +193,12 @@ body {
 .float.opp {
   color: #ffc4bc;
 }
+/* 雙打隊友的擊球 */
+.float.mate {
+  color: #d9ecff;
+  font-size: 15px;
+  opacity: 0.85;
+}
 .float.miss {
   color: #ccc;
 }
@@ -669,11 +675,13 @@ h2 {
 #banner.intro {
   font-size: 30px;
   color: var(--accent);
+  width: min(92vw, 520px); /* 開場介紹字比較多，給寬一點的框 */
 }
 #banner.intro .sub {
   color: var(--text);
   max-width: 86vw;
-  white-space: normal;
+  margin: 4px auto 0;
+  white-space: pre-line; /* 可以用 \n 換行（雙打開場：夥伴／對手各一行） */
 }
 
 /* 點擊滑放：殺球鍵與上／下手提示 */
