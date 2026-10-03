@@ -275,6 +275,7 @@ function tick(now: number): void {
   if (drill && mode === 'play' && hitStop <= 0) drill.tick(dt);
   if (tutorial && mode === 'play') {
     tutorial.tick(dt);
+    $('tutCard').classList.toggle('compact', tutorial.inPlay);
     if (tutorial.frozen) {
       // 教學暫停：世界停住，只收玩家的輸入（蓄力照算），做對了才繼續
       const inp = controls.poll();

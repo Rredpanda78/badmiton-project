@@ -193,6 +193,11 @@ export class TutorialRunner {
     return this.steps[this.idx];
   }
 
+  /** 球在飛（說明卡縮小，不擋視線） */
+  get inPlay(): boolean {
+    return this.state === 'feedWait' || this.state === 'live' || this.state === 'frozen' || this.state === 'after';
+  }
+
   /** 這一步要不要電腦幫忙跑位 */
   get wantAssist(): boolean {
     const st = this.steps[this.idx];

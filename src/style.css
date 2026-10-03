@@ -1021,3 +1021,15 @@ h2 {
     opacity: 0.55;
   }
 }
+#tutCard.compact #tutText,
+#tutCard.compact .tut-btns {
+  display: none;
+}
+#tutCard.compact {
+  padding: 6px 12px;
+  width: auto;
+}
+#tutCard.compact .tut-head {
+  margin: 0;
+  gap: 12px;
+}
