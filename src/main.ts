@@ -484,6 +484,9 @@ function tick(now: number): void {
   if (!demoPlayer) chargeZoneTicks(me.charging, me.charge, match.phase === 'serve' && match.server === HUMAN, match.doubles);
   renderer.update(match, mode === 'paused' || mode === 'result' ? 0 : dt, settings.landingHint && !demoPlayer, HUMAN);
   if (mode !== 'menu') hud.update(match, renderer, dt, HUMAN);
+  // ---- 發球（src/input/controls.ts）：自己要發球時顯示彈發的第二圈與發球手勢提示 ----
+  controls.serving = !demoPlayer && match.phase === 'serve' && match.server === HUMAN;
+  // ----
   controls.draw(me.charge, me.charging && !demoPlayer, renderer.bottomReserve);
   updateNetInfo(dt);
   renderer.render();

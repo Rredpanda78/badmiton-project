@@ -2,7 +2,7 @@ import { chargeFromTime, COURT, GAME, PHYS, type MatchSettings } from '../config
 import { copy3, netTopAt, predict, stepShuttle, v3, type Prediction, type Vec3 } from './physics';
 import { buildKit, type Kit } from './kits';
 import { Rng } from './rng';
-import { chargeForDepth, classifyFlick, reboundCharge, resolveShot, type Family, type Flick } from './shots';
+import { chargeForDepth, classifyFlick, depthFromCharge, reboundCharge, resolveShot, serveQuality, type Family, type Flick, type ServeKind } from './shots';
 
 /** 每個 tick 每位球員的輸入（全部用球員自己的視角，所以 AI/線上玩家都能共用） */
 export interface PlayerInput {
@@ -34,6 +34,7 @@ export interface Swing {
   diveAuto: boolean; // 魚躍時沒有另外划 → 自動挑回
   auto?: boolean; // 點擊滑放：深度等擊中時依擊球點高低決定（上手高遠／切球、下手挑球／放網）
   smash?: boolean; // 「殺」搖桿：擊中時依擊球點決定殺球／撲球／下壓
+  serve?: ServeKind; // 發球種類（發球那一下）
 }
 
 /**
@@ -321,17 +322,18 @@ export class Match {
     const r = this.players[this.receiver];
     const court = this.serveCourtSign();
     this.remoteStates.clear(); // 線上：舊位置作廢，等對方送新的發球站位
+    const RZ = GAME.serve.receiverZ;
     if (this.doubles) {
-      // 雙打：發球的人靠前發球線，夥伴站後面；接發球的人站前一點壓發球，夥伴在另一半場後面
+      // 雙打：發球的人靠前發球線，夥伴站後面；接發球的人站前面壓發球（腳還在發球區內，小球一飄就搶攻），夥伴在另一半場後面
       const sp = this.partnerOf(s.id)!;
       const rp = this.partnerOf(r.id)!;
       s.pos = v3(s.side * court * 0.55, 0, s.side * (COURT.shortService + 0.55));
       sp.pos = v3(-s.side * court * 0.4, 0, s.side * 4.3);
-      r.pos = v3(r.side * court * 0.95, 0, r.side * (COURT.shortService + 0.9));
+      r.pos = v3(r.side * court * 0.95, 0, r.side * (COURT.shortService + RZ.doubles));
       rp.pos = v3(-r.side * court * 1.35, 0, r.side * 4.0);
     } else {
       s.pos = v3(s.side * court * 0.7, 0, s.side * (COURT.shortService + 1.2));
-      r.pos = v3(r.side * court * 0.9, 0, r.side * (COURT.shortService + 1.7));
+      r.pos = v3(r.side * court * 0.9, 0, r.side * (COURT.shortService + RZ.singles));
     }
     for (const p of this.players) {
       p.vel = v3();
@@ -355,16 +357,73 @@ export class Match {
     this.shuttle.lastHitter = null;
     this.shuttle.prediction = null;
     this.shuttle.serveBoxSign = r.side * court;
-    this.placeHeldShuttle();
     this.phase = 'serve';
     this.phaseT = 0;
+    this.placeHeldShuttle();
     this.rallyHits = 0;
     this.events.push({ type: 'serveStart', server: this.server });
   }
 
+  /** 手上的球：發球時一上一下（發球節奏，球落到最低點時出拍最準；最高 1.05 m 仍合法） */
   private placeHeldShuttle(who: PlayerId = this.server): void {
     const s = this.players[who];
-    this.shuttle.pos = v3(s.pos.x + s.side * 0.35, GAME.serveContactY, s.pos.z - s.side * 0.4);
+    const S = GAME.serve;
+    const bob = this.phase === 'serve' ? S.bob * Math.cos((2 * Math.PI * this.phaseT) / S.beat) : 0;
+    this.shuttle.pos = v3(s.pos.x + s.side * 0.35, GAME.serveContactY + bob, s.pos.z - s.side * 0.4);
+  }
+
+  /** 發球節奏：離最近的最低點多久（秒；正 = 還沒到最低點 = 早、負 = 過了 = 晚） */
+  serveTiming(): number {
+    const P = GAME.serve.beat;
+    const t = this.phaseT; // 最低點在 P/2、3P/2、…
+    const k = Math.round((t - P / 2) / P);
+    return P / 2 + k * P - t;
+  }
+
+  /** 發球節奏（UI 提示用）：phase 0 = 最高點、0.5 = 最低點；perfect = 現在出拍算完美 */
+  serveBeat(): { phase: number; timing: number; perfect: boolean } {
+    const P = GAME.serve.beat;
+    const timing = this.serveTiming();
+    return { phase: (this.phaseT % P) / P, timing, perfect: Math.abs(timing) <= GAME.serve.flat };
+  }
+
+  /**
+   * 這一下划動是哪種發球：
+   * - 點擊滑放：主搖桿 ↑ = 發高遠（滑過第二圈 = 彈發）、↓／←→ = 發小球（左右分量瞄準）；「殺」搖桿 ↑ = 彈發、其他 = 平抽發
+   * - 蓄力划動：↑ = 發高遠（蓄到最上面一段 = 彈發）、↓ = 發小球、←→ = 平抽發
+   * - AI：cmd.serve 直接指定
+   */
+  private serveKindOf(flick: Flick, family: Family, charge: number): ServeKind {
+    const c = flick.cmd;
+    if (c?.serve) return c.serve;
+    if (c?.stick === 'smash') return family === 'up' ? 'flick' : 'drive';
+    if (c) return c.family === 'up' ? (c.long ? 'flick' : 'high') : 'short';
+    if (family === 'side') return 'drive';
+    if (family === 'up') return depthFromCharge(charge) >= this.serveLongLine - GAME.serve.flickBand ? 'flick' : 'high';
+    return 'short';
+  }
+
+  /** 發球的目標深度：點擊滑放固定（AI 可自己給）；蓄力划動照蓄力（平抽發球只要蓄在好球區，落點就在接發球員身後） */
+  private serveDepthOf(kind: ServeKind, flick: Flick, charge: number): number {
+    const S = GAME.serve;
+    const back = this.serveLongLine;
+    const c = flick.cmd;
+    if (c) {
+      if (c.serve && typeof c.depth === 'number') return c.depth;
+      if (kind === 'short') return COURT.shortService + S.short;
+      if (kind === 'high') return back - (this.doubles ? S.highGap.doubles : S.highGap.singles);
+      if (kind === 'flick') return back - (this.doubles ? S.flickGap.doubles : S.flickGap.singles);
+      return this.driveServeDepth();
+    }
+    const D0 = depthFromCharge(charge);
+    if (kind === 'drive' && D0 >= COURT.shortService && D0 <= back) return this.driveServeDepth();
+    return D0;
+  }
+
+  /** 平抽發球落在接發球員身後（還在發球區內） */
+  private driveServeDepth(): number {
+    const S = GAME.serve;
+    return clamp(Math.abs(this.players[this.receiver].pos.z) + S.driveBehind, COURT.shortService + 1.2, this.serveLongLine - 0.35);
   }
 
   /** 推進一個固定 tick（PHYS.dt 模擬秒） */
@@ -428,17 +487,19 @@ export class Match {
       let family = cls.family;
       let charge = p.charge;
       const preset = !!flick.cmd;
-      if (flick.cmd) {
+      const serving = this.phase === 'serve' && p.id === this.server;
+      let serveKind: ServeKind | undefined;
+      if (serving) {
+        // 發球：手勢（或蓄力）決定種類與深度，品質看發球節奏的時機（doServe）
+        serveKind = this.serveKindOf(flick, cls.family, charge);
+        family = serveKind === 'short' ? 'down' : serveKind === 'drive' ? 'side' : 'up';
+        charge = chargeForDepth(this.serveDepthOf(serveKind, flick, charge));
+      } else if (flick.cmd) {
         // 點擊滑放：不用蓄力，球種與深度由手勢決定；品質只看放開的時機
         family = flick.cmd.family;
         const dn = Math.abs(p.pos.z);
         const cd = flick.cmd.depth;
         charge = chargeForDepth(cd === 'smash' ? (dn > 2.5 ? 4.6 : 3.0) : cd === 'auto' ? autoDepth(family, GAME.highZoneY) : cd);
-        if (this.phase === 'serve' && p.id === this.server) {
-          // 發球：往上 = 發高遠球、其他 = 發小球（剛好過前發球線）
-          family = family === 'up' ? 'up' : 'down';
-          charge = chargeForDepth(family === 'up' ? (this.doubles ? COURT.doublesLongService - 0.4 : 6.0) : COURT.shortService + 0.45);
-        }
       }
       // 在空中出拍：揮拍時間至少涵蓋到落地前，避免剛起跳就划結果時間不夠
       const baseWindow = GAME.swingWindow * p.kit.window;
@@ -468,13 +529,14 @@ export class Match {
         triggeredJump,
         dive: false,
         diveAuto: false,
-        auto: flick.cmd?.depth === 'auto',
-        smash: flick.cmd?.depth === 'smash',
+        auto: !serving && flick.cmd?.depth === 'auto',
+        smash: !serving && flick.cmd?.depth === 'smash',
+        serve: serveKind,
       };
       p.charging = false;
       p.charge = 0;
       p.chargeT = 0;
-      if (this.phase === 'serve' && p.id === this.server) this.doServe(p);
+      if (serving) this.doServe(p);
     }
 
     // 蓄力（放開但沒划動 = 取消）
@@ -734,9 +796,15 @@ export class Match {
     return '太遠';
   }
 
+  /** 發球：種類與深度已在 swing 上（serveKindOf／serveDepthOf），品質看發球節奏的時機（球落到最低點時出拍最準） */
   private doServe(p: PlayerState): void {
     const swing = p.swing!;
-    const contact = copy3(this.shuttle.pos);
+    const sh = this.shuttle;
+    const contact = copy3(sh.pos);
+    const kind = swing.serve ?? 'short';
+    const timing = this.serveTiming();
+    const quality = serveQuality(timing);
+    const r = this.players[this.receiver];
     const shot = resolveShot(
       {
         side: p.side,
@@ -744,8 +812,8 @@ export class Match {
         family: swing.family,
         aimX: swing.aimX,
         charge: swing.charge,
-        quality: 1,
-        serve: { boxCenterX: this.shuttle.serveBoxSign * (this.doubles ? 1.45 : 1.3) },
+        quality,
+        serve: { kind, boxSign: sh.serveBoxSign, halfWidth: this.halfWidth, longLine: this.serveLongLine, depth: depthFromCharge(swing.charge), timing, receiverX: r.pos.x, receiverZ: r.pos.z },
         kit: p.kit,
         jump: false,
       },
@@ -756,6 +824,9 @@ export class Match {
     swing.contactT = swing.t;
     swing.isServe = true;
     this.launch(p, shot.vel, shot.stepDt, true);
+    sh.pace = paceOf(shot.name);
+    // 這顆發球有多好打：高遠發得短、彈發翹高了 → 接發球員殺得更兇（跟高遠球一樣算）
+    sh.attack = kind === 'high' || kind === 'flick' ? clamp((5.8 - Math.abs(shot.target.z)) / 1.4, 0, 1) : 0;
     this.events.push({
       type: 'hit',
       player: p.id,
@@ -766,15 +837,17 @@ export class Match {
       charge: swing.charge,
       netFault: shot.netFault,
       powerShort: shot.powerShort,
-      quality: 1,
-      grade: '完美',
+      quality,
+      grade: quality >= 0.9 ? '完美' : quality >= 0.74 ? '不錯' : '勉強',
       jump: false,
       serve: true,
       dive: false,
       vel: copy3(shot.vel),
       stepDt: shot.stepDt,
       wobble: false,
-      attack: 0,
+      attack: sh.attack,
+      timing,
+      timingFlat: GAME.serve.flat,
       ct: 0,
       dist: 0,
     });
@@ -969,6 +1042,7 @@ export class Match {
       } else charge = chargeForDepth(4.4);
     }
     const attackIn = sh.attack; // 對方送來的球有多好打（不到位的高球、機會球）
+    const rush = sh.isServe && !!killCap; // 搶攻：對方的小球發得飄，還在網前、比網高就撲下去
     const shot = resolveShot({ side: p.side, contact, family, aimX: swing.aimX, charge, quality, serve: null, jump: p.airborne, kit: p.kit, killCap }, this.rng);
     // 殺不到位的高球更兇
     const bonus = shot.name === '殺球' || shot.name === '跳殺' ? attackIn : 0;
@@ -991,7 +1065,7 @@ export class Match {
     this.events.push({
       type: 'hit',
       player: p.id,
-      name: chanceSmash ? '機會殺球' : intercept ? '抓球' : bodyBlock ? '擋網' : shot.name,
+      name: chanceSmash ? '機會殺球' : rush ? '搶攻' : intercept ? '抓球' : bodyBlock ? '擋網' : shot.name,
       speedKmh: Math.round(shot.speedKmh * (1 + GAME.attackSmashBonus * bonus) * killMul),
       pos: contact,
       family,
@@ -1624,8 +1698,8 @@ function autoDepth(family: Family, y: number): number {
 /** 來球有多兇：硬伸手去接的難度 */
 function paceOf(name: string): number {
   if (name === '殺球' || name === '跳殺' || name === '機會殺球') return 1;
-  if (name === '撲球' || name === '跳撲' || name === '下壓' || name === '抓球') return 0.8;
-  if (name === '平抽' || name === '推球' || name === '平高球') return 0.5;
+  if (name === '撲球' || name === '跳撲' || name === '下壓' || name === '抓球' || name === '搶攻') return 0.8;
+  if (name === '平抽' || name === '推球' || name === '平高球' || name === '平抽發') return 0.5;
   return 0;
 }
 

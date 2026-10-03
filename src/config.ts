@@ -107,6 +107,30 @@ export const GAME = {
   quadHold: { scale: 0.3, max: 0.5, margin: 0.4 },
 
   serveContactY: 0.95,
+  // 發球（src/sim/match.ts doServe、src/sim/shots.ts resolveServe）：
+  // 節奏 = 手上的球一上一下（週期 beat 模擬秒、幅度 bob），球落到最低點時出拍最準（前後 flat 秒內都算完美，最差品質 worst）
+  serve: {
+    beat: 1.2,
+    bob: 0.1, // 最高 1.05 m，仍低於 1.15 m 的發球高度上限
+    flat: 0.07,
+    worst: 0.55,
+    short: 0.4, // 發小球：落在前發球線後這麼多（m）；完美時擦網帶過（shortClear），時機差越飄越深（shortFloat／shortDeep，對手可以搶攻）
+    shortClear: 0.05,
+    shortFloat: 1.0,
+    shortDeep: 1.5,
+    highGap: { singles: 0.6, doubles: 0.35 }, // 發高遠球：落在發球區後界前這麼多；時機差最多短 highShort（變好殺）
+    highShort: 1.3,
+    flickGap: { singles: 0.35, doubles: 0.3 }, // 彈發：落在後界前這麼多，經過接發球員頭上 flickClear m（剛好超過站著的擊球範圍）
+    flickClear: 3.15,
+    flickBand: 0.8, // 蓄力划動：蓄力條最上面這段（後界前 flickBand m）往上划 = 彈發
+    flickLong: 2.8, // 放太晚：最多長這麼多（「過晚」就出界）；放太早：翹高、短 flickPop（好殺）
+    flickPop: 1.6,
+    driveClear: 0.25, // 平抽發球：過網高度；時機差再飄 driveFloat；落在接發球員身後 driveBehind（仍在發球區內，越深越平越快）
+    driveFloat: 0.45,
+    driveBehind: 2.2,
+    aimMargin: 0.35, // 左右瞄準：落點離發球區的中線／邊線至少這麼多
+    receiverZ: { singles: 1.7, doubles: 0.45 }, // 接發球員站在前發球線後多少（雙打站前面壓發球、搶攻；腳仍在發球區內）
+  },
   pointPause: 1.8,
 
   // 得分回放（主動得分才播，src/render/replay.ts）：得分後 delay 模擬秒開始（比賽在回放期間暫停，播完才繼續），
