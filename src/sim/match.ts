@@ -95,6 +95,8 @@ export type MatchEvent =
       stepDt: number;
       wobble: boolean; // 這球是晃動的機會球
       attack: number; // 這球有多好殺（給接球方的殺球加成）
+      timing?: number; // 出拍時機：正 = 太早放開、負 = 太晚（秒，跟理想時機差多少；跳殺、魚躍不算）
+      timingFlat?: number; // 算「完美」的寬度（秒）
     }
   | { type: 'whiff'; player: PlayerId; reason: WhiffReason; airborne: boolean }
   | { type: 'jump'; player: PlayerId }
@@ -927,6 +929,8 @@ export class Match {
       stepDt,
       wobble: weak,
       attack: sh.attack,
+      timing: p.airborne || swing.dive ? undefined : swing.t - idealContactFor(contact.y - p.pos.y),
+      timingFlat: 0.035 * setFactor(p),
     });
   }
 

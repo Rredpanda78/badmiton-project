@@ -102,6 +102,8 @@ export class AIController {
   private serveChoice: { charge: number; flick: Flick } | null = null;
   /** 會不會魚躍（自動跑位時看設定「自動魚躍」） */
   allowDive = true;
+  /** 自動跑位用：反應時間（null = 照難度）。預判模式平常慢一點、讀對了立刻起步；輔助模式 = 0（玩家自己起步） */
+  reactionOverride: number | null = null;
 
   /**
    * moveOnly = 簡單模式的自動跑位：只輸出移動，蓄力／出拍交給玩家
@@ -125,6 +127,30 @@ export class AIController {
   /** 搖桿推多少（speedMul ≤ 1 = 跑慢一點；> 1 的部分已經加在 kit 上） */
   private get stickMul(): number {
     return Math.min(1, this.p.speedMul);
+  }
+
+  private get reaction(): number {
+    return this.reactionOverride ?? this.p.reaction;
+  }
+
+  /** 自動跑位：這一球要跑去哪裡（還沒有計畫 = null） */
+  planTarget(): { x: number; z: number } | null {
+    const pl = this.plan;
+    if (!pl || pl.leave || pl.done) return null;
+    return pl.dive ? { x: pl.dive.x, z: pl.dive.z } : { x: pl.standX, z: pl.standZ };
+  }
+
+  /** 預判讀對：現在就起步 */
+  startNow(): void {
+    const now = this.match.time;
+    this.reactAt = Math.min(this.reactAt, now);
+    if (this.plan) this.plan.reactAt = Math.min(this.plan.reactAt, now);
+  }
+
+  /** 預判猜錯：晚一點才起步 */
+  delay(dt: number): void {
+    this.reactAt += dt;
+    if (this.plan) this.plan.reactAt += dt;
   }
 
   private get me() {
@@ -154,7 +180,7 @@ export class AIController {
     const theirs = sh.lastHitter !== null && m.teamOf(sh.lastHitter) !== this.me.team;
     if (theirs && m.hitSerial !== this.seenHits) {
       this.seenHits = m.hitSerial;
-      this.reactAt = m.time + this.p.reaction;
+      this.reactAt = m.time + this.reaction;
       // 雙打：只有分到這一球的人去接，另一人照陣型補位
       this.plan = this.takesBall() ? this.makePlan() : null;
     }
@@ -298,7 +324,7 @@ export class AIController {
       const sx = Math.max(-3.4, Math.min(3.4, pt.x - me.side * 0.55));
       const sz = pt.z + me.side * 0.15;
       const travel = Math.hypot(sx - me.pos.x, sz - me.pos.z);
-      const avail = tAbs - now - p.reaction;
+      const avail = tAbs - now - this.reaction;
       const cand = { score: 0, i, tAbs, sx, sz };
       fallback = cand;
       if (travel / speed + 0.12 / me.kit.accel > avail && travel > 0.4) continue;
@@ -325,7 +351,7 @@ export class AIController {
     // 預測點的時間是 tick 時間；換回物理速度要除以球速倍率
     const speedMul = pred.stepDt / PHYS.dt;
     const inSpeed = j > pick.i ? Math.hypot(pts[j].p.x - pt.x, pts[j].p.y - pt.y, pts[j].p.z - pt.z) / (pts[j].t - pts[pick.i].t) / speedMul : 0;
-    const maxCharge = Math.max(chargeFromTime(flickAt - (now + p.reaction)), reboundCharge(inSpeed));
+    const maxCharge = Math.max(chargeFromTime(flickAt - (now + this.reaction)), reboundCharge(inSpeed));
     let shot = this.chooseShot(pt.y, dn);
     // 雙打網前撲球：前場兩人距離近、來不及蓄力，跟玩家一樣用「網前平球 = 撲球」（不用蓄力）
     const netKill =
@@ -363,7 +389,7 @@ export class AIController {
     }
     const jump = !netKill && shot.family === 'down' && shot.depth >= 2.6 && pt.y >= 2.1 && rng.chance(p.jumpRate + this.style.jump);
     return {
-      reactAt: now + p.reaction,
+      reactAt: now + this.reaction,
       standX: pick.sx,
       standZ: pick.sz,
       contactAt,
@@ -374,7 +400,7 @@ export class AIController {
       flick,
       leave: false,
       jump,
-      feint: rng.chance(this.style.feint) && flickAt - timeForCharge(charge) - 0.55 > now + p.reaction,
+      feint: rng.chance(this.style.feint) && flickAt - timeForCharge(charge) - 0.55 > now + this.reaction,
       done: false,
       dive: null,
     };
@@ -395,21 +421,21 @@ export class AIController {
     for (const q of pred.points) {
       const pt = q.p;
       if (pt.z * me.side < 0.05 || pt.y < 0.1 || pt.y > GAME.reachMaxY) continue;
-      const run = speed * Math.max(0, q.t - p.reaction - 0.15);
+      const run = speed * Math.max(0, q.t - this.reaction - 0.15);
       if (Math.hypot(pt.x - me.pos.x, pt.z - me.pos.z) <= run + okDist) return null;
     }
     for (let i = 0; i < pred.points.length; i += 2) {
       const q = pred.points[i];
       const pt = q.p;
       if (pt.z * me.side < 0.15 || pt.y < 0.08 || pt.y > D.maxY - 0.1) continue;
-      const avail = q.t - p.reaction;
+      const avail = q.t - this.reaction;
       if (avail < D.dur * 0.6) continue;
       const run = speed * Math.max(0, avail - D.dur - 0.12);
       const dist = Math.hypot(pt.x - me.pos.x, pt.z - me.pos.z);
       if (dist > run + D.dist * 0.85 + D.reachBonus + reach * 0.8) continue;
       const contactAt = now + q.t;
       return {
-        reactAt: now + p.reaction,
+        reactAt: now + this.reaction,
         standX: pt.x,
         standZ: pt.z,
         contactAt,

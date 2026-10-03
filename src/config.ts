@@ -76,6 +76,10 @@ export const GAME = {
     depth: 1.3, // 自動救回網前（放網）的深度
   },
   manualReachMul: 1.2, // 手動跑位時玩家的擊球範圍倍率（自動跑位與 AI = 1）
+  assistReachMul: 1.1, // 輔助跑位的擊球範圍倍率
+  // 自動跑位的預判起步：平常對手擊球後 baseReaction 秒才起步；在對手擊球前 preWindow 秒到擊球後 window 秒內
+  // 用左手往球的方向按住拖 → 立刻起步；猜錯 → 多等 wrongPenalty 秒
+  anticipation: { baseReaction: 0.24, preWindow: 0.4, window: 0.25, wrongPenalty: 0.15 },
   // 網前撲球：網前 zone 公尺內、球高於網時按平球（點一下／左右滑）就變撲球
   netKill: { zone: 2.3, depth: 3.4, maxSpeed: 21, speedMul: 1.35 }, // 比一般撲球快 1.35 倍（約 75 km/h）、初速上限 21 m/s；打向中場，反應得過來還救得到
   // 抓球：中前場（網前撲球區外到離網 zone 公尺）、球高於網子附近時「點一下」（平球）→ 搶下來往下壓
@@ -111,6 +115,8 @@ export type Venue = 'indoor' | 'bamboo' | 'sakura' | 'night' | 'market' | 'paddy
 /** 難度：簡單／普通／困難／超難／地獄 */
 export type Difficulty = 'easy' | 'normal' | 'hard' | 'extreme' | 'hell';
 
+export type MoveMode = 'auto' | 'assist' | 'manual';
+
 export interface MatchSettings {
   difficulty: Difficulty;
   points: 11 | 15 | 21;
@@ -122,6 +128,8 @@ export interface MatchSettings {
   umpire: boolean; // 裁判報分語音
   character: string; // 自己的球員
   racket: string; // 自己的球拍
+  /** 跑位：auto = 自動（可以預判起步）、assist = 輔助（自己推、電腦幫忙對準＋自動回位）、manual = 手動 */
+  moveMode: MoveMode;
   autoMove: boolean; // 簡單模式：自動跑位，只控制擊球
   autoDive: boolean; // 自動跑位時由電腦自動魚躍（否則左邊划動自己撲）
   scheme: ControlScheme; // 擊球操作方式
@@ -153,6 +161,7 @@ export const DEFAULT_SETTINGS: MatchSettings = {
   umpire: true,
   character: 'allround',
   racket: 'balance',
+  moveMode: 'auto',
   autoMove: true,
   autoDive: false,
   scheme: 'tap',

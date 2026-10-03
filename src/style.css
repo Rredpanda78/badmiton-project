@@ -980,7 +980,7 @@ body:has(#settings.show) #a2hsTip {
   background: rgba(255, 150, 60, 0.08);
 }
 .stick-base.dive-pad::after {
-  content: '撲';
+  content: '撲・預判';
   position: absolute;
   left: 50%;
   top: -24px;
@@ -1274,4 +1274,84 @@ body.in-menu #a2hsTip.show {
 }
 .guide-shot .when {
   color: var(--muted);
+}
+
+/* 擊球時機回饋（過早｜稍早｜完美｜稍晚｜過晚） */
+#timingFb {
+  display: none;
+  position: absolute;
+  left: 50%;
+  top: calc(max(10px, env(safe-area-inset-top)) + 58px);
+  transform: translateX(-50%);
+  width: min(78vw, 300px);
+  padding: 6px 10px 8px;
+  border-radius: 12px;
+  background: rgba(10, 16, 24, 0.78);
+  pointer-events: none;
+  text-align: center;
+}
+#timingFb.show {
+  display: block;
+  animation: tfbIn 0.18s ease-out;
+}
+#timingFb.low {
+  top: calc(max(10px, env(safe-area-inset-top)) + 100px);
+}
+@keyframes tfbIn {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-6px);
+  }
+}
+.tfb-label {
+  font-size: 17px;
+  font-weight: 800;
+  margin-bottom: 4px;
+}
+#timingFb.perfect .tfb-label {
+  color: #5dff8a;
+}
+#timingFb.near .tfb-label {
+  color: #ffd54a;
+}
+#timingFb.far .tfb-label,
+#timingFb.miss .tfb-label {
+  color: #ff7a6a;
+}
+#timingFb.only .tfb-bar {
+  display: none;
+}
+.tfb-bar {
+  position: relative;
+  display: flex;
+  height: 16px;
+  border-radius: 8px;
+  overflow: hidden;
+  font-size: 9px;
+  line-height: 16px;
+  color: rgba(255, 255, 255, 0.75);
+}
+.tfb-bar i {
+  flex: 1;
+  font-style: normal;
+  background: rgba(255, 122, 106, 0.35);
+}
+.tfb-bar i:nth-child(2),
+.tfb-bar i:nth-child(4) {
+  background: rgba(255, 213, 74, 0.35);
+}
+.tfb-bar i.p {
+  flex: 1.2;
+  background: rgba(93, 255, 138, 0.4);
+  color: #fff;
+}
+.tfb-mark {
+  position: absolute;
+  top: -2px;
+  width: 4px;
+  height: 20px;
+  margin-left: -2px;
+  border-radius: 2px;
+  background: #fff;
+  box-shadow: 0 0 6px #fff;
 }

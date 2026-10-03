@@ -13,6 +13,7 @@ import { buildKit, CHARACTERS, characterById, racketById, RACKETS, type Characte
 import { Hud } from './ui/hud';
 import { openGuide } from './ui/guide';
 import { chargeZones } from './sim/shots';
+import { v3 } from './sim/physics';
 import { OnlineSync } from './net/sync';
 import { buildTutorial, TutorialRunner, type TutUI } from './modes/tutorial';
 import type { PlayerInput } from './sim/match';
@@ -63,6 +64,10 @@ let hitStop = 0; // 擊中瞬間畫面停頓（秒，真實時間）
 let lastZone = 0; // 蓄力目前在哪一區：0 掛網 1 好球 2 出界
 
 let assist: AIController | null = null; // 簡單模式：幫玩家自動跑位
+/** 自動跑位的預判狀態（每次對手擊球重新開始） */
+let read: { serial: number; t0: number; done: boolean } | null = null;
+/** 輔助跑位：玩家已經往對的方向推過（之後放手也幫忙跑完這一球） */
+let engaged = -1;
 const pick = <T,>(xs: T[]) => xs[Math.floor(Math.random() * xs.length)];
 
 /** 開一場對 AI 的比賽；doubles = 雙打（自己＋AI 夥伴 對 兩位 AI）。回傳這場的球員（開場介紹用） */
@@ -377,11 +382,15 @@ function tick(now: number): void {
       const mine = demoPlayer ? demoPlayer.input() : (tutInput ?? controls.poll());
       tutInput = null;
       if (assist && (!tutorial || tutorial.wantAssist)) {
-        // 簡單模式：移動交給自動跑位，蓄力／出拍還是玩家自己
         const a = assist.input();
-        mine.moveX = a.moveX;
-        mine.moveY = a.moveY;
-        mine.dive ??= a.dive;
+        if (settings.moveMode === 'assist' && !tutorial) steerAssist(mine, a);
+        else {
+          // 自動跑位：移動交給電腦，蓄力／出拍還是玩家自己；左手可以預判起步
+          mine.moveX = a.moveX;
+          mine.moveY = a.moveY;
+          mine.dive ??= a.dive;
+          if (!tutorial && !demoPlayer) anticipate();
+        }
       }
       const prevSwing = match.players[HUMAN].swing;
       // 依球員編號順序取輸入（AI 會用比賽的亂數，順序固定才可重現）
@@ -490,6 +499,10 @@ const startSelected = () => (settings.matchType === 'doubles' ? startDoubles() :
 
 /** 設定改了之後要跟著更新的東西（場地預覽、提示文字、音效開關） */
 function onSettingChanged(key: string): void {
+  if (key === 'moveMode') {
+    settings.autoMove = settings.moveMode === 'auto';
+    saveSettings();
+  }
   if (key === 'venuePick' && settings.venuePick !== 'random') {
     settings.venue = settings.venuePick; // 選了固定場地：訓練、教學、選單背景也用這個
     saveSettings();
@@ -633,13 +646,17 @@ function loadSettings(): MatchSettings {
       if (!['easy', 'normal', 'hard', 'extreme', 'hell'].includes(s.difficulty)) s.difficulty = DEFAULT_SETTINGS.difficulty;
       if (s.myColor !== 'auto' && !colorById(s.myColor)) s.myColor = 'auto';
       if (s.oppColor !== 'random' && !colorById(s.oppColor)) s.oppColor = 'random';
-      s.settingsVersion = 4;
+      // v5：跑位改成三種（自動預判／輔助／手動）
+      if ((s.settingsVersion ?? 1) < 5) s.moveMode = s.autoMove === false ? 'manual' : 'auto';
+      if (!['auto', 'assist', 'manual'].includes(s.moveMode)) s.moveMode = 'auto';
+      s.autoMove = s.moveMode === 'auto';
+      s.settingsVersion = 5;
       return s;
     }
   } catch {
     /* 私密模式等情況讀不到就用預設 */
   }
-  return { ...DEFAULT_SETTINGS, settingsVersion: 4 };
+  return { ...DEFAULT_SETTINGS, settingsVersion: 5 };
 }
 function saveSettings(): void {
   try {
@@ -799,11 +816,18 @@ $('tourBackBtn').addEventListener('click', () => {
 /** 換場地：畫面＋環境音一起換 */
 /** 自己這邊的輔助：自動跑位（＋自動魚躍）；手動跑位時擊球範圍大一點 */
 function setupAssist(demo: boolean): void {
-  assist = !demo && settings.autoMove ? new AIController(match, 0, 'hard', true) : null;
-  if (assist) assist.allowDive = settings.autoDive;
-  controls.autoMove = !!assist;
+  const mode = settings.moveMode;
+  assist = !demo && mode !== 'manual' ? new AIController(match, 0, 'hard', true) : null;
+  if (assist) {
+    assist.allowDive = mode === 'auto' && settings.autoDive;
+    // 自動：平常起步慢一點，預判對了立刻起步；輔助：玩家自己起步，電腦只負責對準
+    assist.reactionOverride = mode === 'auto' ? GAME.anticipation.baseReaction : 0;
+  }
+  controls.autoMove = !demo && mode === 'auto';
   controls.autoDive = settings.autoDive;
-  match.players[HUMAN].reachMul = !demo && !settings.autoMove ? GAME.manualReachMul : 1;
+  match.players[HUMAN].reachMul = demo ? 1 : mode === 'manual' ? GAME.manualReachMul : mode === 'assist' ? GAME.assistReachMul : 1;
+  read = null;
+  engaged = -1;
 }
 
 function applyVenue(v: Venue): void {
@@ -1209,4 +1233,72 @@ for (const [panelSel, beforeId] of [
   b.className = 'guide-btn';
   b.addEventListener('click', () => openGuide(settings.scheme));
   panel.insertBefore(b, document.getElementById(beforeId));
+}
+
+// ---------- 跑位：自動的「預判起步」、輔助跑位 ----------
+function incomingToMe(): boolean {
+  const sh = match.shuttle;
+  return sh.mode === 'flight' && sh.lastHitter !== null && match.teamOf(sh.lastHitter) !== match.teamOf(HUMAN);
+}
+
+/**
+ * 自動跑位的預判：對手擊球前 preWindow 秒內～擊球後 window 秒內，左手往某方向按住拖。
+ * 方向跟這一球要跑的方向差不多（60° 內）→ 立刻起步；猜錯 → 多等一下。沒拖 = 照平常的反應時間。
+ */
+function anticipate(): void {
+  if (!assist || !incomingToMe()) {
+    read = null;
+    return;
+  }
+  const A = GAME.anticipation;
+  if (read?.serial !== match.hitSerial) read = { serial: match.hitSerial, t0: performance.now(), done: false };
+  if (read.done) return;
+  const target = assist.planTarget();
+  const lean = controls.lean;
+  const now = performance.now();
+  const age = (now - read.t0) / 1000;
+  if (!lean || lean.since < read.t0 - A.preWindow * 1000) {
+    if (age > A.window) read.done = true; // 沒預判（或拖太早、一直按著不算）
+    return;
+  }
+  if (!target) return;
+  read.done = true;
+  const me = match.players[HUMAN];
+  const dx = target.x - me.pos.x;
+  const dz = target.z - me.pos.z;
+  const d = Math.hypot(dx, dz);
+  if (d < 0.5) return; // 球就打在身邊，不用跑
+  // 自己視角 → 世界座標
+  const lx = me.side * lean.x;
+  const lz = -me.side * lean.y;
+  const ok = (lx * dx + lz * dz) / d > 0.5;
+  if (ok) assist.startNow();
+  else assist.delay(A.wrongPenalty);
+  const at = renderer.project(v3(me.pos.x, 2.3, me.pos.z));
+  hud.readFeedback(ok, at.x, at.y);
+  if (ok) buzz(10);
+}
+
+/**
+ * 輔助跑位：玩家自己推搖桿。這一球分給自己時，只要推的方向跟最佳位置差不多（約 70° 內），
+ * 就改用電腦算的路線（對準、剛好停住）；推過一次就幫忙跑完這一球，除非往別的方向推。
+ * 沒有球要接、又沒推搖桿 → 自動回位（單打回中間、雙打照陣型）。
+ */
+function steerAssist(mine: PlayerInput, a: PlayerInput): void {
+  const pm = Math.hypot(mine.moveX, mine.moveY);
+  const am = Math.hypot(a.moveX, a.moveY);
+  const target = incomingToMe() ? assist?.planTarget() : null;
+  if (target) {
+    const agree = pm > 0.2 && am > 0.05 && (mine.moveX * a.moveX + mine.moveY * a.moveY) / (pm * am) > 0.3;
+    if (agree) engaged = match.hitSerial;
+    if (agree || (pm < 0.2 && engaged === match.hitSerial)) {
+      mine.moveX = a.moveX;
+      mine.moveY = a.moveY;
+    } else if (pm >= 0.2) engaged = -1; // 往別的方向推：聽玩家的
+    return;
+  }
+  if (pm < 0.15) {
+    mine.moveX = a.moveX * 0.85;
+    mine.moveY = a.moveY * 0.85;
+  }
 }

@@ -9,6 +9,8 @@ const DOUBLE_TAP_MS = 320; // 兩次按下的間隔在這之內 = 連按兩下�
 const TAP_MAX_MS = 260; // 按住少於這麼久就放開才算「點一下」
 const DOUBLE_TAP_PX = 80;
 const SLIDE_PX = 22; // 點擊滑放：放開時滑超過這個距離才算出拍
+const DIVE_FLICK_MS = 170; // 自動跑位的撲救區：按下後這麼短時間內划出去才算魚躍（慢慢拖 = 預判）
+const LEAN_PX = 16;
 
 interface Pad {
   id: number;
@@ -106,6 +108,13 @@ export class LocalControls {
     window.addEventListener('keyup', this.onKeyUp);
   }
 
+  /** 自動跑位的預判方向（自己視角，單位向量）＋開始拖的時間；沒有在拖 = null */
+  get lean(): { x: number; y: number; since: number } | null {
+    return this.leanDir && this.move ? { ...this.leanDir, since: this.leanSince } : null;
+  }
+  private leanDir: { x: number; y: number } | null = null;
+  private leanSince = 0;
+
   /** 教學：讓某個控制一直閃（null = 不閃） */
   highlight(h: 'move' | 'action' | 'smash' | 'dive' | null): void {
     this.hl = h;
@@ -116,6 +125,7 @@ export class LocalControls {
     this.move = null;
     this.action = null;
     this.pendingFlick = null;
+    this.leanDir = null;
     this.pendingDive = null;
     this.lastMoveTap = null;
     this.keys.clear();
@@ -203,8 +213,15 @@ export class LocalControls {
       const mv = this.move;
       const dx = mv.x - mv.ox;
       const dy = mv.y - mv.oy;
-      if (mv.jump && !mv.flicked && Math.hypot(dx, dy) > FLICK_PX_TOUCH) {
+      const fast = performance.now() - mv.downAt < DIVE_FLICK_MS;
+      // 自動跑位：快速一划 = 魚躍；按住慢慢拖 = 預判方向（不是魚躍）
+      if (this.autoMove && !mv.flicked && !fast && Math.hypot(dx, dy) > LEAN_PX) {
+        const d = Math.hypot(dx, dy);
+        if (!this.leanDir) this.leanSince = performance.now();
+        this.leanDir = { x: dx / d, y: -dy / d };
+      } else if (mv.jump && !mv.flicked && Math.hypot(dx, dy) > FLICK_PX_TOUCH && (!this.autoMove || fast)) {
         mv.flicked = true;
+        this.leanDir = null;
         this.pendingDive = { x: dx, y: -dy };
         this.onDive?.();
         this.pressFx(mv.x, mv.y, false, true);
@@ -236,6 +253,7 @@ export class LocalControls {
       if (!this.autoMove && !mv.jump && performance.now() - mv.downAt < TAP_MAX_MS && Math.hypot(mv.x - mv.ox, mv.y - mv.oy) < SLIDE_PX) {
         this.lastMoveTap = { t: performance.now(), x: mv.ox, y: mv.oy };
       }
+      this.leanDir = null;
       this.move = null;
     }
     const a = this.action;
