@@ -161,6 +161,16 @@ export class GameRenderer {
    * 依螢幕方向擺鏡頭，並自動算視角讓整個球場剛好塞滿畫面。
    * 手機直向時，畫面下方保留 reserve 比例給兩個拇指搖桿，球場只畫在上面那塊。
    */
+  /** 效能保險：解析度降一級（2 → 1.5 → 1.2 → 1）；已經最低就回傳 false */
+  lowerQuality(): boolean {
+    const pr = this.renderer.getPixelRatio();
+    const next = pr > 1.5 ? 1.5 : pr > 1.2 ? 1.2 : pr > 1 ? 1 : 0;
+    if (!next) return false;
+    this.renderer.setPixelRatio(next);
+    this.resize();
+    return true;
+  }
+
   resize(): void {
     const w = window.innerWidth;
     const h = window.innerHeight;

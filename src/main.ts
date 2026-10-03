@@ -448,7 +448,18 @@ function chargeZoneTicks(charging: boolean, charge: number, serving: boolean, do
   }
   lastZone = zone;
 }
+// 效能保險：低階手機持續掉幀（低於約 42 fps 累積 2.5 秒）就自動降一級解析度
+let lastFrame = 0;
+let slowMs = 0;
 function frame(now: number): void {
+  const gap = now - lastFrame;
+  lastFrame = now;
+  if (gap > 24 && gap < 200 && !document.hidden) slowMs += gap;
+  else if (gap < 20) slowMs = Math.max(0, slowMs - gap * 0.5);
+  if (slowMs > 2500) {
+    slowMs = 0;
+    renderer.lowerQuality();
+  }
   tick(now);
   requestAnimationFrame(frame);
 }

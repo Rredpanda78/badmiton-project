@@ -96,7 +96,15 @@ export class LocalControls {
     window.addEventListener('pointerup', this.onUp);
     window.addEventListener('pointercancel', this.onUp);
     surface.addEventListener('lostpointercapture', this.onUp);
-    surface.addEventListener('contextmenu', (e) => e.preventDefault());
+    // 右鍵是「殺」搖桿：整個頁面都不跳瀏覽器／系統的右鍵選單（放開時游標常在 HUD、按鈕等別的元素上）；輸入框保留（貼上房號）
+    window.addEventListener(
+      'contextmenu',
+      (e) => {
+        if ((e.target as Element | null)?.closest?.('input, textarea, [contenteditable="true"]')) return;
+        e.preventDefault();
+      },
+      { capture: true },
+    );
     // 擋掉瀏覽器自己的捲動／縮放／長按選單，降低被系統搶走觸控的機會
     const block = (e: TouchEvent) => e.cancelable && e.preventDefault();
     surface.addEventListener('touchstart', block, { passive: false });
