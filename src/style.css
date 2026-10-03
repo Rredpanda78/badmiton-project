@@ -809,3 +809,30 @@ h2 {
 .smash-btn.jump {
   background: radial-gradient(circle at 35% 30%, #8ff7ff, #1f8fb0);
 }
+
+/* 魚躍：手動跑位連按兩下移動搖桿 = 待命（橘色）；自動跑位左邊的撲救區 */
+.stick-base.armed {
+  border-color: rgba(255, 150, 60, 0.95);
+  box-shadow: 0 0 18px rgba(255, 150, 60, 0.55);
+}
+.stick-base.dive-pad {
+  border-color: rgba(255, 150, 60, 0.6);
+  background: rgba(255, 150, 60, 0.08);
+}
+.stick-base.dive-pad::after {
+  content: '撲';
+  position: absolute;
+  left: 50%;
+  top: -24px;
+  transform: translateX(-50%);
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(255, 190, 120, 0.9);
+  white-space: nowrap;
+}
+.stick-base.dive-pad .stick-knob {
+  background: rgba(255, 170, 90, 0.4);
+}
+.press-ripple.dive {
+  border-color: rgba(255, 150, 60, 0.9);
+}

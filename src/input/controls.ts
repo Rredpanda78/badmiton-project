@@ -34,6 +34,11 @@ export class LocalControls {
   private lastTap: { t: number; x: number; y: number } | null = null;
   private keys = new Set<string>();
   private pendingFlick: Flick | null = null;
+  private pendingDive: { x: number; y: number } | null = null;
+  private lastMoveTap: { t: number; x: number; y: number } | null = null;
+  private gpWasDive = false;
+  /** 自動跑位時左邊撲救區的右緣（px），draw() 每格更新 */
+  private diveZoneX = 0;
   private kbFlicked = false;
   private kbJump = false;
   private spaceDownAt = 0;
@@ -47,6 +52,10 @@ export class LocalControls {
   enabled = true;
   /** 簡單模式：自動跑位，整個螢幕都是擊球區 */
   autoMove = false;
+  /** 自動跑位時由電腦自動魚躍（就不顯示左邊撲救區） */
+  autoDive = false;
+  /** 觸發魚躍的瞬間（UI 回饋用） */
+  onDive: (() => void) | null = null;
   /** 擊球操作方式：charge = 蓄力划動、tap = 點擊滑放＋殺球鍵 */
   scheme: ControlScheme = 'charge';
   private smashEl: HTMLButtonElement;
@@ -98,6 +107,8 @@ export class LocalControls {
     this.move = null;
     this.action = null;
     this.pendingFlick = null;
+    this.pendingDive = null;
+    this.lastMoveTap = null;
     this.keys.clear();
     this.kbJump = false;
     this.kbFlicked = false;
@@ -118,14 +129,22 @@ export class LocalControls {
     const pad: Pad = { id: e.pointerId, ox: e.clientX, oy: e.clientY, x: e.clientX, y: e.clientY, flicked: false, jump: false, downAt: now };
 
     let toMove: boolean;
-    if (!touch || this.autoMove) toMove = false;
+    if (!touch) toMove = false;
+    else if (this.autoMove) toMove = !this.autoDive && e.clientX < this.diveZoneX; // 自動跑位：左邊 = 撲救區
     else if (this.action && !this.move) toMove = e.clientX < this.action.ox - 40;
     else if (this.move && !this.action) toMove = e.clientX < this.move.ox + 40;
     else toMove = e.clientX < window.innerWidth * 0.5;
 
     // 已有手指在用的搖桿不搶（避免手掌誤觸把真正的拇指擠掉）；殘留的會被 isPrimary／reconcile 清掉
     if (toMove) {
-      if (!this.move) this.move = pad;
+      if (!this.move) {
+        // 連按兩下移動搖桿 = 魚躍待命（接著往哪划就往哪撲）；自動跑位的撲救區一按就待命
+        const lt = this.lastMoveTap;
+        pad.jump = this.autoMove || (!!lt && now - lt.t < DOUBLE_TAP_MS && Math.hypot(e.clientX - lt.x, e.clientY - lt.y) < DOUBLE_TAP_PX);
+        this.lastMoveTap = null;
+        this.move = pad;
+        if (pad.jump && !this.autoMove) this.pressFx(e.clientX, e.clientY, false, true);
+      }
     } else if (!this.action) {
       const lt = this.lastTap;
       pad.jump = !!lt && now - lt.t < DOUBLE_TAP_MS && Math.hypot(e.clientX - lt.x, e.clientY - lt.y) < DOUBLE_TAP_PX;
@@ -143,12 +162,14 @@ export class LocalControls {
   };
 
   /** 按下右手蓄力區的視覺回饋：圓環彈一下＋擴散波紋（跳殺為青色） */
-  private pressFx(x: number, y: number, jump: boolean): void {
-    this.ringEl.classList.remove('pop');
-    void this.ringEl.offsetWidth; // 重新觸發動畫
-    this.ringEl.classList.add('pop');
+  private pressFx(x: number, y: number, jump: boolean, dive = false): void {
+    if (!dive) {
+      this.ringEl.classList.remove('pop');
+      void this.ringEl.offsetWidth; // 重新觸發動畫
+      this.ringEl.classList.add('pop');
+    }
     const r = document.createElement('div');
-    r.className = jump ? 'press-ripple jump' : 'press-ripple';
+    r.className = dive ? 'press-ripple dive' : jump ? 'press-ripple jump' : 'press-ripple';
     r.style.left = `${x}px`;
     r.style.top = `${y}px`;
     this.overlay.appendChild(r);
@@ -163,6 +184,15 @@ export class LocalControls {
     if (this.move?.id === e.pointerId) {
       this.move.x = e.clientX;
       this.move.y = e.clientY;
+      const mv = this.move;
+      const dx = mv.x - mv.ox;
+      const dy = mv.y - mv.oy;
+      if (mv.jump && !mv.flicked && Math.hypot(dx, dy) > FLICK_PX_TOUCH) {
+        mv.flicked = true;
+        this.pendingDive = { x: dx, y: -dy };
+        this.onDive?.();
+        this.pressFx(mv.x, mv.y, false, true);
+      }
     }
     const a = this.action;
     if (a?.id === e.pointerId) {
@@ -179,7 +209,14 @@ export class LocalControls {
   };
 
   private onUp = (e: PointerEvent) => {
-    if (this.move?.id === e.pointerId) this.move = null;
+    const mv = this.move;
+    if (mv?.id === e.pointerId) {
+      // 移動搖桿快速點一下（沒怎麼拖）= 可能是連按兩下魚躍的第一下
+      if (!this.autoMove && !mv.jump && performance.now() - mv.downAt < TAP_MAX_MS && Math.hypot(mv.x - mv.ox, mv.y - mv.oy) < SLIDE_PX) {
+        this.lastMoveTap = { t: performance.now(), x: mv.ox, y: mv.oy };
+      }
+      this.move = null;
+    }
     const a = this.action;
     if (a?.id === e.pointerId) {
       const dx = a.x - a.ox;
@@ -256,6 +293,13 @@ export class LocalControls {
   private onKeyDown = (e: KeyboardEvent) => {
     if (e.repeat) return;
     this.keys.add(e.code);
+    if (e.code.startsWith('Shift') && this.enabled) {
+      // Shift = 往 WASD 的方向魚躍
+      const k = this.keys;
+      const x = (k.has('KeyD') ? 1 : 0) - (k.has('KeyA') ? 1 : 0);
+      const y = (k.has('KeyW') ? 1 : 0) - (k.has('KeyS') ? 1 : 0);
+      if (x || y) this.pendingDive = { x, y };
+    }
     if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();
     if (e.code === 'Space' && this.enabled && this.scheme === 'tap') {
       this.smashEl.classList.add('down');
@@ -302,7 +346,9 @@ export class LocalControls {
     const inp = idleInput();
     if (!this.enabled) return inp;
 
-    if (this.move) {
+    // 魚躍待命中（還沒划出去）不走；按太久沒划就當一般移動
+    if (this.move?.jump && !this.move.flicked && !this.autoMove && performance.now() - this.move.downAt > 450) this.move.jump = false;
+    if (this.move && !this.autoMove && !(this.move.jump && !this.move.flicked)) {
       const dx = (this.move.x - this.move.ox) / STICK_RADIUS;
       const dy = (this.move.y - this.move.oy) / STICK_RADIUS;
       const m = Math.hypot(dx, dy);
@@ -347,6 +393,10 @@ export class LocalControls {
         inp.charging = true;
         inp.jump ||= this.gpJump;
       }
+      // B = 往左搖桿方向魚躍
+      const diveBtn = !!gp.buttons[1]?.pressed;
+      if (diveBtn && !this.gpWasDive && Math.hypot(ax(0), ax(1)) > 0) this.pendingDive = { x: ax(0), y: -ax(1) };
+      this.gpWasDive = diveBtn;
       const rx = gp.axes[2] ?? 0;
       const ry = gp.axes[3] ?? 0;
       const rm = Math.hypot(rx, ry);
@@ -362,6 +412,10 @@ export class LocalControls {
       // 點擊滑放不用蓄力
       inp.charging = false;
       inp.jump = !!this.smashPad?.jump; // 殺球搖桿點一下再按住 = 跳殺待命
+    }
+    if (this.pendingDive) {
+      inp.dive = this.pendingDive;
+      this.pendingDive = null;
     }
     if (this.pendingFlick) {
       inp.flick = this.pendingFlick;
@@ -382,7 +436,12 @@ export class LocalControls {
     const ringX = this.autoMove ? w * (bottomReserve > 0 ? 0.6 : 0.72) : w - restX;
     const smashX = this.autoMove ? ringX + 74 : ringX;
     const smashY = this.autoMove ? restY - 92 : restY - 112;
-    const show = this.isTouch && !this.autoMove;
+    // 自動跑位：左邊的圈變成「撲」救區（電腦自動魚躍時不顯示）
+    const divePad = this.autoMove && !this.autoDive;
+    this.diveZoneX = divePad ? Math.min(ringX - 100, w * 0.45) : 0;
+    const show = this.isTouch && (!this.autoMove || divePad);
+    this.baseEl.classList.toggle('dive-pad', divePad);
+    this.baseEl.classList.toggle('armed', !!this.move?.jump && !this.move.flicked && !this.autoMove);
     const showRing = this.isTouch;
     this.baseEl.style.display = show ? 'block' : 'none';
     this.ringEl.style.display = showRing || this.action ? 'block' : 'none';

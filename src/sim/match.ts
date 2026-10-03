@@ -11,8 +11,9 @@ export interface PlayerInput {
   charging: boolean;
   jump: boolean; // 這次蓄力是「連按兩下」→ 跳殺模式
   flick: Flick | null; // 這個 tick 出拍的方向
+  dive: { x: number; y: number } | null; // 這個 tick 魚躍（撲救）的方向（自己視角）
 }
-export const idleInput = (): PlayerInput => ({ moveX: 0, moveY: 0, charging: false, jump: false, flick: null });
+export const idleInput = (): PlayerInput => ({ moveX: 0, moveY: 0, charging: false, jump: false, flick: null, dive: null });
 
 export interface Swing {
   t: number;
@@ -29,6 +30,8 @@ export interface Swing {
   from: Vec3; // 出拍當下的位置（揮空原因用）
   airborne: boolean; // 出拍時是否在空中（或這一下觸發起跳）
   triggeredJump: boolean; // 這一下划動直接觸發起跳（時機改用「是否在最高點擊中」評分）
+  dive: boolean; // 魚躍撲救時的揮拍（撲出去的整段都能擊中）
+  diveAuto: boolean; // 魚躍時沒有另外划 → 自動挑回
 }
 
 export interface PlayerState {
@@ -50,6 +53,9 @@ export interface PlayerState {
   vy: number; // 跳躍垂直速度
   bufferedFlick: Flick | null; // 揮拍／硬直中太早划的那一下
   bufferT: number;
+  dive: { t: number; dx: number; dz: number; v0: number } | null; // 魚躍中（dx,dz = 世界座標方向）
+  downT: number; // 魚躍後趴在地上的剩餘時間
+  reachMul: number; // 擊球範圍倍率（手動跑位的玩家較大）
 }
 
 export type Phase = 'serve' | 'rally' | 'point' | 'matchOver' | 'drill'; // drill = 練習模式等待發球機
@@ -72,10 +78,13 @@ export type MatchEvent =
       grade: HitGrade;
       jump: boolean;
       serve: boolean;
+      dive: boolean; // 魚躍救球
     }
   | { type: 'whiff'; player: 0 | 1; reason: WhiffReason; airborne: boolean }
   | { type: 'jump'; player: 0 | 1 }
   | { type: 'jumpLand'; player: 0 | 1 }
+  | { type: 'dive'; player: 0 | 1; dx: number; dz: number }
+  | { type: 'diveLand'; player: 0 | 1 }
   | { type: 'net'; pos: Vec3 }
   | { type: 'land'; pos: Vec3; inBounds: boolean }
   | { type: 'drillLand'; hitter: 0 | 1; pos: Vec3; inBounds: boolean; net: boolean }
@@ -149,6 +158,9 @@ export class Match {
       vy: 0,
       bufferedFlick: null,
       bufferT: 0,
+      dive: null,
+      downT: 0,
+      reachMul: 1,
     });
     this.players = [mk(0, 1), mk(1, -1)];
     this.shuttle = { pos: v3(), vel: v3(), mode: 'held', lastHitter: null, isServe: false, serveBoxSign: 1, prediction: null, stepDt: PHYS.dt, launchTime: 0, wobble: false };
@@ -185,6 +197,8 @@ export class Match {
       p.jumpUsed = false;
       p.landRecover = 0;
       p.bufferT = 0;
+      p.dive = null;
+      p.downT = 0;
     }
     this.shuttle.mode = 'held';
     this.shuttle.vel = v3();
@@ -234,9 +248,14 @@ export class Match {
   private updatePlayer(p: PlayerState, input: PlayerInput, dt: number): void {
     if (p.recover > 0) p.recover -= dt;
     if (p.landRecover > 0) p.landRecover -= dt;
+    if (p.downT > 0) p.downT -= dt;
+
+    // 魚躍（撲救）：往某方向撲出去，撲的整段都能自動把球挑回；之後趴在地上一下
+    if (input.dive && this.canDive(p)) this.startDive(p, input.dive);
+    const busy = !!p.dive || p.downT > 0; // 撲出去或趴在地上：不能蓄力、跳、另外揮拍
 
     // 連按兩下 = 跳殺模式（放開蓄力就取消）
-    if (input.jump && !p.airborne && !p.jumpUsed) p.jumpArmed = true;
+    if (input.jump && !p.airborne && !p.jumpUsed && !busy) p.jumpArmed = true;
 
     // 出拍（揮拍或硬直中划動會先暫存一下，避免太早划被吃掉）
     if (input.flick) {
@@ -246,7 +265,18 @@ export class Match {
     // 只點不滑：羽球快到身邊才算出拍，否則只是連按兩下的第一下（不揮拍）
     if (p.bufferT > 0 && p.bufferedFlick?.cmd?.soft && !this.softTapLive(p)) p.bufferT = 0;
     const flick = p.bufferT > 0 ? p.bufferedFlick : null;
-    if (flick && !p.swing && p.recover <= 0 && this.phase !== 'matchOver') {
+    const ds = p.swing;
+    if (flick && ds?.dive && !ds.contacted && !ds.whiffed && p.dive) {
+      // 撲出去時另外划 = 自己決定怎麼救（球種、方向），不用蓄力：力道照手勢或來球反彈
+      p.bufferT = 0;
+      const cls = classifyFlick(flick);
+      ds.family = flick.cmd ? flick.cmd.family : cls.family;
+      ds.aimX = cls.aimX;
+      ds.preset = !!flick.cmd;
+      ds.charge = flick.cmd ? chargeForDepth(flick.cmd.depth === 'smash' ? 3.0 : flick.cmd.depth) : 0;
+      ds.diveAuto = false;
+    }
+    if (flick && !p.swing && !busy && p.recover <= 0 && this.phase !== 'matchOver') {
       p.bufferT = 0;
       const cls = classifyFlick(flick);
       const aimX = cls.aimX;
@@ -290,6 +320,8 @@ export class Match {
         from: copy3(p.pos),
         airborne: p.airborne,
         triggeredJump,
+        dive: false,
+        diveAuto: false,
       };
       p.charging = false;
       p.charge = 0;
@@ -298,7 +330,7 @@ export class Match {
     }
 
     // 蓄力（放開但沒划動 = 取消）
-    if (input.charging && !p.swing && p.recover <= 0) {
+    if (input.charging && !p.swing && !busy && p.recover <= 0) {
       p.charging = true;
       p.chargeT += dt;
       p.charge = chargeFromTime(p.chargeT);
@@ -316,7 +348,7 @@ export class Match {
     }
 
     // 跳殺自動起跳：羽球預計進入「跳起來的擊球範圍」前 apex 時間起跳
-    if (p.jumpArmed && !p.airborne && p.landRecover <= 0 && this.phase === 'rally') {
+    if (p.jumpArmed && !busy && !p.airborne && p.landRecover <= 0 && this.phase === 'rally') {
       const tReach = this.timeUntilJumpReach(p);
       if (tReach !== null && tReach <= jumpApexTime() + GAME.jump.lead) this.takeoff(p);
     }
@@ -326,8 +358,11 @@ export class Match {
       s.t += dt;
       if (!s.contacted && !s.whiffed && !s.isServe && s.t > s.window) {
         s.whiffed = true;
-        p.recover = GAME.whiffRecover;
-        this.events.push({ type: 'whiff', player: p.id, reason: this.whiffReason(p), airborne: s.airborne });
+        if (!s.dive) {
+          // 魚躍沒撲到：不算揮空（趴在地上就是代價）
+          p.recover = GAME.whiffRecover;
+          this.events.push({ type: 'whiff', player: p.id, reason: this.whiffReason(p), airborne: s.airborne });
+        }
       }
       if (s.t >= Math.max(GAME.swingDuration, s.window + 0.1)) p.swing = null;
     }
@@ -353,7 +388,23 @@ export class Match {
       mx /= m;
       my /= m;
     }
-    if (!p.airborne) {
+    if (p.dive) {
+      // 撲出去：初速最快、線性減到 0，著地後趴一下
+      const d = p.dive;
+      d.t += dt;
+      const v = d.v0 * Math.max(0, 1 - d.t / GAME.dive.dur);
+      p.vel.x = d.dx * v;
+      p.vel.z = d.dz * v;
+      if (d.t >= GAME.dive.dur) {
+        p.dive = null;
+        p.downT = GAME.dive.down;
+        p.vel = v3();
+        this.events.push({ type: 'diveLand', player: p.id });
+      }
+    } else if (p.downT > 0) {
+      p.vel.x = 0;
+      p.vel.z = 0;
+    } else if (!p.airborne) {
       const mul = p.landRecover > 0 ? GAME.jump.landMoveMul : p.swing ? GAME.swingMoveMul : p.charging ? GAME.chargeMoveMul : 1;
       const top = GAME.moveSpeed * p.kit.move * mul;
       const tvx = p.side * mx * top;
@@ -404,6 +455,50 @@ export class Match {
     return { x0: Math.min(xa, xb), x1: Math.max(xa, xb), z0: Math.min(za, zb), z1: Math.max(za, zb) };
   }
 
+  /** 這位球員的水平擊球範圍（站著） */
+  reachOf(p: PlayerState): number {
+    return GAME.reach * p.reachMul;
+  }
+
+  private canDive(p: PlayerState): boolean {
+    return this.phase === 'rally' && !p.dive && p.downT <= 0 && !p.airborne && p.landRecover <= 0 && !p.swing?.contacted;
+  }
+
+  private startDive(p: PlayerState, dir: { x: number; y: number }): void {
+    const m = Math.hypot(dir.x, dir.y);
+    if (m < 1e-3) return;
+    // 自己視角 → 世界座標（跟移動同一套換算）
+    const dx = (p.side * dir.x) / m;
+    const dz = (-p.side * dir.y) / m;
+    const along = Math.max(0, p.vel.x * dx + p.vel.z * dz);
+    p.dive = { t: 0, dx, dz, v0: (2 * GAME.dive.dist) / GAME.dive.dur + along * 0.3 };
+    p.charging = false;
+    p.charge = 0;
+    p.chargeT = 0;
+    p.jumpArmed = false;
+    p.bufferT = 0;
+    p.recover = 0;
+    p.swing = {
+      t: 0,
+      window: GAME.dive.dur + 0.04,
+      charge: chargeForDepth(GAME.dive.depth),
+      preset: true,
+      family: 'up',
+      aimX: 0,
+      contacted: false,
+      contactPoint: null,
+      contactT: 0,
+      isServe: false,
+      whiffed: false,
+      from: copy3(p.pos),
+      airborne: false,
+      triggeredJump: false,
+      dive: true,
+      diveAuto: true,
+    };
+    this.events.push({ type: 'dive', player: p.id, dx, dz });
+  }
+
   private takeoff(p: PlayerState): void {
     p.airborne = true;
     p.takeoffAt = this.time;
@@ -428,7 +523,7 @@ export class Match {
       if (q.y < GAME.jump.minShuttleY || q.y > top) continue;
       // 起跳前會繼續移動、起跳後保留六成速度：用預估位置判斷
       const tt = pt.t - elapsed;
-      if (Math.hypot(q.x - (p.pos.x + p.vel.x * tt * 0.8), q.z - (p.pos.z + p.vel.z * tt * 0.8)) <= GAME.reach) return tt;
+      if (Math.hypot(q.x - (p.pos.x + p.vel.x * tt * 0.8), q.z - (p.pos.z + p.vel.z * tt * 0.8)) <= this.reachOf(p)) return tt;
     }
     return null;
   }
@@ -464,7 +559,7 @@ export class Match {
         bestFeet = feet;
         bestT = t;
       }
-      if (d <= GAME.reach && pt.p.y >= GAME.reachMinY + feet && pt.p.y <= GAME.reachMaxY + feet) {
+      if (d <= this.reachOf(p) && pt.p.y >= GAME.reachMinY + feet && pt.p.y <= GAME.reachMaxY + feet) {
         first = Math.min(first, t);
         last = Math.max(last, t);
       }
@@ -475,8 +570,8 @@ export class Match {
       return '太遠'; // 時間對，但出拍後人跑開了
     }
     // 跳起來了，但羽球要等落地後才到 → 起跳（划動）太早
-    if (s.airborne && best <= GAME.reach + 0.3 && bestT > flickAt + s.window) return '太早';
-    if (best <= GAME.reach) return bestY > GAME.reachMaxY + bestFeet ? '太高' : '太低';
+    if (s.airborne && best <= this.reachOf(p) + 0.3 && bestT > flickAt + s.window) return '太早';
+    if (best <= this.reachOf(p)) return bestY > GAME.reachMaxY + bestFeet ? '太高' : '太低';
     return '太遠';
   }
 
@@ -516,6 +611,7 @@ export class Match {
       grade: '完美',
       jump: false,
       serve: true,
+      dive: false,
     });
     this.phase = 'rally';
     this.phaseT = 0;
@@ -538,14 +634,21 @@ export class Match {
   /** 羽球 q 是否在「站在 at（腳高 at.y）」的球員擊球範圍內；回傳水平距離 */
   private inReach(p: PlayerState, q: Vec3, at: Vec3 = p.pos): number | null {
     if (q.z * p.side < 0.05) return null;
+    if (p.dive) {
+      // 撲出去：身體撲平，範圍往撲的方向延伸、高度變低
+      if (q.y < 0.02 || q.y > GAME.dive.maxY) return null;
+      const b = GAME.dive.reachBonus;
+      const d = Math.hypot(q.x - (at.x + p.dive.dx * b), q.z - (at.z + p.dive.dz * b));
+      return d <= this.reachOf(p) ? d : null;
+    }
     if (q.y < GAME.reachMinY + at.y || q.y > GAME.reachMaxY + at.y) return null;
     const d = Math.hypot(q.x - at.x, q.z - at.z);
-    return d <= GAME.reach ? d : null;
+    return d <= this.reachOf(p) ? d : null;
   }
 
   /** 擊球品質：時機（划動後 idealContactT 最好）× 位置（0.25~0.85 m 最好） */
   private contactQuality(p: PlayerState, t: number, dist: number): number {
-    return timeQuality(t, setFactor(p)) * posQuality(dist);
+    return timeQuality(t, setFactor(p)) * posQuality(dist, this.reachOf(p));
   }
 
   private updateRally(): void {
@@ -567,7 +670,7 @@ export class Match {
           const at = v3(p.pos.x + p.vel.x * dt, p.airborne ? p.pos.y + p.vy * dt : p.pos.y, p.pos.z + p.vel.z * dt);
           const nd = this.inReach(p, np, at);
           const dropsBelowHigh = sh.pos.y >= GAME.highZoneY + p.pos.y && np.y < GAME.highZoneY + at.y;
-          if (nd !== null && !dropsBelowHigh && posQuality(nd) > posQuality(d) + 1e-4 && this.contactQuality(p, s.t + dt, nd) >= this.contactQuality(p, s.t, d)) continue;
+          if (nd !== null && !dropsBelowHigh && posQuality(nd, this.reachOf(p)) > posQuality(d, this.reachOf(p)) + 1e-4 && this.contactQuality(p, s.t + dt, nd) >= this.contactQuality(p, s.t, d)) continue;
         }
         this.hit(p, d);
         break;
@@ -600,7 +703,8 @@ export class Match {
       const apexQ = 1 - 0.35 * clamp(Math.abs(this.time - p.takeoffAt - jumpApexTime()) / 0.15, 0, 1);
       qTime = swing.triggeredJump ? apexQ : Math.max(qTime, apexQ);
     }
-    const quality = qTime * posQuality(dist);
+    // 魚躍：自動挑回固定是一顆普通的球；自己另外划的最多「不錯」
+    const quality = swing.diveAuto ? GAME.dive.quality : qTime * posQuality(dist, this.reachOf(p)) * (swing.dive ? 0.85 : 1);
     const contact = copy3(sh.pos);
     const incoming = Math.hypot(sh.vel.x, sh.vel.y, sh.vel.z);
     let charge = swing.preset ? swing.charge : Math.max(swing.charge, reboundCharge(incoming));
@@ -637,6 +741,7 @@ export class Match {
       grade: quality >= 0.9 ? '完美' : quality >= 0.74 ? '不錯' : '勉強',
       jump: shot.name === '跳殺' || shot.name === '跳撲' || chanceSmash,
       serve: false,
+      dive: swing.dive,
     });
   }
 
@@ -736,6 +841,8 @@ export class Match {
       p.jumpArmed = false;
       p.jumpUsed = false;
       p.bufferT = 0;
+      p.dive = null;
+      p.downT = 0;
     }
     this.shuttle.mode = 'held';
     this.shuttle.vel = v3();
@@ -781,6 +888,8 @@ export class Match {
       from: copy3(feeder.pos),
       airborne: false,
       triggeredJump: false,
+      dive: false,
+      diveAuto: false,
     };
     this.launch(feeder, shot.vel, shot.stepDt, false);
     this.events.push({
@@ -797,6 +906,7 @@ export class Match {
       grade: '完美',
       jump: false,
       serve: false,
+      dive: false,
     });
     this.phase = 'rally';
     this.phaseT = 0;
@@ -824,7 +934,7 @@ export class Match {
       if (pt.t - elapsed > GAME.softTapLead) break;
       const q = pt.p;
       if (q.z * p.side < 0.05 || q.y > GAME.reachMaxY + p.pos.y + 0.6) continue;
-      if (Math.hypot(q.x - p.pos.x, q.z - p.pos.z) <= GAME.reach + 0.7) return true;
+      if (Math.hypot(q.x - p.pos.x, q.z - p.pos.z) <= this.reachOf(p) + 0.7) return true;
     }
     return false;
   }
@@ -846,7 +956,7 @@ export function timeUntilInReach(m: Match, id: 0 | 1): number | null {
     if (pt.t < elapsed) continue;
     const q = pt.p;
     if (q.z * p.side < 0.05 || q.y < GAME.reachMinY + p.pos.y || q.y > GAME.reachMaxY + p.pos.y) continue;
-    if (Math.hypot(q.x - p.pos.x, q.z - p.pos.z) <= GAME.reach) return pt.t - elapsed;
+    if (Math.hypot(q.x - p.pos.x, q.z - p.pos.z) <= GAME.reach * p.reachMul) return pt.t - elapsed;
   }
   return null;
 }
@@ -873,8 +983,8 @@ function timeQuality(t: number, f = 1): number {
 }
 
 /** 位置分數：離身體 0.25~0.85 m 最好，太遠或太擠扣分 */
-function posQuality(dist: number): number {
-  if (dist > 0.92) return 1 - 0.2 * ((dist - 0.92) / (GAME.reach - 0.92));
+function posQuality(dist: number, reach: number = GAME.reach): number {
+  if (dist > 0.92) return 1 - 0.2 * ((dist - 0.92) / (reach - 0.92));
   if (dist < 0.2) return 0.9;
   return 1;
 }

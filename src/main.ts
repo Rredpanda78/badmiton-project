@@ -69,8 +69,7 @@ function newMatch(demo: boolean, tourOpp?: TourOpponent, venue?: Venue): void {
     : new AIController(match, 1, demo ? 'hard' : settings.difficulty);
   tourCtx = null;
   demoPlayer = demo ? new AIController(match, 0, 'hard') : null;
-  assist = !demo && settings.autoMove ? new AIController(match, 0, 'hard', true) : null;
-  controls.autoMove = !!assist;
+  setupAssist(demo);
   controls.scheme = settings.scheme;
   renderer.setLooks([
     { ...me, racketColor: racketById(s.racket).color },
@@ -187,6 +186,18 @@ function handleEvent(e: MatchEvent): void {
       if (live) sfx.thud();
       renderer.dust(match.players[e.player].pos);
       break;
+    case 'dive':
+      if (live) {
+        sfx.whoosh();
+        sfx.squeak(mine ? 1 : 0.6);
+      }
+      if (mine) buzz(25);
+      break;
+    case 'diveLand':
+      if (live) sfx.thud();
+      if (mine) buzz([30, 30, 15]);
+      renderer.dust(match.players[e.player].pos);
+      break;
     case 'net':
       if (live) sfx.net();
       break;
@@ -256,6 +267,7 @@ function tick(now: number): void {
         const a = assist.input();
         mine.moveX = a.moveX;
         mine.moveY = a.moveY;
+        mine.dive ??= a.dive;
       }
       const prevSwing = match.players[HUMAN].swing;
       match.step([mine, opponent ? opponent.input() : idleInput()]);
@@ -425,8 +437,7 @@ function startDrill(d: Drill): void {
   match = new Match({ ...settings, practice: true, aiCharacter: 'allround', aiRacket: 'balance' }, (Date.now() ^ (Math.random() * 1e9)) >>> 0);
   opponent = null;
   demoPlayer = null;
-  assist = settings.autoMove ? new AIController(match, 0, 'hard', true) : null;
-  controls.autoMove = !!assist;
+  setupAssist(false);
   controls.scheme = settings.scheme;
   renderer.setLooks([{ ...me, racketColor: racketById(settings.racket).color }, { shirt: 0x8a96a8, shorts: 0x2a2f38 }]); // 對面是灰色的發球機教練
   applyVenue(settings.venue);
@@ -524,6 +535,15 @@ $('tourBackBtn').addEventListener('click', () => {
 // ---------- 音效 ----------
 
 /** 換場地：畫面＋環境音一起換 */
+/** 自己這邊的輔助：自動跑位（＋自動魚躍）；手動跑位時擊球範圍大一點 */
+function setupAssist(demo: boolean): void {
+  assist = !demo && settings.autoMove ? new AIController(match, 0, 'hard', true) : null;
+  if (assist) assist.allowDive = settings.autoDive;
+  controls.autoMove = !!assist;
+  controls.autoDive = settings.autoDive;
+  match.players[HUMAN].reachMul = !demo && !settings.autoMove ? GAME.manualReachMul : 1;
+}
+
 function applyVenue(v: Venue): void {
   renderer.setVenue(v);
   ambience.setVenue(v);

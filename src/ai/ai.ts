@@ -1,5 +1,6 @@
 import { chargeFromTime, COURT, GAME, PHYS, timeForCharge, type Difficulty } from '../config';
 import { idleInput, type Match, type PlayerInput } from '../sim/match';
+import type { Prediction } from '../sim/physics';
 import { chargeForDepth, depthFromCharge, reboundCharge, type Family, type Flick } from '../sim/shots';
 
 interface AIParams {
@@ -12,12 +13,13 @@ interface AIParams {
   smashBias: number;
   killRate: number; // 網前高球選擇撲殺的比例
   jumpRate: number; // 高球殺球時改用跳殺的比例
+  diveRate: number; // 跑不到的低球改用魚躍撲救的比例
 }
 
 const PARAMS: Record<Difficulty, AIParams> = {
-  easy: { reaction: 0.38, speedMul: 0.78, depthNoise: 0.9, timingJitter: 0.05, outJudge: 0.5, smartAim: 0.35, smashBias: 0.6, killRate: 0.25, jumpRate: 0 },
-  normal: { reaction: 0.25, speedMul: 0.9, depthNoise: 0.5, timingJitter: 0.04, outJudge: 0.8, smartAim: 0.7, smashBias: 1, killRate: 0.4, jumpRate: 0.15 },
-  hard: { reaction: 0.15, speedMul: 1.0, depthNoise: 0.3, timingJitter: 0.025, outJudge: 0.95, smartAim: 0.9, smashBias: 1.2, killRate: 0.55, jumpRate: 0.35 },
+  easy: { reaction: 0.38, speedMul: 0.78, depthNoise: 0.9, timingJitter: 0.05, outJudge: 0.5, smartAim: 0.35, smashBias: 0.6, killRate: 0.25, jumpRate: 0, diveRate: 0.2 },
+  normal: { reaction: 0.25, speedMul: 0.9, depthNoise: 0.5, timingJitter: 0.04, outJudge: 0.8, smartAim: 0.7, smashBias: 1, killRate: 0.4, jumpRate: 0.15, diveRate: 0.6 },
+  hard: { reaction: 0.15, speedMul: 1.0, depthNoise: 0.3, timingJitter: 0.025, outJudge: 0.95, smartAim: 0.9, smashBias: 1.2, killRate: 0.55, jumpRate: 0.35, diveRate: 0.9 },
 };
 
 
@@ -74,6 +76,7 @@ interface Plan {
   jump: boolean;
   feint: boolean; // 先假蓄力一次
   done: boolean;
+  dive: { at: number; x: number; z: number } | null; // 跑不到 → 這個時間往 (x,z) 魚躍
 }
 
 export class AIController {
@@ -83,6 +86,8 @@ export class AIController {
   private seenServeT = -1;
   private serveDelay = 1;
   private serveChoice: { charge: number; flick: Flick } | null = null;
+  /** 會不會魚躍（自動跑位時看設定「自動魚躍」） */
+  allowDive = true;
 
   /**
    * moveOnly = 簡單模式的自動跑位：只輸出移動，蓄力／出拍交給玩家
@@ -107,6 +112,7 @@ export class AIController {
       inp.charging = false;
       inp.jump = false;
       inp.flick = null;
+      if (!this.allowDive) inp.dive = null;
     }
     return inp;
   }
@@ -131,6 +137,18 @@ export class AIController {
     }
 
     const now = m.time;
+    if (plan.dive) {
+      // 跑不到的球：先往落點衝，時間到就撲出去（撲的過程會自動挑回）
+      this.moveTo(inp, plan.dive.x, plan.dive.z, now >= plan.reactAt ? 1 : 0.4);
+      if (now >= plan.dive.at && this.allowDive) {
+        const me = this.me;
+        const dx = plan.dive.x - me.pos.x;
+        const dz = plan.dive.z - me.pos.z;
+        inp.dive = { x: dx * me.side, y: -dz * me.side };
+        plan.done = true;
+      }
+      return inp;
+    }
     if (now >= plan.reactAt) this.moveTo(inp, plan.standX, plan.standZ, 1);
     else this.moveTo(inp, 0, this.me.side * 3.6, 0.4);
 
@@ -208,7 +226,7 @@ export class AIController {
     const rng = m.rng;
     const now = m.time;
     const p = this.p;
-    const leavePlan = (): Plan => ({ reactAt: now, standX: 0, standZ: me.side * 3.6, contactAt: 0, chargeAt: 1e9, flickAt: 1e9, charge: 0, flick: { x: 0, y: 1 }, leave: true, jump: false, feint: false, done: false });
+    const leavePlan = (): Plan => ({ reactAt: now, standX: 0, standZ: me.side * 3.6, contactAt: 0, chargeAt: 1e9, flickAt: 1e9, charge: 0, flick: { x: 0, y: 1 }, leave: true, jump: false, feint: false, done: false, dive: null });
     if (!pred || pred.hitsNet) return leavePlan();
 
     // 出界球判斷
@@ -244,6 +262,10 @@ export class AIController {
       cand.score = score;
       if (!best || score > best.score) best = cand;
     }
+    if (!best) {
+      const dive = this.divePlan(pred, now);
+      if (dive) return dive;
+    }
     const pick = best ?? fallback;
     if (!pick) return leavePlan();
 
@@ -277,7 +299,52 @@ export class AIController {
       jump: shot.family === 'down' && shot.depth >= 2.6 && pt.y >= 2.1 && rng.chance(p.jumpRate + this.style.jump),
       feint: rng.chance(this.style.feint) && flickAt - timeForCharge(charge) - 0.55 > now + p.reaction,
       done: false,
+      dive: null,
     };
+  }
+
+  /** 跑不到的球：看撲出去搆不搆得到（低於 dive.maxY 的點），可以就排一次魚躍 */
+  private divePlan(pred: Prediction, now: number): Plan | null {
+    const me = this.me;
+    const p = this.p;
+    const D = GAME.dive;
+    if (!this.match.rng.chance(this.moveOnly ? 1 : p.diveRate)) return null;
+    const speed = GAME.moveSpeed * p.speedMul * me.kit.move;
+    const reach = GAME.reach * me.reachMul;
+    // 用跑的（伸手）其實搆得到就不撲
+    for (const q of pred.points) {
+      const pt = q.p;
+      if (pt.z * me.side < 0.05 || pt.y < 0.1 || pt.y > GAME.reachMaxY) continue;
+      const run = speed * Math.max(0, q.t - p.reaction - 0.15);
+      if (Math.hypot(pt.x - me.pos.x, pt.z - me.pos.z) <= run + reach * 0.9) return null;
+    }
+    for (let i = 0; i < pred.points.length; i += 2) {
+      const q = pred.points[i];
+      const pt = q.p;
+      if (pt.z * me.side < 0.15 || pt.y < 0.08 || pt.y > D.maxY - 0.1) continue;
+      const avail = q.t - p.reaction;
+      if (avail < D.dur * 0.6) continue;
+      const run = speed * Math.max(0, avail - D.dur - 0.12);
+      const dist = Math.hypot(pt.x - me.pos.x, pt.z - me.pos.z);
+      if (dist > run + D.dist * 0.85 + D.reachBonus + reach * 0.8) continue;
+      const contactAt = now + q.t;
+      return {
+        reactAt: now + p.reaction,
+        standX: pt.x,
+        standZ: pt.z,
+        contactAt,
+        chargeAt: 1e9,
+        flickAt: 1e9,
+        charge: 0,
+        flick: { x: 0, y: 1 },
+        leave: false,
+        jump: false,
+        feint: false,
+        done: false,
+        dive: { at: contactAt - D.dur * 0.75, x: pt.x, z: pt.z },
+      };
+    }
+    return null;
   }
 
   private chooseShot(y: number, dn: number): ShotChoice {

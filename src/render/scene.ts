@@ -334,6 +334,7 @@ export class GameRenderer {
       const now = tIn !== null && tIn <= GAME.idealContactT + 0.05;
       this.reachRing.visible = true;
       this.reachRing.position.set(me.pos.x, 0.011, me.pos.z);
+      this.reachRing.scale.setScalar(me.reachMul);
       rr.color.set(now ? 0x5dff8a : 0xffffff);
       rr.opacity = now ? 0.75 : 0.18;
     } else this.reachRing.visible = false;

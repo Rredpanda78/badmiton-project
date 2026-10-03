@@ -35,7 +35,7 @@ export class Hud {
         const mine = e.player === humanId;
         const at = r.project(v3(e.pos.x, e.pos.y + 0.6, e.pos.z));
         const fast = (e.family === 'down' && e.speedKmh > 120) || e.jump;
-        let txt = e.name + (fast ? ` ${e.speedKmh} km/h` : '');
+        let txt = (e.dive ? '魚躍救球・' : '') + e.name + (fast ? ` ${e.speedKmh} km/h` : '');
         if (e.netFault) txt = `${e.name}（${e.powerShort ? '力道不足' : '擊球不佳'}）`;
         // 自己的球：附上擊球評價，讓玩家知道時機好不好
         const graded = mine && !e.netFault && !e.serve;
