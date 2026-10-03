@@ -20,11 +20,6 @@ export class Hud {
   /** 訓練關卡進度（有值時記分板改顯示這個） */
   drill: { name: string; rep: number; reps: number; ok: number; goal: string } | null = null;
   private goal: HTMLElement;
-  // 擊球時機回饋（像音樂遊戲的 Early/Late）：過早｜稍早｜完美｜稍晚｜過晚，失誤（掛網、出界方向）
-  private tfb: HTMLElement;
-  private tfbLabel: HTMLElement;
-  private tfbMark: HTMLElement;
-  private tfbTimer = 0;
 
   constructor(private root: HTMLElement) {
     this.score = root.querySelector('#scoreboard')!;
@@ -34,12 +29,6 @@ export class Hud {
     this.bannerSub = root.querySelector('#banner .sub')!;
     this.hint = root.querySelector('#hint')!;
     this.goal = root.querySelector('#drillGoal')!;
-    this.tfb = document.createElement('div');
-    this.tfb.id = 'timingFb';
-    this.tfb.innerHTML = '<div class="tfb-label"></div><div class="tfb-bar"><i>過早</i><i>稍早</i><i class="p">完美</i><i>稍晚</i><i>過晚</i><b class="tfb-mark"></b></div>';
-    root.appendChild(this.tfb);
-    this.tfbLabel = this.tfb.querySelector('.tfb-label')!;
-    this.tfbMark = this.tfb.querySelector('.tfb-mark')!;
   }
 
   onEvent(e: MatchEvent, match: Match, r: GameRenderer, humanId: PlayerId): void {
@@ -53,11 +42,11 @@ export class Hud {
         const fast = (e.family === 'down' && e.speedKmh > 120) || e.jump;
         let txt = (e.dive ? '魚躍救球・' : '') + e.name + (fast ? ` ${e.speedKmh} km/h` : '');
         if (e.netFault) txt = `${e.name}（${e.powerShort ? '力道不足' : '擊球不佳'}）`;
-        // 自己的球：附上擊球評價，讓玩家知道時機好不好
+        // 自己的球：附上出拍時機（完美／稍早／過早／稍晚／過晚；跳殺、魚躍沒有時機就附評價）
         const graded = mine && !e.netFault && !e.serve;
-        const cls = e.jump ? 'jump' : mine ? (graded && e.grade === '完美' ? 'me perfect' : 'me') : mate ? 'mate' : 'opp';
-        this.float(graded ? `${txt} · ${e.grade}` : txt, at.x, at.y, cls);
-        if (mine && !e.serve && e.timing !== undefined && e.timingFlat) this.showTiming(e.timing, e.timingFlat, e.netFault);
+        const tag = e.timing !== undefined && e.timingFlat ? timingLabel(e.timing, e.timingFlat) : e.grade;
+        const cls = e.jump ? 'jump' : mine ? (graded && tag === '完美' ? 'me perfect' : graded && (tag === '過早' || tag === '過晚') ? 'me off' : 'me') : mate ? 'mate' : 'opp';
+        this.float(graded ? `${txt} · ${tag}` : txt, at.x, at.y, cls);
         break;
       }
       case 'whiff':
@@ -66,12 +55,13 @@ export class Hud {
           const at = r.project(v3(p.x, 2.2, p.z));
           const tip = e.reason === '太高' && !e.airborne ? '（試試連按兩下跳殺）' : '';
           this.float(`揮空・${e.reason}${tip}`, at.x, at.y, 'miss');
-          const w = e.reason === '太早' ? '過早' : e.reason === '太晚' ? '過晚' : e.reason;
-          this.showMiss(`揮空・${w}`);
         }
         break;
       case 'net':
-        if (match.shuttle.lastHitter === humanId) this.showMiss('失誤・掛網');
+        if (match.shuttle.lastHitter === humanId) {
+          const at = r.project(v3(e.pos.x, e.pos.y + 0.5, e.pos.z));
+          this.float('失誤・掛網', at.x, at.y, 'miss');
+        }
         break;
       case 'land': {
         // 自己打出界：說是太長還是偏左／偏右（以自己看出去的方向）
@@ -83,7 +73,8 @@ export class Hud {
         const long = Math.abs(e.pos.z) > 6.7;
         const wide = Math.abs(e.pos.x) > W;
         const dir = wide ? (e.pos.x * side > 0 ? '偏右' : '偏左') : '';
-        this.showMiss(`失誤・出界（${[long ? '太長' : '', dir].filter(Boolean).join('、') || '發球區外'}）`);
+        const at = r.project(v3(e.pos.x, 0.5, e.pos.z));
+        this.float(`出界（${[long ? '太長' : '', dir].filter(Boolean).join('、') || '發球區外'}）`, at.x, at.y, 'miss');
         break;
       }
       case 'point': {
@@ -100,33 +91,6 @@ export class Hud {
     }
   }
 
-  /** 時機回饋：d = 出拍比理想早多少（秒，正 = 早），flat = 完美的寬度 */
-  private showTiming(d: number, flat: number, net: boolean): void {
-    let label: string;
-    let cls: string;
-    if (Math.abs(d) <= flat) [label, cls] = ['完美', 'perfect'];
-    else if (d > 0) [label, cls] = d <= flat * 2.2 ? ['稍早', 'near'] : ['過早', 'far'];
-    else [label, cls] = d >= -flat * 2.2 ? ['稍晚', 'near'] : ['過晚', 'far'];
-    const ms = Math.round(d * 1000);
-    this.tfbLabel.textContent = cls === 'perfect' ? label : `${label} ${Math.abs(ms)} ms`;
-    // 早在左、晚在右；超過 ±3 倍完美寬度就貼邊
-    const x = 50 - Math.max(-1, Math.min(1, d / (flat * 3))) * 45;
-    this.tfbMark.style.left = `${x}%`;
-    this.tfb.className = `show ${cls}${net ? ' miss' : ''}`;
-    this.tfbTimer = 1.4;
-  }
-
-  /** 自動跑位的預判：讀對立刻起步、猜錯慢一步 */
-  readFeedback(ok: boolean, x: number, y: number): void {
-    this.float(ok ? '讀對了！' : '猜錯了', x, y, ok ? 'me perfect' : 'miss');
-  }
-
-  private showMiss(text: string): void {
-    this.tfbLabel.textContent = text;
-    this.tfb.className = 'show miss only';
-    this.tfbTimer = 1.6;
-  }
-
   /** 一直顯示的提示（線上斷線等待等）；null = 收起 */
   notice(text: string | null): void {
     if (!this.noticeEl) {
@@ -138,6 +102,11 @@ export class Hud {
     this.noticeEl.classList.toggle('show', !!text);
   }
   private noticeEl: HTMLElement | null = null;
+
+  /** 自動跑位的預判：讀對立刻起步、猜錯慢一步 */
+  readFeedback(ok: boolean, x: number, y: number): void {
+    this.float(ok ? '讀對了！' : '猜錯了', x, y, ok ? 'me perfect' : 'miss');
+  }
 
   /** 開場介紹對手 */
   intro(name: string, text: string): void {
@@ -183,11 +152,6 @@ export class Hud {
         `<span class="sep">:</span>` +
         `<span class="opp"><b>${match.score[opp]}</b>${multi ? `<small>${match.games[opp]}</small>` : ''}${this.oppName}<em>${this.oppTag}</em>${serveDot(opp)}</span>`;
 
-    if (this.tfbTimer > 0) {
-      this.tfbTimer -= dt;
-      if (this.tfbTimer <= 0) this.tfb.classList.remove('show');
-    }
-    this.tfb.classList.toggle('low', !!this.drill);
     if (this.bannerTimer > 0) {
       this.bannerTimer -= dt;
       if (this.bannerTimer <= 0) this.banner.className = '';
@@ -224,4 +188,11 @@ export class Hud {
       this.meter.style.top = `${at.y}px`;
     }
   }
+}
+
+/** 出拍時機：d = 比理想早多少（秒，正 = 早），flat = 完美的寬度 */
+function timingLabel(d: number, flat: number): string {
+  if (Math.abs(d) <= flat) return '完美';
+  if (d > 0) return d <= flat * 2.2 ? '稍早' : '過早';
+  return d >= -flat * 2.2 ? '稍晚' : '過晚';
 }

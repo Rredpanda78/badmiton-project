@@ -1490,3 +1490,8 @@ textarea {
 .music-hint {
   margin-top: -4px;
 }
+
+/* 自己的球：過早／過晚的字幕偏紅（完美是 .float.perfect 的綠／金） */
+.float.off {
+  color: #ffb0a0;
+}
