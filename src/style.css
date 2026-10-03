@@ -1451,6 +1451,7 @@ textarea {
 .join-row button {
   width: 100%;
   height: 48px;
+}
 /* 背景音樂選曲（設定畫面） */
 .music-pick-ctl {
   display: flex;
@@ -1494,4 +1495,139 @@ textarea {
 /* 自己的球：過早／過晚的字幕偏紅（完美是 .float.perfect 的綠／金） */
 .float.off {
   color: #ffb0a0;
+}
+
+/* 主選單：回到剛剛的房間 */
+.panel button.rejoin {
+  margin-top: 14px;
+  background: #3ccf7a;
+}
+/* 比賽設定：模式三個選項（窄螢幕換行） */
+.seg.wrap3 {
+  flex-wrap: wrap;
+}
+.seg.wrap3 button {
+  flex: 1 0 30%;
+  padding: 7px 4px;
+  white-space: nowrap;
+}
+
+/* 4 人房大廳：兩隊各兩個座位 */
+#quadLobby {
+  margin-top: 12px;
+  text-align: left;
+}
+.quad-teams {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.quad-team-title {
+  font-size: 13px;
+  font-weight: 800;
+  text-align: center;
+  margin-bottom: 4px;
+}
+.quad-team[data-team='0'] .quad-team-title {
+  color: #7cc4ff;
+}
+.quad-team[data-team='1'] .quad-team-title {
+  color: #ff9a8a;
+}
+.quad-seat {
+  min-height: 92px;
+  margin-bottom: 8px;
+  padding: 8px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 13px;
+  line-height: 1.35;
+  overflow: hidden;
+}
+.quad-seat.me {
+  border-color: var(--accent);
+  background: rgba(255, 213, 74, 0.1);
+}
+.quad-seat.empty {
+  border-style: dashed;
+  color: var(--muted);
+}
+.quad-seat .nm {
+  display: block;
+  font-size: 15px;
+  font-weight: 800;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.quad-seat .tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin: 2px 0;
+}
+.quad-seat .tg {
+  padding: 0 5px;
+  border-radius: 6px;
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.12);
+}
+.quad-seat .tg.ok {
+  background: rgba(60, 207, 122, 0.3);
+  color: #9dffc3;
+}
+.quad-seat .tg.off {
+  background: rgba(229, 72, 77, 0.3);
+  color: #ffb3b3;
+}
+.quad-seat .sub {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.panel.small .quad-seat button {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 6px 4px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.quad-cfg {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+.panel.small #quadLobby > button {
+  margin-top: 10px;
+}
+
+/* 斷線等待（暫停中的選擇） */
+#netWait {
+  z-index: 30;
+}
+#netWait h2 {
+  margin-bottom: 8px;
+}
+.net-wait-code {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 8px;
+  margin: 6px 0 2px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.net-wait-code b {
+  font-size: 30px;
+  letter-spacing: 8px;
+  color: #ffd54a;
+}
+#netWaitText {
+  white-space: pre-line;
 }

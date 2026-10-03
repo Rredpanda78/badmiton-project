@@ -94,6 +94,9 @@ export const GAME = {
   // dilate：自己打過去的球在本機整段平均放慢（抵掉來回延遲），對方回球時球就在他的球拍附近、不會瞬移
   // （holdScale／holdMax：另一種做法「到對方球拍附近才放慢」，實測比較差，預設關掉）
   online: { fastForward: 0, dilate: true, holdScale: 1, holdMax: 0, holdMargin: 0 },
+  // 4 人線上：打向自己這隊的球，在「別支手機上的隊友」球拍附近（自己這支手機上的人都搆不到、這球分給他接）時本機放慢
+  // （scale 倍速，放慢到剛好抵掉他的擊球傳過來的時間，最多 max 模擬秒），隊友的擊球訊息到的時候球還在他附近，不會落地又彈回來
+  quadHold: { scale: 0.3, max: 0.5, margin: 0.4 },
 
   serveContactY: 0.95,
   pointPause: 1.8,
@@ -144,7 +147,8 @@ export interface MatchSettings {
   scheme: ControlScheme; // 擊球操作方式
   venue: Venue; // 場地（訓練、教學、線上房主、選單背景用；比賽設定選「隨機」時不變）
   // ---- 比賽設定畫面（開始比賽前選，記住上次的選擇）----
-  matchType: 'singles' | 'doubles'; // 單打／雙打（實際比賽用 doubles 欄位）
+  matchType: 'singles' | 'doubles' | 'quad'; // 單打／雙打（實際比賽用 doubles 欄位）；quad = 線上雙打 4 人房（只有建立線上房間能選）
+  allManual?: boolean; // 線上 4 人房：全員手動跑位（房主選）
   venuePick: Venue | 'random'; // 比賽場地（隨機 = 每場隨機）
   myColor: string; // 自己的球衣色：'auto' = 球員原色，其他 = ui/colors.ts 色盤 id
   oppColor: string; // 對手（隊）球衣色：'random' = 隨機，其他 = 色盤 id
@@ -177,6 +181,7 @@ export const DEFAULT_SETTINGS: MatchSettings = {
   scheme: 'tap',
   venue: 'sakura',
   matchType: 'singles',
+  allManual: false,
   venuePick: 'sakura',
   myColor: 'auto',
   oppColor: 'random',

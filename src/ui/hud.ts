@@ -108,6 +108,11 @@ export class Hud {
     this.float(ok ? '讀對了！' : '猜錯了', x, y, ok ? 'me perfect' : 'miss');
   }
 
+  /** 畫面上某個位置飄一行字（線上 4 人房：搶先打的那一下沒被採用） */
+  note(text: string, x: number, y: number, cls = 'miss'): void {
+    this.float(text, x, y, cls);
+  }
+
   /** 開場介紹對手 */
   intro(name: string, text: string): void {
     this.showBanner(name, text, 'intro', 2.6);
