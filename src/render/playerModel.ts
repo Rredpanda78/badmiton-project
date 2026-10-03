@@ -325,6 +325,20 @@ export class PlayerModel {
   private readonly dvFoot = [new THREE.Vector3(), new THREE.Vector3()]; // 起跳時腳的位置（x,z 世界；y = root 座標高度）
   private readonly dvFootYaw = [0, 0];
   private readonly dvLie = [new THREE.Vector3(), new THREE.Vector3()]; // 趴著時腳的位置（root 座標，爬起來的起點）
+  // 發球
+  private serveK = 0; // 發球站姿權重（右腳在前、左腳在後）
+  // 跳殺步法（起跳那一刻決定）
+  private jumpStyle = 0; // 0 = 原地雙腳起跳、1 = 右腳蹬（交換步）、2 = 左腳蹬（馬來步，往左後／頭頂區）
+  private jumpTake: Foot | null = null; // 單腳起跳的那隻腳
+  private jumpFirst: Foot | null = null; // 單腳起跳：先著地的腳（另一隻）
+  private airT = 0; // 起跳後經過的時間
+  private landT = 0; // 落地後這段時間不換步（第二隻腳還在落下）
+  private gvx = 0; // 最後在地上時的速度（root 座標，起跳時拿來判斷是不是邊跑邊跳）
+  private gvz = 0;
+  private readonly hold = [false, false]; // 這隻腳踩在地上（起跳蹬地、落地先著地），世界座標固定
+  private readonly holdLand = [false, false]; // true = 落地先著地；false = 起跳蹬地（腿伸直就離地）
+  private readonly holdX = [0, 0];
+  private readonly holdZ = [0, 0];
   // 揮拍
   private curSwing: Swing | null = null;
   private swingHit = false;
@@ -642,8 +656,9 @@ export class PlayerModel {
    * @param dt 真實時間（秒）。動畫內部換成模擬時間，跟遊戲的慢動作倍率同步。
    * @param shuttle 羽球世界座標（可省略）：有的話會看球、轉身面向球、對手擊球時做分腿跳
    * @param hint 預估的擊球（predictContact，可省略）：有的話最後一步會跟擊球同步（前場／側邊右腳弓步、後場剪刀腳）
+   * @param serve 發球階段：1 = 這位是發球的人（右腳在前的發球站姿、不跨步）、2 = 接發球（準備姿勢、不跨步）
    */
-  update(p: PlayerState, dt: number, shuttle?: { x: number; y: number; z: number }, hint?: ContactHint | null): void {
+  update(p: PlayerState, dt: number, shuttle?: { x: number; y: number; z: number }, hint?: ContactHint | null, serve: 0 | 1 | 2 = 0): void {
     const ta = Math.max(0, dt) * GAME.simSpeed;
     const side = p.side;
     const H = this.h; // 世界公尺 → 模型內部單位：除以 H
@@ -662,7 +677,7 @@ export class PlayerModel {
     this.updateFx(p, dt);
 
     // 一幀移動超過 0.5 m（跑步最快一幀約 0.07 m）= 發球前重新站位的瞬移 → 直接擺好
-    if (!this.inited || side !== this.lastSide || Math.hypot(p.pos.x - this.lastX, p.pos.z - this.lastZ) > 0.5) this.reset(p);
+    if (!this.inited || side !== this.lastSide || Math.hypot(p.pos.x - this.lastX, p.pos.z - this.lastZ) > 0.5) this.reset(p, serve === 1);
     this.lastX = p.pos.x;
     this.lastZ = p.pos.z;
     this.lastSide = side;
@@ -671,6 +686,10 @@ export class PlayerModel {
     const vx = p.vel.x * side;
     const vz = p.vel.z * side;
     const speed = Math.hypot(vx, vz);
+    if (!p.airborne) {
+      this.gvx = vx;
+      this.gvz = vz;
+    }
     if (ta > 0) {
       this.accX = damp(this.accX, clamp((vx - this.pvx) / ta, -60, 60), 12, ta);
       this.accZ = damp(this.accZ, clamp((vz - this.pvz) / ta, -60, 60), 12, ta);
@@ -786,10 +805,14 @@ export class PlayerModel {
     // plan 1 = 前場（正反手網前）或側邊（防守、遠球）：右腳弓步、腳跟剛好在擊球前著地
     // plan 2 = 後場頭頂球：擊球前右腳退到身後側身，擊球後剪刀交換
     const air = p.airborne || p.jumpArmed; // 跳殺有自己的空中剪刀腳
+    // 發球：發球的人右腳在前站好、只移重心不跨步；接發球的人準備姿勢。發完球（揮拍結束）才回到一般步法
+    const serving = serve === 1 || !!(s && s.isServe);
+    const serveMode = serve !== 0 || serving;
+    this.serveK = damp(this.serveK, serving ? 1 : 0, 8, ta);
     let hT = Infinity; // 還有多久擊球（模擬秒）
     let plan = 0;
     let front = false;
-    if (hint && !air) {
+    if (hint && !air && !serveMode) {
       const hc = this.hc.set((hint.x - p.pos.x) * side * iH, (hint.y - p.pos.y) * iH, (hint.z - p.pos.z) * side * iH);
       hT = hint.t;
       this.contactAt = this.clock + hT;
@@ -817,7 +840,7 @@ export class PlayerModel {
     if (plan === 1 && !air && ((!this.lunging && this.lungeCool <= 0) || (swingSoon && this.lunging && !this.lungeHold))) {
       // 跟擊球同步：右腳跟在擊球前 LUNGE_LEAD 著地（來不及就跨快一點）
       if (hT <= LUNGE_DUR + LUNGE_LEAD) this.startLunge(p, Math.max(0.08, hT - LUNGE_LEAD), hint!.x, hint!.z, front, this.hc.y, s);
-    } else if (!this.lunging && !air && this.lungeCool <= 0) {
+    } else if (!this.lunging && !air && this.lungeCool <= 0 && !serveMode) {
       if (!hint) {
         // 備案（沒有擊球預估）：往前／側向衝刺後急停 → 最後一步跨成弓步；低點擊球且球在身前偏遠 → 跨步去接
         if (this.peak > 3.4 && speed < Math.min(3, this.peak - 1.5)) {
@@ -937,6 +960,13 @@ export class PlayerModel {
         hz -= this.dZ * 0.16 * this.prepFront;
       }
       let hyaw = yawP - f.sign * splay;
+      if (this.serveK > 0) {
+        // 發球站姿：右腳在前、左腳在後（腳尖朝外），大致面向網；走動時照一般步伐
+        const k = this.serveK * (1 - moveK);
+        hx = lerp(hx, f.sign > 0 ? 0.13 : -0.15, k);
+        hz = lerp(hz, f.sign > 0 ? -0.2 : 0.2, k);
+        hyaw = lerp(hyaw, f.sign > 0 ? -0.1 : 0.55, k);
+      }
       if (L > 0) {
         hx = lerp(hx, f.sign > 0 ? lrX : rearX, L);
         hz = lerp(hz, f.sign > 0 ? lrZ : rearZ, L);
@@ -961,7 +991,8 @@ export class PlayerModel {
     const fl = this.feet[0];
     const fr = this.feet[1];
     if (!p.airborne) {
-      if (this.wasAir) this.land();
+      if (this.wasAir) this.land(p, cy, sy);
+      this.landT -= ta;
       // 進行中的步伐
       for (let i = 0; i < 2; i++) {
         const f = this.feet[i];
@@ -1108,7 +1139,7 @@ export class PlayerModel {
         for (let i = 0; i < 2; i++) {
           const f = this.feet[i];
           const o = this.feet[1 - i];
-          if (!f.planted || (!o.planted && o.u < overlap)) continue;
+          if (!f.planted || (!o.planted && o.u < overlap) || this.landT > 0) continue; // 單腳落地：第二隻腳落下前不換步
           // 弓步中前腳撐住、後腳只在兩腳太近／太遠時拖一下；蹬回時先收前腳（右腳），後腳等一下
           let ft = thr;
           let e = Math.hypot(f.homeX - f.wx, f.homeZ - f.wz) - (f === this.lastStep ? 0.03 : 0);
@@ -1139,7 +1170,7 @@ export class PlayerModel {
       // 安全網：腳離髖部太遠（伸不到）就立刻跨
       for (let i = 0; i < 2; i++) {
         const f = this.feet[i];
-        if (!f.planted) continue;
+        if (!f.planted || this.landT > 0) continue;
         const lx = (f.wx - p.pos.x) * side * iH - (this.offX + f.sign * this.hipW * cy);
         const lz = (f.wz - p.pos.z) * side * iH - (this.offZ - f.sign * this.hipW * sy);
         // 快跑時後腳拖太遠就先蹬起（兩腳同時離地＝跑步的騰空期），不讓髖部被拉低
@@ -1167,41 +1198,89 @@ export class PlayerModel {
         }
       }
     } else {
-      // ---------- 空中：剪刀腳 ----------
-      if (!this.wasAir) {
-        this.wasAir = true;
-        this.scissor = 0;
-        for (let i = 0; i < 2; i++) {
-          this.feet[i].planted = false;
-          this.feet[i].forced = true;
-          this.feet[i].u = 1;
-        }
-      }
+      // ---------- 空中：跳殺 ----------
+      // 原地（幾乎沒在動）= 雙腳一起蹬、雙腳落地；邊跑邊跳 = 單腳蹬地、空中換腳、另一隻腳先著地：
+      //   往左（頭頂區）= 馬來步：左腳蹬（右腳先退、身體轉側），落地右腳先、左腳再落；其他方向 = 交換步：右腳蹬、左腳先落地
+      if (!this.wasAir) this.beginJump();
+      this.airT += ta;
+      const st = this.jumpStyle;
       this.scissor = damp(this.scissor, (s && s.contacted) || p.vy < -0.6 ? 1 : 0, 16, ta);
       const sc = this.scissor;
       const ext = p.vy < 0 ? clamp(p.pos.y / 0.25, 0, 1) : 1; // 快落地時腳伸直準備著地
+      const landK = p.vy < 0 ? smooth01((0.34 - p.pos.y) / 0.22) : 0; // 單腳起跳：先著地的腳提早伸到地面
+      const gy = ANKLE - p.pos.y * iH; // 地面（root 座標）
       for (let i = 0; i < 2; i++) {
         const f = this.feet[i];
-        // 起跳時右腳在後、左腳在前；擊球後交換（右腳往前踢）
-        const rx = f.sign * 0.1;
-        const ry = f.sign > 0 ? lerp(-0.42, -0.56, sc) : lerp(-0.64, -0.44, sc);
-        const rz = f.sign > 0 ? lerp(0.4, -0.34, sc) : lerp(-0.2, 0.38, sc);
+        if (this.hold[i]) {
+          // 踩在地上（世界固定）：起跳蹬地時腳跟抬起、腿伸直就離地；落地先著地的腳腳掌放平
+          const land = this.holdLand[i];
+          f.pitch = damp(f.pitch, land ? 0 : -0.55, land ? 14 : 10, ta);
+          const pz = f.pitch < 0 ? -BALL : HEEL;
+          const sp = Math.sin(f.pitch);
+          const cp = Math.cos(f.pitch);
+          const dzs = pz + ANKLE * sp - pz * cp;
+          f.local.set(
+            (this.holdX[i] - p.pos.x) * side * iH + dzs * Math.sin(f.yaw),
+            gy - ANKLE + ANKLE * cp + pz * sp,
+            (this.holdZ[i] - p.pos.z) * side * iH + dzs * Math.cos(f.yaw),
+          );
+          f.wx = this.holdX[i];
+          f.wz = this.holdZ[i];
+          f.h = 0;
+          if (!land && (f.hip.distanceTo(f.local) > LEG * 0.995 || this.airT > 0.12)) {
+            this.hold[i] = false; // 腿蹬直了：腳離地，從伸直的位置接著收進空中姿勢
+            f.local.copy(f.ankle);
+          }
+          continue;
+        }
+        let rx = f.sign * 0.1;
+        let ry: number;
+        let rz: number;
+        let e = ext;
+        const first = st !== 0 && f === this.jumpFirst;
+        if (st === 0) {
+          // 雙腳：腳收在身體下方，只有一點點剪刀
+          rx = f.sign * 0.12;
+          ry = -0.5;
+          rz = f.sign > 0 ? lerp(0.1, -0.06, sc) : lerp(-0.02, 0.08, sc);
+        } else {
+          // 單腳：蹬地腳先伸直拖在後面、另一腳膝蓋往前上提；擊球後交換（蹬地腳往前、另一腳往後準備先著地）
+          const take = f === this.jumpTake;
+          ry = take ? lerp(-0.44, -0.56, sc) : lerp(-0.5, -0.44, sc);
+          rz = take ? lerp(0.4, -0.3, sc) : lerp(-0.22, 0.36, sc);
+          e = first ? 1 - landK : Math.max(ext, 0.55); // 後著地的腳還留在空中
+        }
         const ax = this.offX + rx * cy + rz * sy;
         const az = this.offZ - rx * sy + rz * cy;
-        const hx = (f.homeX - p.pos.x) * side * iH;
-        const hz = (f.homeZ - p.pos.z) * side * iH;
-        const tx = lerp(hx, ax, ext);
-        const ty = lerp(ANKLE, AIR_H + this.crouch + ry, ext);
-        const tz = lerp(hz, az, ext);
-        const r = 1 - Math.exp(-18 * ta);
+        let hx: number;
+        let hz: number;
+        if (first) {
+          // 先著地的腳：落在身體後方
+          hx = this.offX + f.sign * 0.12 * cy + 0.22 * sy;
+          hz = this.offZ - f.sign * 0.12 * sy + 0.22 * cy;
+        } else {
+          hx = (f.homeX - p.pos.x) * side * iH;
+          hz = (f.homeZ - p.pos.z) * side * iH;
+        }
+        const tx = lerp(hx, ax, e);
+        const ty = lerp(gy, AIR_H + this.crouch + ry, e);
+        const tz = lerp(hz, az, e);
+        const r = 1 - Math.exp(-(first && landK > 0 ? 34 : 18) * ta);
         f.local.x += (tx - f.local.x) * r;
-        f.local.y += (Math.max(ANKLE, ty) - f.local.y) * r;
+        f.local.y += (Math.max(gy, ty) - f.local.y) * r;
         f.local.z += (tz - f.local.z) * r;
         f.wx = p.pos.x + side * f.local.x * H;
         f.wz = p.pos.z + side * f.local.z * H;
         f.h = f.local.y - ANKLE;
         f.yaw = damp(f.yaw, yawP - f.sign * 0.1, 6, ta);
-        f.pitch = damp(f.pitch, -0.35 * ext, 8, ta);
+        f.pitch = damp(f.pitch, first ? lerp(-0.35, 0, landK) : -0.35 * e, 8, ta);
+        if (first && landK > 0.97 && f.local.y < gy + 0.03) {
+          // 先著地：這隻腳踩住（之後 root 落地時另一隻腳再落下）
+          this.hold[i] = true;
+          this.holdLand[i] = true;
+          this.holdX[i] = f.wx;
+          this.holdZ[i] = f.wz;
+        }
       }
     }
 
@@ -1240,6 +1319,8 @@ export class PlayerModel {
     // 前場弓步前：重心先放後面（等右腳跨出去）
     offTX -= this.dX * 0.08 * this.prepFront;
     offTZ -= this.dZ * 0.08 * this.prepFront;
+    // 發球：引拍時重心在後腳，揮拍時移到前腳（只移重心，腳不動）
+    if (this.serveK > 0) offTZ += this.serveK * (1 - moveK) * lerp(0.05, -0.07, s ? smooth01(Math.min(k, 1.4) / 1.4) : 0);
     // 骨盆水平位移：快但不瞬間（擊球那一下探身不會「抖」一格）
     this.offX = damp(this.offX, offTX, 15, ta);
     this.offZ = damp(this.offZ, offTZ, 15, ta);
@@ -1250,11 +1331,12 @@ export class PlayerModel {
     if (this.wide > 0) hipT -= 0.03;
     if (p.jumpArmed && !p.airborne) hipT -= 0.07; // 跳殺待命：蹲低蓄勢
     if (p.landRecover > 0) hipT -= 0.13 * clamp(p.landRecover / GAME.jump.landRecover, 0, 1);
-    if (under) hipT -= 0.05 * wPose;
+    if (under) hipT -= 0.05 * wPose * (1 - 0.7 * this.serveK); // 發球站得比較直
     hipT -= 0.035 * this.prepFront; // 準備跨步：膝蓋再彎一點
     hipT = lerp(hipT, lerp(0.66, LUNGE_H, this.lungeDepth), L); // 跨越遠蹲越低
-    if (p.airborne) hipT = AIR_H;
-    this.hipY = damp(this.hipY, hipT, 10, ta);
+    // 空中：快落地時髖部放低一點，先著地的那隻腳才搆得到地面
+    if (p.airborne) hipT = lerp(AIR_H, READY_H + 0.02, p.vy < 0 ? smooth01((0.34 - p.pos.y) / 0.22) : 0);
+    this.hipY = damp(this.hipY, hipT, p.airborne && p.vy < 0 ? 22 : 10, ta);
     // 彈簧（落地緩衝）
     for (let rem = ta; rem > 1e-6; rem -= 1 / 120) {
       const h = Math.min(rem, 1 / 120);
@@ -1293,7 +1375,7 @@ export class PlayerModel {
     this.pelvis.position.set(this.offX, y, this.offZ);
     this.pelvis.rotation.set(-lf * 0.45, yawP, -lr * 0.45);
     // 弓步時上身大致挺直（前傾不要太多）
-    const pitchC = 0.1 * (1 - relaxK) + 0.06 * moveK + 0.14 * L * this.lungeDepth + poseAt(P.pitch, kp) * wPose * (1 - 0.35 * L);
+    const pitchC = 0.1 * (1 - relaxK) + 0.06 * moveK + 0.14 * L * this.lungeDepth + poseAt(P.pitch, kp) * wPose * (1 - 0.35 * L) * (1 - 0.45 * this.serveK);
     this.chest.position.y = WAIST + this.offY;
     this.chest.rotation.set(-(pitchC + lf * 0.55), twist, -lr * 0.55 + poseAt(P.roll, kp) * wPose);
     this.pelvis.updateMatrix();
@@ -1584,19 +1666,78 @@ export class PlayerModel {
     f.toZ = tz;
   }
 
-  /** 落地：兩腳踩在目前位置，膝蓋吸收衝擊 */
-  private land(): void {
+  /**
+   * 起跳那一刻：依起跳前的速度決定步法 —— 幾乎沒動 = 雙腳起跳；往左（頭頂區）= 馬來步（左腳蹬）；其他 = 交換步（右腳蹬）。
+   * 蹬地的腳先留在地上（腿伸直才離地），另一隻腳馬上收起來。
+   */
+  private beginJump(): void {
+    this.wasAir = true;
+    this.scissor = 0;
+    this.airT = 0;
+    this.landT = 0;
+    const fl = this.feet[0];
+    const fr = this.feet[1];
+    const sp = Math.hypot(this.gvx, this.gvz);
+    const st = sp < 1.5 ? 0 : this.gvx < -0.35 * sp ? 2 : 1;
+    let take: Foot | null = st === 0 ? null : st === 1 ? fr : fl;
+    // 指定的蹬地腳剛好在空中（跑步騰空）而另一隻踩著 → 改用踩著的那隻蹬
+    if (take && !take.planted) {
+      const o = take === fr ? fl : fr;
+      if (o.planted) take = o;
+    }
+    this.jumpStyle = st;
+    this.jumpTake = take;
+    this.jumpFirst = take ? (take === fr ? fl : fr) : null;
+    for (let i = 0; i < 2; i++) {
+      const f = this.feet[i];
+      this.hold[i] = f.planted && (st === 0 || f === take);
+      this.holdLand[i] = false;
+      this.holdX[i] = f.wx;
+      this.holdZ[i] = f.wz;
+      f.planted = false;
+      f.forced = true;
+      f.strike = f.dragging = false;
+      f.u = 1;
+    }
+    this.lunging = this.lungeHold = false;
+    this.L = 0;
+    this.lungeSwing = null;
+  }
+
+  /**
+   * 落地：雙腳起跳 → 兩腳一起踩、膝蓋吸收衝擊；單腳起跳 → 先著地的腳已經踩住，
+   * 另一隻腳從空中落到身體前方（交換步／馬來步的第二步）
+   */
+  private land(p: PlayerState, cy: number, sy: number): void {
     this.wasAir = false;
     for (let i = 0; i < 2; i++) {
       const f = this.feet[i];
-      f.planted = true;
       f.forced = false;
       f.strike = f.dragging = false;
-      f.h = f.h0 = 0;
-      f.pitch = f.heel = f.toe = 0;
+      f.heel = f.toe = 0;
+      f.h0 = 0;
+      if (this.jumpStyle !== 0 && f === this.jumpTake) {
+        const h = Math.max(0, f.local.y - ANKLE);
+        const lx = this.offX + f.sign * 0.12 * cy - 0.2 * sy;
+        const lz = this.offZ - f.sign * 0.12 * sy - 0.2 * cy;
+        this.beginStep(f, p.pos.x + p.side * lx * this.h, p.pos.z + p.side * lz * this.h, 0.1, 0, f.yaw, true, 0);
+        f.h0 = h;
+        f.pitch = 0;
+        this.landT = 0.13;
+        continue;
+      }
+      if (this.hold[i]) {
+        f.wx = this.holdX[i];
+        f.wz = this.holdZ[i];
+      }
+      f.planted = true;
+      f.h = 0;
+      f.pitch = 0;
       f.u = 1;
     }
-    this.crouchV -= 1.7;
+    this.hold[0] = this.hold[1] = false;
+    this.peak = 0; // 起跳前的衝刺不算「急停」（不要落地就弓步）
+    this.crouchV -= this.jumpStyle === 0 ? 1.7 : 1.4;
   }
 
   private updateLeftArm(
@@ -1952,18 +2093,21 @@ export class PlayerModel {
     this.shadow.rotation.z = 0;
   }
 
-  /** 第一次或瞬移（發球前重新站位）時，直接擺成準備姿勢 */
-  private reset(p: PlayerState): void {
+  /** 第一次或瞬移（發球前重新站位）時，直接擺成準備姿勢（發球的人：右腳在前的發球站姿） */
+  private reset(p: PlayerState, serveStance = false): void {
     this.inited = true;
     this.diving = false;
+    this.hold[0] = this.hold[1] = false;
+    this.landT = 0;
+    this.serveK = serveStance ? 1 : 0;
     this.dvG = 0;
     this.shadow.position.x = this.shadow.position.z = 0;
     this.shadow.rotation.z = 0;
     const side = p.side;
     for (let i = 0; i < 2; i++) {
       const f = this.feet[i];
-      const hx = f.sign * 0.21;
-      const hz = f.sign > 0 ? -0.07 : 0.03;
+      const hx = serveStance ? (f.sign > 0 ? 0.13 : -0.15) : f.sign * 0.21;
+      const hz = serveStance ? (f.sign > 0 ? -0.2 : 0.2) : f.sign > 0 ? -0.07 : 0.03;
       f.wx = f.homeX = p.pos.x + side * hx * this.h;
       f.wz = f.homeZ = p.pos.z + side * hz * this.h;
       f.planted = !p.airborne;
@@ -1972,7 +2116,7 @@ export class PlayerModel {
       f.u = 1;
       f.h = f.h0 = 0;
       f.pitch = f.heel = f.toe = 0;
-      f.yaw = f.yawTo = f.homeYaw = -f.sign * 0.22;
+      f.yaw = f.yawTo = f.homeYaw = serveStance ? (f.sign > 0 ? -0.1 : 0.55) : -f.sign * 0.22;
       f.pivoting = false;
       f.local.set(hx, ANKLE, hz);
     }

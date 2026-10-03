@@ -285,8 +285,11 @@ export class GameRenderer {
       this.camera.updateProjectionMatrix();
     }
 
-    // 步法動畫：預估每位球員多久後、在哪裡擊球（唯讀）
-    match.players.forEach((p, i) => this.models[i].update(p, dt, match.shuttle.pos, predictContact(match, p.id, this.hints[i])));
+    // 步法動畫：預估每位球員多久後、在哪裡擊球（唯讀）；發球階段：1 = 發球的人、2 = 接發球的人
+    match.players.forEach((p, i) => {
+      const serve = match.phase === 'serve' ? (match.server === p.id ? 1 : 2) : 0;
+      this.models[i].update(p, dt, match.shuttle.pos, predictContact(match, p.id, this.hints[i]), serve);
+    });
     this.env?.update(dt);
 
     // 羽球

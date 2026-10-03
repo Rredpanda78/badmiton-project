@@ -1,5 +1,5 @@
 // 音效引擎：全部用 WebAudio 即時合成（不需要音檔）
-// 匯流排：音效 sfx、場景環境音 amb、音樂 music → 主音量；另有共用殘響
+// 匯流排：音效 sfx、場景環境音 amb、音樂 music → 主音量；另有共用殘響（每個場地的空間感不同）
 import type { Venue } from './config';
 
 let ctx: AudioContext | null = null;
@@ -7,11 +7,122 @@ let master: GainNode;
 let sfxBus: GainNode;
 let ambBus: GainNode;
 let musicBus: GainNode;
-let reverb: ConvolverNode;
-let reverbSend: GainNode;
+let crowdBus: GainNode; // 觀眾掌聲／歡呼（統一送一份到殘響，不用每一下拍手各接一條）
+let crowdSend: GainNode;
+let reverbSend: GainNode; // 音效、環境音的殘響送出點（也會送到建築物回音）
+let revWet: GainNode; // 殘響量（依場地）；音樂直接送這裡，不吃回音
+let preDelay: DelayNode;
+let revTone: BiquadFilterNode;
+let slapDelay: DelayNode;
+let slapOut: GainNode;
 let noiseBuf: AudioBuffer;
 let sfxOn = true;
 let musicOn = true;
+
+// ---------- 場地音效設定 ----------
+
+/** 空間感：殘響長度／衰減／預延遲／整體量／殘響的亮度，以及建築物的反彈回音 */
+interface Acoustics {
+  secs: number;
+  decay: number; // 衰減曲線指數：越大越快沒
+  pre: number; // 預延遲（秒）：越大越像大空間
+  send: number; // 殘響量
+  tone: number; // 殘響回來的低通（Hz）：越低越悶、越柔
+  slap: number; // 反彈回音量（0 = 沒有）
+  slapTime: number;
+  crowd: number; // 觀眾聲送進殘響的量
+}
+/** 球員腳下：室內運動地板、戶外球場墊（下面硬地）、木棧台、泥土地、水泥地 */
+type Floor = 'gym' | 'mat' | 'deck' | 'earth' | 'concrete';
+/** 觀眾：體育館、市場攤販、海灘一小群人、幾個農夫、花園派對、竹林裡安靜的幾個人 */
+type Crowd = 'arena' | 'market' | 'beach' | 'farm' | 'garden' | 'quiet';
+/** 得分提示音的音色 */
+type Chime = 'arena' | 'bell' | 'steel' | 'wood' | 'koto' | 'bamboo';
+/** 背景音樂：音階（5 音）、主音、速度、旋律密度、低音走向（音階的第幾個音）、琵琶式輪指、反拍刷弦 */
+interface MusicStyle {
+  scale: number[];
+  root: number;
+  bpm: number;
+  density: number;
+  bass: number[];
+  tremolo?: number;
+  offbeat?: boolean;
+}
+interface SoundProfile {
+  acoustics: Acoustics;
+  floor: Floor;
+  crowd: Crowd;
+  chime: Chime;
+  music: MusicStyle;
+}
+
+const MIYAKO = [0, 1, 5, 7, 8]; // 日本都節音階
+const YO = [0, 2, 5, 7, 9]; // 日本陽音階
+const MAJOR5 = [0, 2, 4, 7, 9]; // 大調五聲（也是中國宮調）
+const MINOR5 = [0, 3, 5, 7, 10]; // 小調五聲
+
+const PROFILES: Record<Venue, SoundProfile> = {
+  // 室內球館：大空間、長殘響、明顯的預延遲；運動地板吱吱叫；滿場觀眾
+  indoor: {
+    acoustics: { secs: 2.2, decay: 2.3, pre: 0.032, send: 0.34, tone: 6500, slap: 0, slapTime: 0.1, crowd: 0.6 },
+    floor: 'gym',
+    crowd: 'arena',
+    chime: 'arena',
+    music: { scale: MAJOR5, root: 164.81, bpm: 108, density: 0.74, bass: [0, 3, 4, 3] },
+  },
+  // 市場：戶外但四周有店面 → 短殘響＋一道清楚的反彈回音
+  market: {
+    acoustics: { secs: 0.8, decay: 3.4, pre: 0.012, send: 0.14, tone: 4200, slap: 0.3, slapTime: 0.115, crowd: 0.35 },
+    floor: 'concrete',
+    crowd: 'market',
+    chime: 'bell',
+    music: { scale: MAJOR5, root: 196.0, bpm: 96, density: 0.66, bass: [0, 0, 3, 4], tremolo: 0.18 },
+  },
+  // 竹林：竹子擋住、吸掉高頻 → 中等長度但很柔、很散的殘響
+  bamboo: {
+    acoustics: { secs: 1.4, decay: 2.8, pre: 0.008, send: 0.15, tone: 2100, slap: 0, slapTime: 0.1, crowd: 0.4 },
+    floor: 'earth',
+    crowd: 'quiet',
+    chime: 'bamboo',
+    music: { scale: YO, root: 146.83, bpm: 76, density: 0.5, bass: [0, 0, 2, 3] },
+  },
+  // 櫻花園：開闊的庭園，殘響短而乾淨
+  sakura: {
+    acoustics: { secs: 0.9, decay: 3.4, pre: 0.01, send: 0.11, tone: 3600, slap: 0, slapTime: 0.1, crowd: 0.3 },
+    floor: 'mat',
+    crowd: 'garden',
+    chime: 'koto',
+    music: { scale: MIYAKO, root: 146.83, bpm: 84, density: 0.62, bass: [0, 0, 3, 2] },
+  },
+  // 夜櫻：夜裡空氣靜，殘響稍長
+  night: {
+    acoustics: { secs: 1.2, decay: 3.0, pre: 0.012, send: 0.13, tone: 3000, slap: 0, slapTime: 0.1, crowd: 0.35 },
+    floor: 'mat',
+    crowd: 'garden',
+    chime: 'koto',
+    music: { scale: MIYAKO, root: 130.81, bpm: 68, density: 0.48, bass: [0, 3, 2, 0] },
+  },
+  // 稻田：空曠的田野，幾乎沒有殘響
+  paddy: {
+    acoustics: { secs: 0.6, decay: 4.0, pre: 0.006, send: 0.07, tone: 3200, slap: 0, slapTime: 0.1, crowd: 0.2 },
+    floor: 'earth',
+    crowd: 'farm',
+    chime: 'wood',
+    music: { scale: MINOR5, root: 146.83, bpm: 70, density: 0.48, bass: [0, 3, 2, 0] },
+  },
+  // 海灘：最開闊，聲音一出去就散了
+  beach: {
+    acoustics: { secs: 0.45, decay: 4.5, pre: 0.004, send: 0.05, tone: 2800, slap: 0, slapTime: 0.1, crowd: 0.15 },
+    floor: 'deck',
+    crowd: 'beach',
+    chime: 'steel',
+    music: { scale: MAJOR5, root: 174.61, bpm: 104, density: 0.5, bass: [0, 3, 4, 3], offbeat: true },
+  },
+};
+
+/** 目前的場地（ambience.setVenue 會更新；sfx 依它決定音色） */
+let venue: Venue = 'indoor';
+const prof = (): SoundProfile => PROFILES[venue] ?? PROFILES.indoor;
 
 /** 第一次觸控時呼叫：建立 / 喚醒 AudioContext，並處理 iPhone 靜音鍵 */
 export function unlockAudio(): void {
@@ -67,30 +178,92 @@ function build(): void {
   ambBus.connect(master);
   musicBus.connect(master);
 
-  // 殘響：用衰減雜訊當脈衝響應
-  reverb = c.createConvolver();
-  reverb.buffer = impulse(1.6, 2.6);
+  // 殘響：reverbSend → 殘響量 → 預延遲 → 卷積（衰減雜訊當脈衝響應，換場地時交叉淡入新的）→ 低通 → 主音量
   reverbSend = c.createGain();
-  reverbSend.gain.value = 0.18;
-  reverbSend.connect(reverb).connect(master);
+  revWet = c.createGain();
+  revWet.gain.value = 0.18;
+  preDelay = c.createDelay(0.2);
+  revTone = c.createBiquadFilter();
+  revTone.type = 'lowpass';
+  revTone.Q.value = 0.5;
+  reverbSend.connect(revWet).connect(preDelay);
+  revTone.connect(master);
+  // 建築物的反彈回音（市場）：延遲＋低通、再回授一點點 → 「啪…啪」兩三下
+  slapDelay = c.createDelay(0.5);
+  const slapLp = c.createBiquadFilter();
+  slapLp.type = 'lowpass';
+  slapLp.frequency.value = 2800;
+  const slapFb = c.createGain();
+  slapFb.gain.value = 0.28;
+  slapOut = c.createGain();
+  slapOut.gain.value = 0;
+  reverbSend.connect(slapDelay).connect(slapLp).connect(slapOut).connect(master);
+  slapLp.connect(slapFb).connect(slapDelay);
+  // 觀眾
+  crowdBus = c.createGain();
+  crowdSend = c.createGain();
+  crowdBus.connect(sfxBus);
+  crowdBus.connect(crowdSend).connect(reverbSend);
 
   noiseBuf = c.createBuffer(1, c.sampleRate * 2, c.sampleRate);
   const d = noiseBuf.getChannelData(0);
   for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
 
+  setAcoustics(PROFILES[pendingVenue ?? venue].acoustics);
   if (pendingVenue) ambience.setVenue(pendingVenue);
   music.sync();
 }
 
+/** 殘響脈衝響應：雙聲道衰減雜訊，開頭 10 ms 淡入（比較不會有「啪」一聲的硬起音） */
 function impulse(secs: number, decay: number): AudioBuffer {
   const c = ctx!;
   const len = Math.floor(c.sampleRate * secs);
+  const fade = c.sampleRate * 0.01;
   const b = c.createBuffer(2, len, c.sampleRate);
   for (let ch = 0; ch < 2; ch++) {
     const d = b.getChannelData(ch);
-    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay) * Math.min(1, i / fade);
   }
   return b;
+}
+
+const irCache = new Map<Acoustics, AudioBuffer>(); // 每個場地一份（全部場地加起來約 3 MB）
+let acousticsNow: Acoustics | null = null;
+let conv: { node: ConvolverNode; gain: GainNode } | null = null;
+
+/** 換場地的空間感：殘響參數慢慢滑過去，卷積器換新的並交叉淡入（舊的淡出後拆掉） */
+function setAcoustics(a: Acoustics): void {
+  if (!ctx || a === acousticsNow) return;
+  acousticsNow = a;
+  const c = ctx;
+  const t = c.currentTime;
+  revWet.gain.setTargetAtTime(a.send, t, 0.3);
+  preDelay.delayTime.setTargetAtTime(a.pre, t, 0.05);
+  revTone.frequency.setTargetAtTime(a.tone, t, 0.2);
+  slapDelay.delayTime.setTargetAtTime(a.slapTime, t, 0.05);
+  slapOut.gain.setTargetAtTime(a.slap, t, 0.3);
+  crowdSend.gain.setTargetAtTime(a.crowd, t, 0.3);
+  let ir = irCache.get(a);
+  if (!ir) {
+    ir = impulse(a.secs, a.decay);
+    irCache.set(a, ir);
+  }
+  const node = c.createConvolver();
+  node.buffer = ir;
+  const gain = c.createGain();
+  gain.gain.value = 0;
+  gain.gain.setTargetAtTime(1, t, 0.15);
+  preDelay.connect(node).connect(gain).connect(revTone);
+  const old = conv;
+  conv = { node, gain };
+  if (old) {
+    old.gain.gain.setTargetAtTime(0, t, 0.15);
+    window.setTimeout(() => {
+      preDelay.disconnect(old.node);
+      old.node.disconnect();
+      old.gain.disconnect();
+    }, 1500);
+  }
 }
 
 export function setSfxOn(on: boolean): void {
@@ -213,17 +386,51 @@ export const sfx = {
     noise({ dur: 0.06, freq: 2600, q: 3, gain: 0.18 });
     noise({ dur: 0.08, freq: 400, q: 0.9, gain: 0.25 });
   },
-  /** 跳殺落地 */
+  /** 跳殺／魚躍落地：依地板不同（彈性木地板、空心棧板、泥土、水泥…） */
   thud() {
-    noise({ dur: 0.12, freq: 180, q: 0.8, type: 'lowpass', gain: 0.6, rev: 0.3 });
+    switch (prof().floor) {
+      case 'gym': // 有彈性的木地板：低沉的「咚」＋地板共鳴，球館殘響
+        noise({ dur: 0.12, freq: 180, q: 0.8, type: 'lowpass', gain: 0.6, rev: 0.4 });
+        tone({ freq: 96, to: 62, dur: 0.2, gain: 0.03, rev: 0.3 });
+        break;
+      case 'deck': // 木棧台：空心的「咚」＋木板敲擊，板子再彈一下
+        noise({ dur: 0.1, freq: 220, q: 0.8, type: 'lowpass', gain: 0.45 });
+        tone({ freq: 150, to: 128, dur: 0.24, gain: 0.028, type: 'triangle' });
+        tone({ freq: 335, to: 300, dur: 0.16, gain: 0.018, type: 'triangle' });
+        noise({ dur: 0.04, freq: 950, q: 3, gain: 0.15 });
+        noise({ dur: 0.03, freq: 1150, q: 3, gain: 0.06, delay: 0.045 });
+        break;
+      case 'earth': // 泥土地：悶、短、沒有餘音，揚起一點沙土
+        noise({ dur: 0.09, freq: 130, q: 0.7, type: 'lowpass', gain: 0.95 });
+        scuff(1, 2400);
+        break;
+      case 'concrete': // 水泥地：紮實短促、帶一點清脆，四周店面彈回來
+        noise({ dur: 0.08, freq: 160, q: 0.8, type: 'lowpass', gain: 0.9, rev: 0.35 });
+        noise({ dur: 0.03, freq: 700, q: 1.5, gain: 0.32, rev: 0.3 });
+        break;
+      default: // 戶外球場墊（下面是硬地）
+        noise({ dur: 0.1, freq: 170, q: 0.8, type: 'lowpass', gain: 0.8, rev: 0.2 });
+        scuff(0.5, 3000);
+    }
     sfx.squeak(0.6);
   },
-  /** 球鞋在地板上的「吱」聲（急停、轉向、弓箭步） */
+  /** 球鞋的「吱」聲（急停、轉向、弓箭步）：室內運動地板最響最長；戶外球場墊短而軟，再加上鞋底磨到沙土的沙沙聲 */
   squeak(vol = 1) {
+    const floor = prof().floor;
     const base = 2200 + Math.random() * 1600;
-    const dur = 0.07 + Math.random() * 0.08;
-    tone({ freq: base, to: base * (0.7 + Math.random() * 0.6), dur, gain: 0.045 * vol, type: 'sawtooth', attack: 0.01, rev: 0.2 });
-    noise({ dur, freq: base, q: 8, gain: 0.12 * vol, attack: 0.01 });
+    if (floor === 'gym') {
+      const dur = 0.08 + Math.random() * 0.1;
+      tone({ freq: base, to: base * (0.7 + Math.random() * 0.6), dur, gain: 0.05 * vol, type: 'sawtooth', attack: 0.01, rev: 0.3 });
+      noise({ dur, freq: base, q: 8, gain: 0.13 * vol, attack: 0.01, rev: 0.15 });
+      return;
+    }
+    const dur = 0.045 + Math.random() * 0.05;
+    const sq = floor === 'deck' ? 0.75 : 0.9;
+    tone({ freq: base * 1.1, to: base * (0.8 + Math.random() * 0.4), dur, gain: 0.032 * vol * sq, type: 'sawtooth', attack: 0.008, rev: 0.15 });
+    noise({ dur, freq: base * 1.1, q: 6, gain: 0.08 * vol * sq, attack: 0.008 });
+    const grit = floor === 'earth' ? 1 : floor === 'concrete' ? 0.85 : floor === 'deck' ? 0.7 : 0.55;
+    scuff(vol * grit, floor === 'concrete' ? 2600 : floor === 'deck' ? 3800 : 3200);
+    if (floor === 'deck' && Math.random() < 0.6) creak(vol);
   },
   /** 蓄力跨區提示：進好球區（輕）／出界區（低沉警告） */
   tick(out: boolean) {
@@ -234,36 +441,228 @@ export const sfx = {
     noise({ dur: 0.18, freq: 500, q: 0.7, gain: 0.45 });
     noise({ dur: 0.3, freq: 2500, q: 0.5, gain: 0.08, delay: 0.02 });
   },
-  /** 羽球落地 */
+  /** 羽球落地：球場墊上「啪」一下；室內帶殘響、泥土邊比較悶、棧台有一點空心的回響 */
   land() {
-    noise({ dur: 0.05, freq: 1100, q: 2, gain: 0.25, rev: 0.25 });
-    tone({ freq: 220, to: 120, dur: 0.06, gain: 0.08, type: 'triangle' });
+    const floor = prof().floor;
+    const dull = floor === 'earth';
+    noise({ dur: 0.05, freq: floor === 'gym' ? 1100 : dull ? 800 : 1000, q: floor === 'gym' ? 2 : 1.5, gain: dull ? 0.28 : 0.25, rev: floor === 'gym' ? 0.3 : 0.15 });
+    tone({ freq: dull ? 200 : 220, to: dull ? 105 : 120, dur: 0.06, gain: 0.08, type: 'triangle' });
+    if (floor === 'deck') tone({ freq: 265, to: 215, dur: 0.1, gain: 0.04, type: 'triangle', delay: 0.006 });
   },
+  /** 得分提示音：每個場地不同音色（記分板叮咚、小銅鈴、鋼鼓、木魚、撥弦、竹筒）；輸分時有觀眾的地方會「唉～」 */
   point(win: boolean) {
-    if (win) {
-      tone({ freq: 660, dur: 0.14, gain: 0.12 });
-      tone({ freq: 990, dur: 0.22, gain: 0.12, delay: 0.1 });
-    } else {
-      tone({ freq: 330, dur: 0.2, gain: 0.1 });
-      tone({ freq: 247, dur: 0.28, gain: 0.1, delay: 0.12 });
+    const p = prof();
+    chime(p.chime, win);
+    if (!win && (p.crowd === 'arena' || p.crowd === 'market' || p.crowd === 'beach')) {
+      noise({ dur: 0.75, freq: 600, sweepTo: 380, q: 1.4, gain: p.crowd === 'arena' ? 0.16 : 0.1, attack: 0.12, delay: 0.15, bus: crowdBus });
     }
   },
-  /** 觀眾掌聲：一堆隨機的小拍手聲；intensity 0~1，高的時候加上歡呼聲浪 */
+  /** 觀眾的反應（intensity 0~1，回合越長越熱烈）：每個場地的觀眾不一樣 */
   applause(intensity: number) {
     if (!ctx) return;
-    const n = Math.round(18 + intensity * 70);
-    const span = 1.0 + intensity * 1.6;
-    for (let i = 0; i < n; i++) {
-      const d = Math.random() * span * Math.random() + Math.random() * 0.15;
-      noise({ dur: 0.03 + Math.random() * 0.03, freq: 1200 + Math.random() * 1800, q: 1.2, gain: 0.05 + Math.random() * 0.05 * (0.6 + intensity), delay: d, rev: 0.6 });
+    const k = Math.max(0, Math.min(1, intensity));
+    switch (prof().crowd) {
+      case 'arena': {
+        // 滿場觀眾：密集的掌聲＋歡呼聲浪＋口哨
+        const n = Math.round(22 + k * 50);
+        const span = 1.0 + k * 1.6;
+        for (let i = 0; i < n; i++) {
+          clap(Math.random() * span * Math.random() + Math.random() * 0.15, 1200 + Math.random() * 1800, 0.05 + Math.random() * 0.05 * (0.6 + k), 1.2);
+        }
+        if (k > 0.45) {
+          noise({ dur: 1.4, freq: 650, sweepTo: 760, q: 0.6, gain: 0.12 * k, attack: 0.25, delay: 0.05, bus: crowdBus });
+          noise({ dur: 1.1, freq: 1300, sweepTo: 1500, q: 1, gain: 0.05 * k, attack: 0.2, delay: 0.1, bus: crowdBus });
+        }
+        if (k > 0.7) whistle(0.3 + Math.random() * 0.5, false);
+        break;
+      }
+      case 'market': {
+        // 攤販和客人：一群人拍手，有人喊兩聲，很熱烈時有人敲鍋子
+        clappers(4 + Math.round(k * 4), [0.17, 0.24], 3 + Math.round(k * 2), [1100, 2600], 0.065);
+        const shouts = 1 + Math.floor(k * 2.5);
+        for (let i = 0; i < shouts; i++) voice(0.1 + Math.random() * 0.7, 230 + Math.random() * 120, 'hey', 0.06);
+        if (k > 0.65) potClang(0.25 + Math.random() * 0.4);
+        break;
+      }
+      case 'beach': {
+        // 海灘上一小群人：拍手、吹口哨、「呼～」
+        clappers(3 + Math.round(k * 3), [0.16, 0.22], 3 + Math.round(k * 2), [1300, 2800], 0.07);
+        if (Math.random() < 0.45 + 0.5 * k) whistle(0.15 + Math.random() * 0.4, true);
+        if (k > 0.5) voice(0.2 + Math.random() * 0.4, 280 + Math.random() * 80, 'woo', 0.06);
+        break;
+      }
+      case 'farm':
+        // 田邊幾個農夫：稀稀落落、慢慢的、比較厚的拍手；很精彩時有人喊一聲
+        clappers(2 + Math.round(k * 2), [0.28, 0.36], 3 + Math.round(k * 2), [850, 1700], 0.08);
+        if (k > 0.6) voice(0.3 + Math.random() * 0.3, 170 + Math.random() * 50, 'hey', 0.055);
+        break;
+      case 'garden':
+        // 花園派對：有禮貌的輕拍，很精彩時一聲小小的「喔～」
+        clappers(4 + Math.round(k * 4), [0.2, 0.26], 3 + Math.round(k * 2), [1800, 3200], 0.05);
+        if (k > 0.7) noise({ dur: 0.9, freq: 420, sweepTo: 560, q: 2.2, gain: 0.14 * k, attack: 0.18, delay: 0.1, bus: crowdBus });
+        break;
+      default:
+        // 竹林：只有兩三個人輕輕拍手
+        clappers(2 + Math.round(k * 3), [0.22, 0.3], 3 + Math.round(k * 2), [1500, 2800], 0.045);
     }
-    if (intensity > 0.55) noise({ dur: 1.4, freq: 700, q: 0.5, gain: 0.12 * intensity, attack: 0.25, delay: 0.05, rev: 0.6 });
   },
   /** 選單按鈕 */
   click() {
     tone({ freq: 1200, dur: 0.03, gain: 0.05 });
   },
 };
+
+// ---------- 場地音效的小積木 ----------
+
+/** 鞋底磨到沙土：一段寬帶通雜訊＋幾顆細小的沙粒聲 */
+function scuff(vol: number, freq: number): void {
+  noise({ dur: 0.07 + Math.random() * 0.04, freq, q: 0.9, gain: 0.075 * vol, attack: 0.006 });
+  const n = 2 + Math.floor(Math.random() * 3);
+  for (let i = 0; i < n; i++) {
+    noise({ dur: 0.008 + Math.random() * 0.006, freq: 4500 + Math.random() * 2500, q: 2, gain: (0.02 + 0.04 * Math.random()) * vol, delay: Math.random() * 0.06 });
+  }
+}
+
+/** 木棧板被踩的「嘎」：鋸齒波經過帶通，音高微微滑動 */
+function creak(vol: number): void {
+  if (!ctx) return;
+  const c = ctx;
+  const t = c.currentTime + Math.random() * 0.02;
+  const dur = 0.07 + Math.random() * 0.06;
+  const f = 380 + Math.random() * 160;
+  const osc = c.createOscillator();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(f, t);
+  osc.frequency.linearRampToValueAtTime(f * (0.9 + Math.random() * 0.25), t + dur);
+  const bp = c.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.value = 900;
+  bp.Q.value = 3;
+  const g = c.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.linearRampToValueAtTime(0.03 * vol, t + 0.015);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  osc.connect(bp).connect(g).connect(sfxBus);
+  osc.start(t);
+  osc.stop(t + dur + 0.02);
+}
+
+/** 一下拍手（短帶通雜訊），送到觀眾匯流排（殘響在匯流排統一送） */
+function clap(delay: number, freq: number, gain: number, q = 1.2): void {
+  noise({ dur: 0.03 + Math.random() * 0.03, freq, q, gain, delay, bus: crowdBus });
+}
+
+/** 幾個人各自規律地拍手：每人自己的節奏與音色，越拍越輕 */
+function clappers(people: number, gap: [number, number], count: number, freq: [number, number], gain: number): void {
+  for (let p = 0; p < people; p++) {
+    const iv = gap[0] + Math.random() * (gap[1] - gap[0]);
+    const f = freq[0] + Math.random() * (freq[1] - freq[0]);
+    const n = Math.max(2, count + Math.floor(Math.random() * 3) - 1);
+    let t = Math.random() * 0.3;
+    for (let i = 0; i < n; i++) {
+      clap(t, f * (0.9 + Math.random() * 0.2), gain * (1 - (0.4 * i) / n) * (0.8 + Math.random() * 0.4));
+      t += iv * (0.92 + Math.random() * 0.16);
+    }
+  }
+}
+
+/** 人聲：喊一聲「嘿！」（先上揚再往下）或「呼～」（一路往上滑）；鋸齒波＋兩個母音共振峰 */
+function voice(delay: number, pitch: number, kind: 'hey' | 'woo', gain: number): void {
+  if (!ctx) return;
+  const c = ctx;
+  const t = c.currentTime + delay;
+  const hey = kind === 'hey';
+  const dur = hey ? 0.22 + Math.random() * 0.1 : 0.45 + Math.random() * 0.15;
+  const osc = c.createOscillator();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(pitch * (hey ? 0.9 : 0.8), t);
+  if (hey) {
+    osc.frequency.linearRampToValueAtTime(pitch * 1.15, t + 0.07);
+    osc.frequency.linearRampToValueAtTime(pitch * 0.8, t + dur);
+  } else osc.frequency.exponentialRampToValueAtTime(pitch * 1.6, t + dur * 0.8);
+  const g = c.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.linearRampToValueAtTime(gain, t + 0.03);
+  g.gain.setValueAtTime(gain, t + dur * 0.6);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  const formants: [number, number, number][] = hey
+    ? [
+        [750, 4, 1],
+        [1750, 5, 0.6],
+      ]
+    : [
+        [420, 4, 1],
+        [900, 5, 0.5],
+      ];
+  for (const [f, q, a] of formants) {
+    const bp = c.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = f * (0.92 + Math.random() * 0.16);
+    bp.Q.value = q;
+    const ga = c.createGain();
+    ga.gain.value = a;
+    osc.connect(bp).connect(ga).connect(g);
+  }
+  g.connect(crowdBus);
+  osc.start(t);
+  osc.stop(t + dur + 0.03);
+}
+
+/** 口哨：觀眾席拉長往上的哨音；海灘的手指口哨「咻～咻嗚」 */
+function whistle(delay: number, finger: boolean): void {
+  if (finger) {
+    tone({ freq: 1700, to: 2700, dur: 0.14, gain: 0.03, delay, bus: crowdBus, attack: 0.02 });
+    tone({ freq: 2650, to: 1450, dur: 0.38, gain: 0.03, delay: delay + 0.2, bus: crowdBus, attack: 0.03 });
+  } else tone({ freq: 2300, to: 3000, dur: 0.45, gain: 0.022, delay, bus: crowdBus, attack: 0.04 });
+}
+
+/** 市場攤販敲鍋子「鏘、鏘」：不和諧泛音的金屬聲 */
+function potClang(delay: number): void {
+  for (let k = 0; k < 2; k++) {
+    const d = delay + k * (0.2 + Math.random() * 0.06);
+    const v = k ? 0.75 : 1;
+    tone({ freq: 520, dur: 0.5, gain: 0.04 * v, delay: d, bus: crowdBus, attack: 0.002 });
+    tone({ freq: 1430, dur: 0.35, gain: 0.025 * v, delay: d, bus: crowdBus, attack: 0.002 });
+    tone({ freq: 2390, dur: 0.22, gain: 0.015 * v, delay: d, bus: crowdBus, attack: 0.002 });
+    noise({ dur: 0.02, freq: 3000, q: 1, gain: 0.08 * v, delay: d, bus: crowdBus });
+  }
+}
+
+/** 得分提示音（贏：往上兩個音；輸：往下兩個音），音色依場地 */
+function chime(kind: Chime, win: boolean): void {
+  const notes = win ? [660, 990] : [330, 247];
+  const gap = win ? 0.1 : 0.12;
+  for (let i = 0; i < 2; i++) {
+    const f = notes[i];
+    const d = i * gap;
+    switch (kind) {
+      case 'bell': // 小銅鈴：不和諧泛音、餘音長
+        tone({ freq: f * 1.5, dur: 0.55, gain: 0.08, delay: d, rev: 0.3 });
+        tone({ freq: f * 1.5 * 2.76, dur: 0.3, gain: 0.03, delay: d });
+        tone({ freq: f * 1.5 * 5.4, dur: 0.14, gain: 0.012, delay: d });
+        break;
+      case 'steel': // 鋼鼓：基音＋八度＋十二度，起音時音高微微往下
+        tone({ freq: f * 1.02, to: f, dur: 0.45, gain: 0.1, delay: d, attack: 0.004 });
+        tone({ freq: f * 2, dur: 0.25, gain: 0.04, delay: d });
+        tone({ freq: f * 3, dur: 0.12, gain: 0.015, delay: d });
+        break;
+      case 'wood': // 木魚：短促的「叩」
+        tone({ freq: f * 1.25, to: f, dur: 0.09, gain: 0.22, type: 'triangle', delay: d });
+        noise({ dur: 0.02, freq: f * 3, q: 4, gain: 0.25, delay: d });
+        break;
+      case 'koto': // 撥弦（跟背景音樂同一種音色；低音的撥弦能量大，輸分時小聲一點）
+        if (ctx) pluck(f, ctx.currentTime + d, win ? 0.22 : 0.14, sfxBus, reverbSend, 0.3);
+        break;
+      case 'bamboo': // 竹筒：很窄的共鳴＋一點木頭聲
+        noise({ dur: 0.08, freq: f * 1.3, q: 14, gain: 0.5, delay: d, rev: 0.3 });
+        tone({ freq: f * 1.3, dur: 0.1, gain: 0.17, delay: d });
+        break;
+      default: // 記分板「叮咚」：正弦＋一點方波的電子感
+        tone({ freq: f, dur: i ? 0.22 : 0.14, gain: 0.11, delay: d, rev: 0.3 });
+        tone({ freq: f, dur: i ? 0.18 : 0.12, gain: 0.025, type: 'square', delay: d });
+    }
+  }
+}
 
 // ---------- 裁判報分（瀏覽器內建語音） ----------
 
@@ -301,9 +700,11 @@ export const ambience = {
 
   setVenue(v: Venue) {
     pendingVenue = v;
+    venue = v; // 音效（腳步、落地、觀眾、提示音）和背景音樂都跟著換
     if (!ctx || v === this.venue) return;
     this.stop();
     this.venue = v;
+    setAcoustics(prof().acoustics);
     if (v === 'sakura') this.birds(1);
     if (v === 'bamboo') {
       this.bed(500, 0.6, 0.22, 0.12, 300); // 竹林的風
@@ -349,8 +750,6 @@ export const ambience = {
         if (Math.random() < 0.35) this.gull(0.6 + Math.random() * 0.8);
       });
     }
-    // 室內殘響大、戶外小（市場四周有店面，稍微多一點）
-    reverbSend.gain.setTargetAtTime(v === 'indoor' ? 0.32 : v === 'market' ? 0.16 : 0.12, ctx.currentTime, 0.3);
   },
 
   stop() {
@@ -667,38 +1066,43 @@ export const ambience = {
   },
 };
 
-// ---------- 背景音樂：日式「都節」五聲音階的撥弦（配合櫻花、竹林） ----------
+// ---------- 背景音樂：撥弦五聲音階，每個場地不同的音階／速度／手法（見 PROFILES 的 music） ----------
+// 櫻花園、夜櫻：日本都節音階；竹林：陽音階；室內：明亮的大調五聲、快；市場：中國宮調＋琵琶式輪指；
+// 稻田：小調五聲、慢；海灘：大調五聲＋反拍刷弦（像烏克麗麗）
 
-const SCALE = [0, 1, 5, 7, 8]; // 半音：D Eb G A Bb
-const ROOT = 146.83; // D3
 const pluckCache = new Map<number, AudioBuffer>();
+const PLUCK_CACHE_MAX = 32; // 每個音約 0.2 MB；換了很多場地也不會一直長
 
-/** Karplus-Strong 撥弦音 */
+/** Karplus-Strong 撥弦音（1 秒，結尾淡出） */
 function pluckBuf(freq: number): AudioBuffer {
   const key = Math.round(freq);
   const hit = pluckCache.get(key);
   if (hit) return hit;
   const c = ctx!;
-  const len = Math.floor(c.sampleRate * 1.6);
+  const len = Math.floor(c.sampleRate * 1.0);
   const b = c.createBuffer(1, len, c.sampleRate);
   const d = b.getChannelData(0);
   const N = Math.max(2, Math.round(c.sampleRate / freq));
   for (let i = 0; i < N; i++) d[i] = Math.random() * 2 - 1;
   for (let i = N; i < len; i++) d[i] = 0.996 * 0.5 * (d[i - N] + d[i - N + 1]);
+  const fade = Math.floor(c.sampleRate * 0.08);
+  for (let i = 0; i < fade; i++) d[len - 1 - i] *= i / fade;
+  if (pluckCache.size >= PLUCK_CACHE_MAX) pluckCache.delete(pluckCache.keys().next().value!);
   pluckCache.set(key, b);
   return b;
 }
 
-function pluck(freq: number, at: number, gain: number): void {
+/** 撥一下：音樂走 musicBus、殘響直接送 revWet（不吃市場的回音）；得分提示音的撥弦走 sfxBus */
+function pluck(freq: number, at: number, gain: number, bus: AudioNode = musicBus, send: AudioNode = revWet, sendAmt = 0.5): void {
   const c = ctx!;
   const s = c.createBufferSource();
   s.buffer = pluckBuf(freq);
   const g = c.createGain();
   g.gain.value = gain;
-  s.connect(g).connect(musicBus);
-  const send = c.createGain();
-  send.gain.value = 0.5;
-  g.connect(send).connect(reverbSend);
+  s.connect(g).connect(bus);
+  const sg = c.createGain();
+  sg.gain.value = sendAmt;
+  g.connect(sg).connect(send);
   s.start(at);
 }
 
@@ -726,18 +1130,32 @@ export const music = {
     if (!ctx || this.playing) return;
     this.playing = true;
     this.nextAt = ctx.currentTime + 0.1;
-    const beat = 60 / 84 / 2; // 84 BPM 的八分音符
     const tick = () => {
       if (!this.playing || !ctx) return;
       while (this.nextAt < ctx.currentTime + 0.35) {
+        // 每一步都看目前場地的曲風（換場地馬上換）
+        const st = prof().music;
+        const beat = 60 / st.bpm / 2; // 八分音符
         const s = this.step++;
+        const bassDeg = st.scale[st.bass[Math.floor(s / 8) % st.bass.length]];
         // 低音：每小節第一拍
-        if (s % 8 === 0) pluck((ROOT / 2) * Math.pow(2, SCALE[[0, 0, 3, 2][Math.floor(s / 8) % 4]] / 12), this.nextAt, 0.5);
+        if (s % 8 === 0) pluck((st.root / 2) * Math.pow(2, bassDeg / 12), this.nextAt, 0.5);
         // 旋律：隨機漫步，偶爾休止
-        if (Math.random() < 0.62) {
+        if (Math.random() < st.density) {
           this.note = Math.max(0, Math.min(11, this.note + [-2, -1, -1, 0, 1, 1, 2][Math.floor(Math.random() * 7)]));
-          const deg = SCALE[this.note % 5] + 12 * Math.floor(this.note / 5);
-          pluck(ROOT * Math.pow(2, deg / 12), this.nextAt + (Math.random() - 0.5) * 0.015, 0.32);
+          const deg = st.scale[this.note % 5] + 12 * Math.floor(this.note / 5);
+          const f = st.root * Math.pow(2, deg / 12);
+          pluck(f, this.nextAt + (Math.random() - 0.5) * 0.015, 0.32);
+          // 琵琶式輪指：同一個音在半拍後再撥一下
+          if (st.tremolo && Math.random() < st.tremolo) pluck(f, this.nextAt + beat / 2, 0.2);
+        }
+        // 反拍刷弦：低音所在和弦的兩個音，像烏克麗麗一樣輕輕刷過
+        if (st.offbeat && s % 2 === 1 && Math.random() < 0.75) {
+          const i0 = st.bass[Math.floor(s / 8) % st.bass.length];
+          for (let k = 0; k < 2; k++) {
+            const deg = st.scale[(i0 + 2 + k * 2) % 5] + 12;
+            pluck(st.root * Math.pow(2, deg / 12), this.nextAt + k * 0.012, 0.11);
+          }
         }
         this.nextAt += beat;
       }
