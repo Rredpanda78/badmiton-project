@@ -479,6 +479,16 @@ export const sfx = {
     tone({ freq: dull ? 200 : 220, to: dull ? 105 : 120, dur: 0.06, gain: 0.08, type: 'triangle' });
     if (floor === 'deck') tone({ freq: 265, to: 215, dur: 0.1, gain: 0.04, type: 'triangle', delay: 0.006 });
   },
+  /** 精彩回放開始：倒帶似的「咻——」往上掃 */
+  replay() {
+    noise({ dur: 0.42, freq: 300, sweepTo: 3600, q: 0.9, gain: 0.2, attack: 0.16, rev: 0.35 });
+    tone({ freq: 160, to: 640, dur: 0.36, gain: 0.045, type: 'triangle', attack: 0.12, rev: 0.3 });
+  },
+  /** 回放的慢動作擊球：在擊球聲底下加一聲低沉拉長的「轟」（power 0..1：殺球越快越重） */
+  slowHit(power: number) {
+    tone({ freq: 74, to: 36, dur: 0.75, gain: 0.12 + 0.12 * power, attack: 0.008, rev: 0.6 });
+    noise({ dur: 0.6, freq: 320, sweepTo: 90, q: 0.7, type: 'lowpass', gain: 0.22 + 0.25 * power, attack: 0.01, rev: 0.7 });
+  },
   /** 得分提示音：每個場地不同音色（記分板叮咚、小銅鈴、鋼鼓、木魚、撥弦、竹筒）；輸分時有觀眾的地方會「唉～」 */
   point(win: boolean) {
     const p = prof();

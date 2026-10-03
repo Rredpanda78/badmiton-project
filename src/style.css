@@ -1451,6 +1451,7 @@ textarea {
 .join-row button {
   width: 100%;
   height: 48px;
+}
 /* 背景音樂選曲（設定畫面） */
 .music-pick-ctl {
   display: flex;
@@ -1494,4 +1495,171 @@ textarea {
 /* 自己的球：過早／過晚的字幕偏紅（完美是 .float.perfect 的綠／金） */
 .float.off {
   color: #ffb0a0;
+}
+
+/* ---------- 得分回放（精彩回放）：上下黑邊、標籤、球種球速、跳過提示 ---------- */
+#replay {
+  --rp-bar: clamp(46px, 12vh, 120px);
+  position: fixed;
+  inset: 0;
+  display: none;
+  pointer-events: none;
+  cursor: pointer;
+}
+#replay.show {
+  display: block;
+  pointer-events: auto;
+}
+.rp-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: var(--rp-bar);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 max(18px, env(safe-area-inset-left)) 0 max(18px, env(safe-area-inset-left));
+  background: #000;
+}
+.rp-bar.top {
+  top: 0;
+  height: calc(var(--rp-bar) + env(safe-area-inset-top));
+  padding-top: env(safe-area-inset-top);
+  animation: rpTop 0.35s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.rp-bar.bottom {
+  bottom: 0;
+  height: calc(var(--rp-bar) + env(safe-area-inset-bottom));
+  padding-bottom: env(safe-area-inset-bottom);
+  justify-content: space-between;
+  animation: rpBottom 0.35s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes rpTop {
+  from {
+    transform: translateY(-100%);
+  }
+}
+@keyframes rpBottom {
+  from {
+    transform: translateY(100%);
+  }
+}
+.rp-tag {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px 5px 10px;
+  border: 1px solid rgba(255, 213, 74, 0.55);
+  border-radius: 6px;
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 4px;
+  animation: rpIn 0.45s 0.15s ease-out both;
+}
+.rp-tag i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #ff4b4b;
+  box-shadow: 0 0 8px #ff4b4b;
+  animation: rpBlink 1s steps(2, jump-none) infinite;
+}
+@keyframes rpBlink {
+  50% {
+    opacity: 0.2;
+  }
+}
+.rp-shot {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  animation: rpIn 0.45s 0.25s ease-out both;
+}
+.rp-shot b {
+  font-size: clamp(18px, 3.4vh, 28px);
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: #fff;
+  white-space: nowrap;
+  text-shadow: 0 0 14px rgba(75, 155, 255, 0.55);
+}
+#replay.opp .rp-shot b {
+  text-shadow: 0 0 14px rgba(255, 107, 91, 0.55);
+}
+.rp-shot span {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--me);
+  white-space: nowrap;
+}
+#replay.opp .rp-shot span {
+  color: var(--opp);
+}
+.rp-skip {
+  flex: none;
+  font-size: 13px;
+  color: var(--muted);
+  white-space: nowrap;
+  animation: rpIn 0.45s 0.6s ease-out both;
+}
+@keyframes rpIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+.rp-prog {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.1);
+}
+.rp-prog i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+}
+/* 直向手機：黑邊厚一點（畫面中間留一條電影寬幅），球種換行放大 */
+@media (orientation: portrait) {
+  #replay {
+    --rp-bar: clamp(60px, 13vh, 150px);
+  }
+  .rp-bar.bottom {
+    flex-wrap: wrap;
+    align-content: center;
+    row-gap: 4px;
+  }
+  .rp-shot {
+    flex-direction: column;
+    gap: 2px;
+  }
+}
+/* 回放時記分板、搖桿先收起來 */
+body.replaying #hud,
+body.replaying #touch {
+  visibility: hidden !important;
+}
+/* 進出回放：從黑畫面淡入，遮住鏡頭的跳切 */
+#replayFade {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  opacity: 0;
+  pointer-events: none;
+}
+#replayFade.go {
+  animation: rpFade 0.38s ease-out both;
+}
+@keyframes rpFade {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
 }

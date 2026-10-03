@@ -97,6 +97,11 @@ export const GAME = {
 
   serveContactY: 0.95,
   pointPause: 1.8,
+
+  // 得分回放（主動得分才播，src/render/replay.ts）：得分後 delay 模擬秒開始（比賽在回放期間暫停，播完才繼續），
+  // 從致勝那一拍前 pre 模擬秒播到落地後 post 模擬秒；擊球瞬間 slow 倍（相對正常遊戲速度）慢動作，
+  // 羽球飛行的速度自動調整讓整段約 target 秒（真實時間），飛行倍率限制在 flightMin～flightMax
+  replay: { delay: 0.5, pre: 0.42, post: 0.2, slow: 0.26, target: 3.0, flightMin: 0.5, flightMax: 2.4 },
 };
 
 /**
@@ -135,6 +140,7 @@ export interface MatchSettings {
   music: boolean; // 背景音樂
   musicTrack: MusicTrack; // 背景音樂選曲
   umpire: boolean; // 裁判報分語音
+  replay: boolean; // 得分回放：主動得分時播約 3 秒的慢動作特寫（線上、教學、訓練不播）
   character: string; // 自己的球員
   racket: string; // 自己的球拍
   /** 跑位：auto = 自動（可以預判起步）、assist = 輔助（自己推、電腦幫忙對準＋自動回位）、manual = 手動 */
@@ -169,6 +175,7 @@ export const DEFAULT_SETTINGS: MatchSettings = {
   music: true,
   musicTrack: 'auto',
   umpire: true,
+  replay: true,
   character: 'allround',
   racket: 'balance',
   moveMode: 'auto',

@@ -34,6 +34,19 @@
     </div>
     <div id="touch"></div>
 
+    <!-- 得分回放：上下黑邊、「精彩回放」標籤、球種＋球速、點一下跳過 -->
+    <div id="replay">
+      <div class="rp-bar top">
+        <div class="rp-tag"><i></i>精彩回放</div>
+      </div>
+      <div class="rp-bar bottom">
+        <div class="rp-prog"><i id="replayProg"></i></div>
+        <div class="rp-shot"><b id="replayShot"></b><span id="replayWho"></span></div>
+        <div class="rp-skip">點一下跳過 ›</div>
+      </div>
+    </div>
+    <div id="replayFade"></div>
+
     <div id="menu" class="overlay show">
       <div class="panel">
         <h1>羽球對決 <span>2.5D</span></h1>
@@ -132,6 +145,11 @@
           <label>落點提示</label>
           <div class="seg" data-key="landingHint"><button data-v="true">開</button><button data-v="false">關</button></div>
         </div>
+        <div class="row">
+          <label>得分回放</label>
+          <div class="seg" data-key="replay"><button data-v="true">開</button><button data-v="false">關</button></div>
+        </div>
+        <p class="hint-line">主動得分（殺球、切球、放網…打進對方場內，不算失誤、掛網、出界）時，播約 3 秒的慢動作特寫；點一下就跳過。</p>
         <div class="row">
           <label>震動</label>
           <div class="seg" data-key="vibration"><button data-v="true">開</button><button data-v="false">關</button></div>

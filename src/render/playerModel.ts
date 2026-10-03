@@ -619,6 +619,14 @@ export class PlayerModel {
     }
   }
 
+  /** 下一幀直接擺成準備姿勢、步法和揮拍狀態全部重來（回放進出時用，不要沿用另一段的動作） */
+  snap(): void {
+    this.inited = false;
+    this.curSwing = null;
+    this.lungeSwing = null;
+    this.scissorSwing = null;
+  }
+
   /** 換人時釋放 GPU 資源（幾何、材質、球衣貼圖、拖尾） */
   dispose(): void {
     const mats = new Set<THREE.Material>();
