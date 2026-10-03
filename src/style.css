@@ -1375,3 +1375,50 @@ body.in-menu #a2hsTip.show {
 #notice.show {
   display: block;
 }
+
+/* 線上：房號輸入框放大、目前選手 */
+.join-row {
+  margin-top: 14px;
+}
+.join-row input {
+  height: 64px;
+  font-size: 32px;
+  font-weight: 800;
+  letter-spacing: 10px;
+  padding: 0 12px;
+}
+.join-row input::placeholder {
+  font-size: 18px;
+  font-weight: 400;
+  letter-spacing: 2px;
+}
+.join-row button {
+  min-width: 96px;
+  font-size: 18px;
+  font-weight: 700;
+}
+.online-me {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 8px 0 12px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 14px;
+}
+.online-me button {
+  width: auto;
+  margin: 0;
+  padding: 6px 12px;
+  font-size: 13px;
+}
+/* 比賽設定裡的選手卡片（從主選單搬過來） */
+.setup-picker {
+  display: none;
+  margin-bottom: 8px;
+}
+.setup-picker.show {
+  display: block;
+}

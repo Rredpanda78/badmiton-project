@@ -14,10 +14,12 @@ const games = Number(process.argv[3] ?? 3);
 const tickMs = (PHYS.dt / GAME.simSpeed) * 1000; // 一個 tick 的真實時間
 const delayTicks = Math.max(1, Math.round(latMs / tickMs));
 
+// 第四個參數 doubles：線上雙打（雙方各帶一個 AI 隊友：本機 0 號＋2 號，對方 1、3 號）
+const doubles = process.argv[4] === 'doubles';
 let ok = 0;
 for (let g = 0; g < games; g++) {
   const mk = (seed: number) => {
-    const m = new Match({ ...DEFAULT_SETTINGS, points: 21 }, seed);
+    const m = new Match({ ...DEFAULT_SETTINGS, points: 21, doubles }, seed);
     m.remote = 1;
     return m;
   };
@@ -32,8 +34,11 @@ for (let g = 0; g < games; g++) {
   const clock = () => tick * tickMs;
   const sA = new OnlineSync(A, (msg) => queue.push({ at: tick + delayTicks, to: 'B', msg: JSON.parse(JSON.stringify(msg)) }), clock);
   const sB = new OnlineSync(B, (msg) => queue.push({ at: tick + delayTicks, to: 'A', msg: JSON.parse(JSON.stringify(msg)) }), clock);
-  const aiA = new AIController(A, 0, 'hard');
-  const aiB = new AIController(B, 0, 'hard');
+  // 每台手機控制自己這隊：0 號（玩家，這裡用 AI 代打）＋雙打時 2 號 AI 隊友
+  const own = (m: Match) => (doubles ? [0, 2] : [0]).map((id) => new AIController(m, id as 0 | 2, 'hard'));
+  const aiA = own(A);
+  const aiB = own(B);
+  const inputs = (m: Match, ais: AIController[]) => m.players.map((p) => (m.isRemote(p.id) ? { moveX: 0, moveY: 0, charging: false, jump: false, flick: null, dive: null } : ais[p.id === 0 ? 0 : 1].input()));
   let maxAwait = 0;
   const jumps: number[] = [];
   const lowest: number[] = [];
@@ -52,10 +57,10 @@ for (let g = 0; g < games; g++) {
       }
       (q.to === 'A' ? sA : sB).receive(q.msg);
     }
-    A.step([aiA.input(), { moveX: 0, moveY: 0, charging: false, jump: false, flick: null, dive: null }]);
+    A.step(inputs(A, aiA));
     // 第四個參數 drift：B 每 700 tick 卡住 40 tick（模擬手機掉幀、時間落後）
     const frozen = process.argv[4] === 'drift' && tick % 700 < 40;
-    if (!frozen) B.step([aiB.input(), { moveX: 0, moveY: 0, charging: false, jump: false, flick: null, dive: null }]);
+    if (!frozen) B.step(inputs(B, aiB));
     for (const [m, s, i] of [[A, sA, 0], [B, sB, 1]] as const) {
       for (const e of m.drainEvents()) {
         s.onEvent(e);

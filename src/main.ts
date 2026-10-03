@@ -16,7 +16,7 @@ import { chargeZones } from './sim/shots';
 import { v3 } from './sim/physics';
 import { OnlineSync } from './net/sync';
 import { buildTutorial, TutorialRunner, type TutUI } from './modes/tutorial';
-import type { PlayerInput } from './sim/match';
+import type { PlayerId, PlayerInput } from './sim/match';
 import { newRoomCode, normalizeCode, RoomClient, type Hello, type StartInfo } from './net/room';
 
 const HUMAN = 0 as const;
@@ -576,24 +576,91 @@ function buildColorPickers(): void {
   buildCards();
 }
 
-function openSetup(): void {
+/** 比賽設定畫面的用途：本機比賽、建立線上房間、加入前選選手 */
+let setupMode: 'local' | 'create' | 'join' = 'local';
+/** 選手卡片從主選單搬進比賽設定（關掉時搬回去） */
+let pickerHome: Comment[] = [];
+function mountPicker(): void {
+  if (pickerHome.length) return;
+  const els = ['charCards', 'racketCards', 'kitSummary'].map((id) => $(id));
+  pickerHome = els.map((el) => {
+    const c = document.createComment('picker');
+    el.before(c);
+    return c;
+  });
+  const box = $('setupPicker');
+  const title = (t: string) => {
+    const d = document.createElement('div');
+    d.className = 'section-title small';
+    d.textContent = t;
+    return d;
+  };
+  box.replaceChildren(title('球員'), els[0], title('球拍'), els[1], els[2]);
+}
+function unmountPicker(): void {
+  const els = ['charCards', 'racketCards', 'kitSummary'].map((id) => $(id));
+  pickerHome.forEach((c, i) => c.replaceWith(els[i]));
+  pickerHome = [];
+  $('setupPicker').replaceChildren();
+}
+const setupField = (sel: string) => document.querySelector(`#setup ${sel}`)?.closest('.field') as HTMLElement | null;
+/** 依用途顯示比賽設定裡的欄位 */
+function layoutSetup(): void {
+  const m = setupMode;
+  $('setupTitle').textContent = m === 'create' ? '建立線上房間' : m === 'join' ? '選擇你的選手' : '比賽設定';
+  $('setupStartBtn').textContent = m === 'create' ? '建立房間' : m === 'join' ? '確定' : '開始';
+  const show = (sel: string, on: boolean) => {
+    const f = setupField(sel);
+    if (f) f.style.display = on ? '' : 'none';
+  };
+  show('.seg[data-key="matchType"]', m !== 'join');
+  // 線上單打沒有 AI：難度只給雙打的 AI 隊友用
+  show('.seg[data-key="difficulty"]', m === 'local' || (m === 'create' && settings.matchType === 'doubles'));
+  show('.seg[data-key="venuePick"]', m !== 'join');
+  show('.seg[data-key="points"]', m !== 'join');
+  show('#oppColors', m === 'local');
+  const mt = document.querySelector('#setup .seg[data-key="matchType"] button[data-v="doubles"]');
+  if (mt) mt.textContent = m === 'create' ? '雙打（各帶 AI 隊友）' : '雙打（你＋AI 夥伴）';
+}
+
+function openSetup(modeArg: 'local' | 'create' | 'join' = 'local'): void {
+  setupMode = modeArg;
   unlockAudio();
   buildColorPickers();
-  $('diffHint').textContent = DIFF_HINT[settings.difficulty] ?? '';
+  mountPicker();
+  $('setupPickerWrap').classList.add('show');
+  layoutSetup();
+  $('diffHint').textContent = setupMode === 'create' ? '雙打時你和對方的 AI 隊友都用這個強度' : (DIFF_HINT[settings.difficulty] ?? '');
   $('menu').classList.remove('show');
+  $('online').classList.remove('show');
   $('setup').classList.add('show');
   $('setup').scrollTop = 0;
   document.querySelector('#setup .panel')!.scrollTop = 0;
 }
 
-$('startBtn').addEventListener('click', openSetup);
-$('setupStartBtn').addEventListener('click', startSelected);
-$('setupBackBtn').addEventListener('click', () => {
+$('startBtn').addEventListener('click', () => openSetup('local'));
+/** 關掉比賽設定：選手卡片搬回主選單，回到來的地方 */
+function closeSetup(): void {
   $('setup').classList.remove('show');
-  $('menu').classList.add('show');
+  unmountPicker();
+  if (setupMode === 'local') $('menu').classList.add('show');
+  else openOnline();
+}
+$('setupStartBtn').addEventListener('click', () => {
+  if (setupMode === 'local') {
+    unmountPicker();
+    startSelected();
+  } else if (setupMode === 'create') {
+    closeSetup();
+    joinRoom(newRoomCode(), true);
+  } else closeSetup();
 });
-// 換模式時更新顏色提示（雙打說明）
-document.querySelector('#setup .seg[data-key="matchType"]')?.addEventListener('click', () => buildColorPickers());
+$('setupBackBtn').addEventListener('click', closeSetup);
+// 換模式時更新顏色提示（雙打說明）、要不要顯示難度
+document.querySelector('#setup .seg[data-key="matchType"]')?.addEventListener('click', () => {
+  buildColorPickers();
+  layoutSetup();
+});
 $('againBtn').addEventListener('click', () => again());
 $('restartBtn').addEventListener('click', () => again());
 $('pauseBtn').addEventListener('click', () => mode === 'play' && setMode('paused'));
@@ -896,18 +963,34 @@ function onPointAudio(winner: TeamId, reason: string): void {
 }
 
 // ---------- 線上對戰（好友房） ----------
+/** 線上雙打：自己的 AI 隊友（進房時抽一次，跟自己不同人） */
+let onlinePartner: { character: string; racket: string } | null = null;
+/** 線上房間這次用的場地（房主「隨機」時進房抽一次） */
+let onlineVenue: Venue | null = null;
+
 function myHello(): Hello {
+  const me = characterById(settings.character);
+  const col = myColors(me);
+  if (!onlinePartner || onlinePartner.character === me.id) onlinePartner = { character: pick(CHARACTERS.filter((c) => c.id !== me.id)).id, racket: pick(RACKETS).id };
+  onlineVenue ??= matchVenue();
   return {
-    name: characterById(settings.character).name,
+    name: me.name,
     character: settings.character,
     racket: settings.racket,
     points: settings.points,
     games: settings.games,
-    venue: settings.venue,
+    venue: onlineVenue,
+    matchType: settings.matchType,
+    difficulty: settings.difficulty,
+    shirt: col.shirt,
+    shorts: col.shorts,
+    partner: onlinePartner.character,
+    partnerRacket: onlinePartner.racket,
   };
 }
 
 function showLobby(code: string | null): void {
+  $('onlinePickBtn').style.display = code ? 'none' : ''; // 進房後不能換（已經告訴對方了）
   $('onlineIdle').style.display = code ? 'none' : '';
   $('onlineRoom').style.display = code ? '' : 'none';
   $('roomCode').textContent = code ?? '';
@@ -918,6 +1001,8 @@ function showLobby(code: string | null): void {
 }
 
 function openOnline(): void {
+  const me = characterById(settings.character);
+  $('onlineMe').textContent = `你的選手：${me.name}＋${racketById(settings.racket).name}`;
   $('menu').classList.remove('show');
   $('online').classList.add('show');
   showLobby(online ? online.room.code : null);
@@ -934,6 +1019,8 @@ function leaveOnline(): void {
 function joinRoom(code: string, creator = false): void {
   leaveOnline();
   unlockAudio();
+  onlinePartner = null; // 每次進房重抽 AI 隊友、場地
+  onlineVenue = null;
   const room = new RoomClient(code, myHello);
   room.creator = creator;
   online = { room, sync: null, waiting: false, graceT: 0 };
@@ -963,7 +1050,7 @@ function joinRoom(code: string, creator = false): void {
       // 房主決定從哪裡繼續：目前比分、目前發球方，重新發球
       const L = HUMAN;
       const R = match.remote ?? 1;
-      room.send({ t: 'resume', sc: [match.score[L], match.score[R]], gm: [match.games[L], match.games[R]], srv: match.server === L ? 'me' : 'you' });
+      room.send({ t: 'resume', sc: [match.score[L], match.score[R]], gm: [match.games[L], match.games[R]], srv: match.server });
       match.resumePoint(match.score.slice() as [number, number], match.games.slice() as [number, number], match.server);
       resumed();
     }
@@ -979,7 +1066,7 @@ function joinRoom(code: string, creator = false): void {
     sc[L] = msg.sc[1];
     gm[R] = msg.gm[0];
     gm[L] = msg.gm[1];
-    match.resumePoint(sc, gm, msg.srv === 'me' ? R : L);
+    match.resumePoint(sc, gm, (msg.srv ^ 1) as PlayerId); // 對方的編號 → 本機（xor 1）
     resumed();
   };
   showLobby(code);
@@ -993,28 +1080,46 @@ function startOnlineMatch(start: StartInfo, peer: Hello, host: boolean): void {
   if (controls.isTouch || matchMedia('(pointer: coarse)').matches) document.documentElement.requestFullscreen?.().catch(() => {});
   const me = characterById(settings.character);
   const opp = characterById(peer.character);
-  const s: MatchSettings = { ...settings, points: start.points, games: start.games, venue: start.venue, aiCharacter: opp.id, aiRacket: peer.racket };
+  const doubles = start.matchType === 'doubles';
+  const s: MatchSettings = { ...settings, points: start.points, games: start.games, venue: start.venue, aiCharacter: opp.id, aiRacket: peer.racket, doubles };
+  // 雙打：自己的 AI 隊友 = 2 號（本機控制），對方的 AI 隊友 = 3 號（對方手機控制）
+  const mate = onlinePartner ? characterById(onlinePartner.character) : pick(CHARACTERS.filter((c) => c.id !== me.id));
+  const oppMate = peer.partner ? characterById(peer.partner) : pick(CHARACTERS.filter((c) => c.id !== opp.id));
+  if (doubles) {
+    s.partnerCharacter = mate.id;
+    s.partnerRacket = onlinePartner?.racket ?? 'balance';
+    s.ai2Character = oppMate.id;
+    s.ai2Racket = peer.partnerRacket ?? 'balance';
+  }
   match = new Match(s, (Date.now() ^ (Math.random() * 1e9)) >>> 0);
-  match.remote = 1; // 對方 = 1 號（畫面上方），自己永遠在下方
+  match.remote = 1; // 對方隊伍 = 1 號隊（畫面上方），自己永遠在下方
   match.server = host ? 0 : 1; // 房主先發
   match.setupServe();
   match.drainEvents();
   bots = [];
+  if (doubles) bots[2] = new AIController(match, 2, start.difficulty === 'easy' ? 'normal' : start.difficulty);
   demoPlayer = null;
   tourCtx = null;
   drill = null;
   hud.drill = null;
   setupAssist(false);
   controls.scheme = settings.scheme;
-  renderer.setLooks([
-    // 線上：兩邊都穿球員原色（對方畫面也是這樣）
-    { ...me, racketColor: racketById(settings.racket).color, racket: settings.racket },
-    // 兩邊選同一位球員：對手換成紅色球衣，才分得出來
-    { ...opp, ...(opp.id === me.id ? { shirt: 0xe0483a, shorts: 0x3a1b1b } : {}), racketColor: racketById(peer.racket).color, racket: peer.racket },
-  ]);
+  // 球衣：各自穿自己選的顏色；對方的顏色跟我的太像時，我這邊看到的對方換成對比色
+  const mine = myColors(me);
+  let theirs = peer.shirt !== undefined ? { shirt: peer.shirt, shorts: peer.shorts ?? opp.shorts } : { shirt: opp.shirt, shorts: opp.shorts };
+  if (tooClose(theirs.shirt, mine.shirt) || (doubles && tooClose(theirs.shirt, shade(mine.shirt, -0.32)))) theirs = pickOppColor('random', doubles ? [mine.shirt, shade(mine.shirt, -0.32)] : [mine.shirt]);
+  const look = (c: Character, racket: string): Look => ({ ...c, racketColor: racketById(racket).color, racket });
+  renderer.setLooks(
+    doubles
+      ? teamLooks([look(me, settings.racket), look(opp, peer.racket), look(mate, s.partnerRacket!), look(oppMate, s.ai2Racket!)], mine, theirs)
+      : [
+          { ...look(me, settings.racket), ...mine },
+          { ...look(opp, peer.racket), shirt: theirs.shirt, shorts: theirs.shorts },
+        ],
+  );
   applyVenue(start.venue);
   renderer.setTarget(null);
-  hud.oppName = peer.name;
+  hud.oppName = doubles ? `${peer.name}隊` : peer.name;
   hud.oppTag = '線上';
   clearTimeout(resultTimer);
   hitStop = 0;
@@ -1027,7 +1132,7 @@ function startOnlineMatch(start: StartInfo, peer: Hello, host: boolean): void {
   $('againBtn').style.display = '';
   acc = 0;
   setMode('play');
-  hud.intro(`線上對戰：${peer.name}`, host ? '你先發球' : '對手先發球');
+  hud.intro(doubles ? `線上雙打：${peer.name}＋${oppMate.name}（AI）` : `線上對戰：${peer.name}`, `${doubles ? `你的隊友：${mate.name}（AI）｜` : ''}${host ? (doubles ? '你們先發球' : '你先發球') : '對手先發球'}`);
 }
 
 /** 右下角顯示連線延遲 */
@@ -1057,7 +1162,8 @@ $('onlineBackBtn').addEventListener('click', () => {
   $('online').classList.remove('show');
   $('menu').classList.add('show');
 });
-$('createRoomBtn').addEventListener('click', () => joinRoom(newRoomCode(), true));
+$('createRoomBtn').addEventListener('click', () => openSetup('create'));
+$('onlinePickBtn').addEventListener('click', () => openSetup('join'));
 $('joinRoomBtn').addEventListener('click', () => {
   const code = normalizeCode(($('roomCodeInput') as HTMLInputElement).value);
   if (code.length < 4) {

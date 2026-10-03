@@ -159,6 +159,7 @@ export interface RemoteState {
 
 /** 線上：對方的一次擊球（已換成本機座標） */
 export interface RemoteHit {
+  player: PlayerId; // 本機的球員編號（對方傳來的已經換算過）
   contact: Vec3;
   vel: Vec3;
   stepDt: number;
@@ -192,11 +193,11 @@ export class Match {
   lastPoint: { winner: TeamId; reason: string } | null = null;
   events: MatchEvent[] = [];
   private gameJustEnded = false;
-  /** 線上對戰：遠端玩家的 id（移動、擊球都由網路訊息決定）；離線 = null */
+  /** 線上對戰：遠端隊伍（對方手機控制，移動、擊球都由網路訊息決定）；單打時隊伍 = 球員編號；離線 = null */
   remote: 0 | 1 | null = null;
   /** 線上：單程網路延遲（模擬秒，OnlineSync 用 ping 量的） */
   netLag = 0;
-  private remoteState: { rs: RemoteState; at: number } | null = null;
+  private remoteStates = new Map<PlayerId, { rs: RemoteState; at: number }>();
 
   constructor(readonly settings: MatchSettings, seed = Date.now()) {
     this.rng = new Rng(seed);
@@ -284,7 +285,7 @@ export class Match {
     const s = this.players[this.server];
     const r = this.players[this.receiver];
     const court = this.serveCourtSign();
-    this.remoteState = null; // 線上：舊位置作廢，等對方送新的發球站位
+    this.remoteStates.clear(); // 線上：舊位置作廢，等對方送新的發球站位
     if (this.doubles) {
       // 雙打：發球的人靠前發球線，夥伴站後面；接發球的人站前一點壓發球，夥伴在另一半場後面
       const sp = this.partnerOf(s.id)!;
@@ -363,7 +364,7 @@ export class Match {
   }
 
   private updatePlayer(p: PlayerState, input: PlayerInput, dt: number): void {
-    if (p.id === this.remote) return this.updateRemote(p, dt);
+    if (this.isRemote(p.id)) return this.updateRemote(p, dt);
     if (p.recover > 0) p.recover -= dt;
     if (p.landRecover > 0) p.landRecover -= dt;
     if (p.downT > 0) p.downT -= dt;
@@ -751,7 +752,7 @@ export class Match {
     // 本機整段飛行平均放慢，讓球差不多在對方擊球訊息到的時候才飛到對方球拍附近
     sh.prediction = predict(sh.pos, sh.vel, stepDt);
     sh.dilate = 1;
-    if (GAME.online.dilate && this.remote !== null && this.teamOf(p.id) !== this.players[this.remote].team && sh.prediction && !sh.prediction.hitsNet) {
+    if (GAME.online.dilate && this.remote !== null && this.teamOf(p.id) !== this.remote && sh.prediction && !sh.prediction.hitsNet) {
       const T = sh.prediction.landTime;
       sh.dilate = T > 0.05 ? T / (T + 2 * this.netLag) : 1;
     }
@@ -788,7 +789,7 @@ export class Match {
       for (const p of this.players) {
         const s = p.swing;
         // 每一邊只能打一拍：剛打過的那一隊（自己或隊友）要等對方回球
-        if (this.hitByTeam(p.team) || p.id === this.remote || !s || s.contacted || s.whiffed || s.isServe) continue;
+        if (this.hitByTeam(p.team) || this.isRemote(p.id) || !s || s.contacted || s.whiffed || s.isServe) continue;
         if (serveOnly !== null && p.id !== serveOnly) continue;
         if (s.t > s.window) continue;
         const d = this.inReach(p, sh.pos);
@@ -983,7 +984,7 @@ export class Match {
       }
     }
     this.events.push({ type: 'land', pos: copy3(sh.pos), inBounds });
-    if (this.remote !== null && hitter !== this.remote) {
+    if (this.remote !== null && this.teamOf(hitter) !== this.remote) {
       // 線上：自己打出去的球由對方（接球方）判定，等對方的結果（避免兩邊各判一次）
       this.phase = 'await';
       this.phaseT = 0;
@@ -1196,8 +1197,8 @@ export class Match {
    */
   private onlineHold(): number {
     const sh = this.shuttle;
-    if (this.remote === null || sh.mode !== 'flight' || sh.lastHitter === null) return 1;
-    const rp = this.players[this.remote];
+    if (this.remote === null || GAME.online.holdMax <= 0 || sh.mode !== 'flight' || sh.lastHitter === null) return 1;
+    const rp = this.players[this.remote]; // 遠端隊伍的真人（單打 = 對手；雙打 = 對方玩家）
     if (this.teamOf(sh.lastHitter) === rp.team) return 1;
     if (sh.holdT >= GAME.online.holdMax) return 1;
     // 對方在本機的位置是網路傳來的（慢一點），範圍放寬一些
@@ -1209,8 +1210,13 @@ export class Match {
   }
 
   /** 對方最新的狀態（收到時的 match.time 一起存） */
-  setRemoteState(rs: RemoteState): void {
-    this.remoteState = { rs, at: this.time };
+  setRemoteState(id: PlayerId, rs: RemoteState): void {
+    this.remoteStates.set(id, { rs, at: this.time });
+  }
+
+  /** 這位球員是遠端（對方手機）控制的：線上對戰時整個對方隊伍（對方玩家＋他的 AI 隊友） */
+  isRemote(id: PlayerId): boolean {
+    return this.remote !== null && this.teamOf(id) === this.remote;
   }
 
   /** 遠端玩家：位置用網路狀態外插、每 tick 拉近一點；不會自己擊球（擊球只來自 applyRemoteHit） */
@@ -1219,8 +1225,9 @@ export class Match {
       p.swing.t += dt;
       if (p.swing.t >= Math.max(GAME.swingDuration, p.swing.window + 0.1)) p.swing = null;
     }
-    if (!this.remoteState) return;
-    const { rs, at } = this.remoteState;
+    const st = this.remoteStates.get(p.id);
+    if (!st) return;
+    const { rs, at } = st;
     const age = Math.min(0.2, this.time - at);
     const tx = rs.pos.x + rs.vel.x * age;
     const tz = rs.pos.z + rs.vel.z * age;
@@ -1271,7 +1278,8 @@ export class Match {
    */
   applyRemoteHit(h: RemoteHit, lat: number): void {
     if (this.remote === null || this.phase === 'matchOver') return;
-    const p = this.players[this.remote];
+    const p = this.players[h.player];
+    if (!p || !this.isRemote(p.id)) return;
     if (h.serve && this.phase === 'point') this.afterPoint(); // 對方比較快：先把發球準備好
     const sh = this.shuttle;
     sh.pos = copy3(h.contact);

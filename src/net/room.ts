@@ -1,4 +1,4 @@
-import type { Venue } from '../config';
+import type { Difficulty, Venue } from '../config';
 import { PROTOCOL, type NetMsg, type PeerMsg } from './protocol';
 
 /** 房間伺服器（Cloudflare Worker）；網址加 ?server=local 改連本機的 wrangler dev */
@@ -20,11 +20,19 @@ export interface Hello {
   points: 11 | 15 | 21;
   games: 1 | 3;
   venue: Venue;
+  matchType?: 'singles' | 'doubles'; // 房主建房時選的（加入的人用房主的）
+  difficulty?: Difficulty; // 雙打 AI 隊友的強度
+  shirt?: number; // 自己選的球衣顏色
+  shorts?: number;
+  partner?: string; // 雙打：自己的 AI 隊友（球員 id、球拍）
+  partnerRacket?: string;
 }
 export interface StartInfo {
   points: 11 | 15 | 21;
   games: 1 | 3;
   venue: Venue;
+  matchType: 'singles' | 'doubles';
+  difficulty: Difficulty;
 }
 
 /**
@@ -149,7 +157,7 @@ export class RoomClient {
 
   private sendStart(): void {
     const me = this.hello();
-    const start: StartInfo = { points: me.points, games: me.games, venue: me.venue };
+    const start: StartInfo = { points: me.points, games: me.games, venue: me.venue, matchType: me.matchType ?? 'singles', difficulty: me.difficulty ?? 'normal' };
     this.send({ t: 'start', ...start });
     this.onStart(start, this.peer!, true);
   }
@@ -187,7 +195,7 @@ export class RoomClient {
           this.onStatus('雙方遊戲版本不同，請兩邊都重新整理網頁', 'error');
           return;
         }
-        this.peer = { name: msg.name, character: msg.character, racket: msg.racket, points: msg.points, games: msg.games, venue: msg.venue };
+        this.peer = { name: msg.name, character: msg.character, racket: msg.racket, points: msg.points, games: msg.games, venue: msg.venue, shirt: msg.shirt, shorts: msg.shorts, partner: msg.partner, partnerRacket: msg.partnerRacket };
         if (!this.sentHello) this.sendHello();
         if (this.inMatch) {
           this.onRejoin(this.peer, this.role === 'host');
@@ -199,7 +207,7 @@ export class RoomClient {
       case 'start':
         if (this.peer) {
           this.wantRematch = this.peerRematch = false;
-          this.onStart({ points: msg.points, games: msg.games, venue: msg.venue }, this.peer, false);
+          this.onStart({ points: msg.points, games: msg.games, venue: msg.venue, matchType: msg.matchType ?? 'singles', difficulty: msg.difficulty ?? 'normal' }, this.peer, false);
         }
         break;
       case 'resume':

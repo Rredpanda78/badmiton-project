@@ -1,5 +1,5 @@
 import { GAME } from '../config';
-import type { Match, MatchEvent } from '../sim/match';
+import type { Match, MatchEvent, PlayerId } from '../sim/match';
 import type { Vec3 } from '../sim/physics';
 import type { PeerMsg } from './protocol';
 
@@ -32,7 +32,7 @@ export class OnlineSync {
 
   /** 每個模擬 tick（match.step 之後）呼叫 */
   afterStep(): void {
-    if (++this.ticks % 4 === 0) this.sendState();
+    if (++this.ticks % 4 === 0) for (const p of this.match.players) if (!this.match.isRemote(p.id)) this.sendState(p.id);
     const t = this.now();
     if (t - this.lastPing > 2000) {
       this.lastPing = t;
@@ -43,9 +43,10 @@ export class OnlineSync {
   /** match.drainEvents() 的每個事件都要給這裡看 */
   onEvent(e: MatchEvent): void {
     const m = this.match;
-    if (e.type === 'hit' && e.player === this.L) {
+    if (e.type === 'hit' && !m.isRemote(e.player)) {
       this.send({
         t: 'hit',
+        i: e.player,
         c: [e.pos.x, e.pos.y, e.pos.z],
         v: [e.vel.x, e.vel.y, e.vel.z],
         dt: e.stepDt,
@@ -82,7 +83,7 @@ export class OnlineSync {
         break;
       }
       case 'st':
-        m.setRemoteState({
+        m.setRemoteState(peerId(msg.i), {
           pos: mir(msg.p),
           vel: mir(msg.v),
           airborne: !!msg.a,
@@ -97,6 +98,7 @@ export class OnlineSync {
       case 'hit':
         m.applyRemoteHit(
           {
+            player: peerId(msg.i),
             contact: mir(msg.c),
             vel: mir(msg.v),
             stepDt: msg.dt,
@@ -130,11 +132,12 @@ export class OnlineSync {
     }
   }
 
-  private sendState(): void {
-    const p = this.match.players[this.L];
+  private sendState(id: number): void {
+    const p = this.match.players[id];
     const s = p.swing;
     this.send({
       t: 'st',
+      i: id,
       p: [r3(p.pos.x), r3(p.pos.y), r3(p.pos.z)],
       v: [r3(p.vel.x), r3(p.vy), r3(p.vel.z)],
       a: p.airborne ? 1 : 0,
@@ -148,6 +151,8 @@ export class OnlineSync {
   }
 }
 
+/** 對方手機上的球員編號 → 本機：雙方都把自己當 0 號（隊友 2 號），在對方那邊就是 1、3 號（xor 1） */
+const peerId = (i: number | undefined) => ((i ?? 0) ^ 1) as PlayerId;
 const r3 = (n: number) => Math.round(n * 1000) / 1000;
 /** 對方視角 → 自己視角：繞球場中心轉 180°（x、z 反號） */
 const mir = (a: [number, number, number]): Vec3 => ({ x: -a[0], y: a[1], z: -a[2] });
