@@ -832,11 +832,11 @@ export class Match {
     const incoming = Math.hypot(sh.vel.x, sh.vel.y, sh.vel.z);
     // 硬伸手去接快球（殺球）：離身體越遠、來球越快，球質越差；太勉強可能直接掛網 → 這種球要用魚躍
     let stretchFail = false;
+    // 看球的路線離身體多遠（側向距離），不是擊球當下的距離：正面飛來的球在身前 0.9 m 接很正常
+    const hv = Math.hypot(sh.vel.x, sh.vel.z) || 1;
+    const lateral = Math.abs((p.pos.x - sh.pos.x) * (sh.vel.z / hv) - (p.pos.z - sh.pos.z) * (sh.vel.x / hv));
     if (!swing.dive && !p.airborne) {
       const fast = sh.pace;
-      // 看球的路線離身體多遠（側向距離），不是擊球當下的距離：正面飛來的球在身前 0.9 m 接很正常
-      const hv = Math.hypot(sh.vel.x, sh.vel.z) || 1;
-      const lateral = Math.abs((p.pos.x - sh.pos.x) * (sh.vel.z / hv) - (p.pos.z - sh.pos.z) * (sh.vel.x / hv));
       const stretch = clamp((lateral - GAME.stretch.comfy) / (this.reachOf(p) - GAME.stretch.comfy), 0, 1);
       const strain = fast * stretch;
       if (strain > 0) {
@@ -857,6 +857,13 @@ export class Match {
       // 伸手太勉強：拍面沒控制好，球打進網
       family = 'down';
       charge = chargeForDepth(-0.6);
+    }
+    // 被殺近身（球路正對身體）：拍面角度不夠，平抽抽不出去 → 只能擋到網前（照划的方向，可以彈對角）
+    let bodyBlock = false;
+    if (!weak && !stretchFail && family === 'side' && sh.pace >= 0.8 && lateral < GAME.bodySmash.lateral && !p.airborne && !swing.dive) {
+      family = 'down';
+      charge = chargeForDepth(GAME.bodySmash.blockDepth);
+      bodyBlock = true;
     }
     // 網前、球高於網時按平球（點一下／左右滑）→ 撲球：比一般撲球快一點，但打向對方中場、反應得過來還救得到
     let killCap: number | undefined;
@@ -904,7 +911,7 @@ export class Match {
     this.events.push({
       type: 'hit',
       player: p.id,
-      name: chanceSmash ? '機會殺球' : intercept ? '抓球' : shot.name,
+      name: chanceSmash ? '機會殺球' : intercept ? '抓球' : bodyBlock ? '擋網' : shot.name,
       speedKmh: Math.round(shot.speedKmh * (1 + GAME.attackSmashBonus * bonus) * killMul),
       pos: contact,
       family,
