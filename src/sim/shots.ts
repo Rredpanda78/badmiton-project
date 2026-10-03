@@ -114,7 +114,8 @@ export function resolveShot(req: ShotRequest, rng: Rng): ShotResult {
   const jumpSmash = req.jump && (name === '殺球' || name === '撲球');
   if (jumpSmash) name = name === '撲球' ? '跳撲' : '跳殺';
   // 球員／球拍的球速加成：同一條軌跡跑更快
-  const kitMul = req.kit?.speed[shotGroup(name)] ?? 1;
+  // 發球不吃球速加成（避免平快發球被推壓手濫用）
+  const kitMul = req.serve ? 1 : (req.kit?.speed[shotGroup(name)] ?? 1);
   const dt = PHYS.dt * kitMul * (name === '跳殺' ? GAME.jump.smashBallMul : (SPEED_BY_NAME[name] ?? GAME.ballSpeedMul));
 
   let th: number;
@@ -126,15 +127,16 @@ export function resolveShot(req: ShotRequest, rng: Rng): ShotResult {
     v = solveSpeed(th, y0, L, sNet, dt);
     // 靠網太近、擊球點又低時，固定仰角會撞網 → 改用更陡的角度挑過網
     if (fly2d(v, th, y0, sNet, dt).netY < netY + 0.4) ({ th, v } = solveCrossing(netY + 0.6, y0, L, sNet, th, 84 * DEG, dt));
-    ({ th, v } = capSpeed(th, v, GAME.liftMaxSpeed, y0, L, sNet, dt, 25 * DEG));
+    ({ th, v } = capSpeed(th, v, GAME.liftMaxSpeed / kitMul, y0, L, sNet, dt, 25 * DEG));
   } else if (family === 'side') {
     const clear = y0 >= GAME.highZoneY ? 0.5 : 0.35;
     ({ th, v } = solveCrossing(netY + clear, y0, L, sNet, -20 * DEG, 45 * DEG, dt));
-    ({ th, v } = capSpeed(th, v, GAME.smashMaxSpeed, y0, L, sNet, dt));
+    ({ th, v } = capSpeed(th, v, GAME.smashMaxSpeed / kitMul, y0, L, sNet, dt));
   } else {
     ({ th, v } = solveCrossing(netY + 0.1, y0, L, sNet, -35 * DEG, 75 * DEG, dt));
+    // 上限要除以球速加成：加成是讓球「跑更快」，實際速度仍不能超過上限
     const cap = name === '撲球' || name === '跳撲' ? GAME.killMaxSpeed : name === '跳殺' ? GAME.jump.smashMaxSpeed : GAME.smashMaxSpeed;
-    ({ th, v } = capSpeed(th, v, cap, y0, L, sNet, dt));
+    ({ th, v } = capSpeed(th, v, cap / kitMul, y0, L, sNet, dt));
   }
 
   const vh = v * Math.cos(th);

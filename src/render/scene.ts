@@ -5,6 +5,7 @@ import { v3, type Vec3 } from '../sim/physics';
 import { makeCourt } from './court';
 import { buildVenue, type Environment } from './environment';
 import { PlayerModel, playerStyle } from './playerModel';
+import { makeShuttleMesh } from './shuttle';
 
 /** 球員外觀：球衣顏色＋（可選）角色造型與球拍顏色 */
 export interface Look {
@@ -64,13 +65,7 @@ export class GameRenderer {
     for (const m of this.models) this.scene.add(m.root);
 
     // 羽球：軟木頭在原點、羽毛往 +Y 展開
-    const cork = new THREE.Mesh(new THREE.SphereGeometry(0.014 * SHUTTLE_SCALE, 10, 8), new THREE.MeshLambertMaterial({ color: 0xf6f1e4 }));
-    const skirt = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.033 * SHUTTLE_SCALE, 0.013 * SHUTTLE_SCALE, 0.06 * SHUTTLE_SCALE, 14, 1, true),
-      new THREE.MeshLambertMaterial({ color: 0xffffff, side: THREE.DoubleSide, transparent: true, opacity: 0.92 }),
-    );
-    skirt.position.y = 0.03 * SHUTTLE_SCALE + 0.006;
-    this.shuttle.add(cork, skirt);
+    this.shuttle.add(makeShuttleMesh(SHUTTLE_SCALE));
     this.scene.add(this.shuttle);
 
     this.shuttleShadow = new THREE.Mesh(

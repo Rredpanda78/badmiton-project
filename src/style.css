@@ -599,3 +599,68 @@ h2 {
   text-align: center;
   max-width: 92vw;
 }
+
+/* 場館巡迴賽 */
+.tour-stop {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+}
+.tour-stop.locked {
+  opacity: 0.45;
+}
+.tour-stop h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+.tour-opp {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.tour-opp:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.tour-opp.boss {
+  border-color: rgba(255, 213, 74, 0.5);
+}
+.tour-opp .swatch {
+  flex: 0 0 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.6);
+}
+.tour-opp b {
+  font-size: 14px;
+}
+.tour-opp span {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+}
+.tour-opp .state {
+  margin-left: auto;
+  font-size: 16px;
+}
+#banner.intro {
+  font-size: 30px;
+  color: var(--accent);
+}
+#banner.intro .sub {
+  color: var(--text);
+  max-width: 86vw;
+  white-space: normal;
+}

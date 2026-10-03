@@ -54,16 +54,16 @@ export const CHARACTERS: Character[] = [
     desc: '殺球更快；跑得慢一點',
     shirt: 0xe0483a,
     shorts: 0x3a1b1b,
-    kit: { speed: { smash: 1.15 }, move: 0.94, accel: 0.92 },
+    kit: { speed: { smash: 1.12 }, move: 0.96, accel: 0.94 },
   },
   {
     id: 'touch',
     name: '小櫻',
     title: '網前魔術師',
-    desc: '切球、放網更快更刁鑽；殺球較慢',
+    desc: '切球、放網更快更準；殺球、高遠球較慢',
     shirt: 0xf27fb0,
     shorts: 0x5a2340,
-    kit: { speed: { drop: 1.2, smash: 0.94 }, accuracy: 0.85 },
+    kit: { speed: { drop: 1.03, smash: 0.94, clear: 0.95 }, accuracy: 0.85 },
   },
   {
     id: 'driver',
@@ -72,7 +72,7 @@ export const CHARACTERS: Character[] = [
     desc: '推球、平抽更快；高遠球較慢',
     shirt: 0xf2a23a,
     shorts: 0x4a3010,
-    kit: { speed: { push: 1.2, clear: 0.93 } },
+    kit: { speed: { push: 1.06, clear: 0.93 } },
   },
   {
     id: 'runner',
@@ -81,7 +81,7 @@ export const CHARACTERS: Character[] = [
     desc: '移動與起步最快；球速稍慢',
     shirt: 0x34c38f,
     shorts: 0x14402f,
-    kit: { move: 1.1, accel: 1.18, speed: { smash: 0.95, push: 0.97 } },
+    kit: { move: 1.05, accel: 1.1, speed: { smash: 0.95, push: 0.97 } },
   },
 ];
 
@@ -90,23 +90,23 @@ export const RACKETS: Racket[] = [
   {
     id: 'attack',
     name: '攻擊拍（頭重）',
-    desc: '殺球 +8%；揮拍判定時間 -12%',
+    desc: '殺球 +4%；落點誤差 +15%',
     color: 0xff5a4a,
-    kit: { speed: { smash: 1.08 }, window: 0.88 },
+    kit: { speed: { smash: 1.04 }, accuracy: 1.15 },
   },
   {
     id: 'speed',
     name: '速度拍（頭輕）',
-    desc: '揮拍判定時間 +18%、推球 +5%；殺球 -5%',
+    desc: '揮拍判定時間 +18%、推球 +5%；殺球 -3%',
     color: 0x4ad7ff,
-    kit: { window: 1.18, speed: { push: 1.05, smash: 0.95 } },
+    kit: { window: 1.18, speed: { push: 1.05, smash: 0.97 } },
   },
   {
     id: 'control',
     name: '控制拍',
-    desc: '落點誤差 -30%；所有球速 -3%',
+    desc: '落點誤差 -30%；殺球 -5%',
     color: 0xb48cff,
-    kit: { accuracy: 0.7, speed: { smash: 0.97, drop: 0.97, push: 0.97, clear: 0.97 } },
+    kit: { accuracy: 0.7, speed: { smash: 0.95 } },
   },
 ];
 

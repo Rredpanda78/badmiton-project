@@ -1,11 +1,12 @@
 import './style.css';
-import { AIController } from './ai/ai';
+import { AIController, STYLES } from './ai/ai';
 import { sfx, unlockAudio } from './audio';
-import { DEFAULT_SETTINGS, GAME, PHYS, type MatchSettings } from './config';
+import { DEFAULT_SETTINGS, GAME, PHYS, type MatchSettings, type Venue } from './config';
 import { LocalControls } from './input/controls';
 import { GameRenderer } from './render/scene';
 import { idleInput, Match, type MatchEvent } from './sim/match';
 import { DRILLS, DrillRunner, loadBest, saveBest, type Drill } from './modes/drills';
+import { loadTour, saveTourWin, stopUnlocked, TOUR, type TourOpponent } from './modes/tour';
 import { buildKit, CHARACTERS, characterById, racketById, RACKETS } from './sim/kits';
 import { Hud } from './ui/hud';
 import { chargeZones } from './sim/shots';
@@ -24,6 +25,7 @@ let mode: Mode = 'menu';
 let match!: Match;
 let opponent: AIController | null = null; // 練習模式沒有對手 AI
 let drill: DrillRunner | null = null; // 目前的訓練關卡
+let tourCtx: { stop: number; idx: number } | null = null; // 目前的巡迴賽場次
 let again: () => void = () => startGame(); // 「再來一次」要重開什麼
 let demoPlayer: AIController | null = null; // 主選單背景的 AI 示範對打
 let resultTimer: number | undefined;
@@ -48,17 +50,24 @@ let lastZone = 0; // 蓄力目前在哪一區：0 掛網 1 好球 2 出界
 let assist: AIController | null = null; // 簡單模式：幫玩家自動跑位
 const pick = <T,>(xs: T[]) => xs[Math.floor(Math.random() * xs.length)];
 
-function newMatch(demo: boolean): void {
+function newMatch(demo: boolean, tourOpp?: TourOpponent, venue?: Venue): void {
   // 對手每場隨機換一位球員、一支球拍（不跟自己同一位）
   const me = demo ? pick(CHARACTERS) : characterById(settings.character);
-  const opp = pick(CHARACTERS.filter((c) => c.id !== me.id));
-  const s: MatchSettings = { ...settings, aiCharacter: opp.id, aiRacket: pick(RACKETS).id };
+  const opp = tourOpp ? characterById(tourOpp.character) : pick(CHARACTERS.filter((c) => c.id !== me.id));
+  const s: MatchSettings = { ...settings, aiCharacter: opp.id, aiRacket: tourOpp ? tourOpp.racket : pick(RACKETS).id };
+  if (tourOpp) {
+    s.points = tourOpp.points;
+    s.games = 1;
+  }
   if (demo) {
     s.character = me.id;
     s.racket = pick(RACKETS).id;
   }
   match = new Match(s, (Date.now() ^ (Math.random() * 1e9)) >>> 0);
-  opponent = new AIController(match, 1, demo ? 'hard' : settings.difficulty);
+  opponent = tourOpp
+    ? new AIController(match, 1, tourOpp.level, false, STYLES[tourOpp.style])
+    : new AIController(match, 1, demo ? 'hard' : settings.difficulty);
+  tourCtx = null;
   demoPlayer = demo ? new AIController(match, 0, 'hard') : null;
   assist = !demo && settings.autoMove ? new AIController(match, 0, 'hard', true) : null;
   controls.autoMove = !!assist;
@@ -66,8 +75,8 @@ function newMatch(demo: boolean): void {
     { ...me, racketColor: racketById(s.racket).color },
     { ...opp, racketColor: racketById(s.aiRacket!).color },
   ]);
-  renderer.setVenue(settings.venue);
-  hud.oppName = opp.name;
+  renderer.setVenue(venue ?? settings.venue);
+  hud.oppName = tourOpp ? `${opp.name}・${tourOpp.title}` : opp.name;
   hud.drill = null;
   drill = null;
   renderer.setTarget(null);
@@ -123,6 +132,8 @@ function buildCards(): void {
 
 function setMode(m: Mode): void {
   mode = m;
+  $('tour').classList.remove('show');
+  if (m !== 'result') $('nextBtn').style.display = 'none';
   controls.enabled = m === 'play';
   controls.reset();
   document.body.classList.toggle('in-menu', m === 'menu');
@@ -168,12 +179,33 @@ function handleEvent(e: MatchEvent): void {
       break;
     case 'match':
       if (live) {
+        const ctx = tourCtx;
         resultTimer = window.setTimeout(() => {
           const win = e.winner === HUMAN;
-          $('resultTitle').textContent = win ? '🏆 你贏了！' : 'AI 獲勝';
-          $('resultScore').textContent =
-            settings.games > 1 ? `局數 ${match.games[0]} : ${match.games[1]}` : `比分 ${match.score[0]} : ${match.score[1]}`;
+          const sc = match.settings.games > 1 ? `局數 ${match.games[0]} : ${match.games[1]}` : `比分 ${match.score[0]} : ${match.score[1]}`;
+          $('resultTitle').textContent = win ? '🏆 你贏了！' : `${hud.oppName} 獲勝`;
+          $('resultScore').textContent = sc;
+          if (ctx) {
+            const stop = TOUR[ctx.stop];
+            const opp = stop.opponents[ctx.idx];
+            if (win) {
+              saveTourWin(stop.id, ctx.idx);
+              const last = ctx.idx === stop.opponents.length - 1;
+              $('resultTitle').textContent = opp.boss ? `👑 打敗${opp.title}！` : `🏆 打贏${opp.title}！`;
+              $('resultScore').textContent = last
+                ? ctx.stop < TOUR.length - 1
+                  ? `${sc}　${stop.name}制霸！開放「${TOUR[ctx.stop + 1].name}」`
+                  : `${sc}　恭喜完成全部巡迴賽！`
+                : sc;
+              const next = last ? (ctx.stop < TOUR.length - 1 ? { stop: ctx.stop + 1, idx: 0 } : null) : { stop: ctx.stop, idx: ctx.idx + 1 };
+              if (next) {
+                $('nextBtn').style.display = 'block';
+                $('nextBtn').onclick = () => startTour(next.stop, next.idx);
+              }
+            }
+          }
           setMode('result');
+          if (ctx && win) $('nextBtn').style.display = $('nextBtn').onclick ? 'block' : 'none';
         }, 1600);
       } else {
         window.setTimeout(() => mode === 'menu' && newMatch(true), 1500);
@@ -408,5 +440,54 @@ $('drillsBtn').addEventListener('click', () => {
 });
 $('drillsBackBtn').addEventListener('click', () => {
   $('drills').classList.remove('show');
+  $('menu').classList.add('show');
+});
+
+// ---------- 場館巡迴賽 ----------
+function buildTourList(): void {
+  const prog = loadTour();
+  const box = $('tourList');
+  box.innerHTML = '';
+  TOUR.forEach((stop, si) => {
+    const open = stopUnlocked(prog, si);
+    const done = prog[stop.id] ?? 0;
+    const div = document.createElement('div');
+    div.className = 'tour-stop' + (open ? '' : ' locked');
+    div.innerHTML = `<h3>${stop.name}${done >= stop.opponents.length ? ' 👑' : ''}${open ? '' : ' 🔒'}</h3>`;
+    stop.opponents.forEach((o, oi) => {
+      const c = characterById(o.character);
+      const b = document.createElement('button');
+      b.className = 'tour-opp' + (o.boss ? ' boss' : '');
+      b.disabled = !open || oi > done;
+      const state = oi < done ? '✔' : oi === done && open ? '▶' : '🔒';
+      b.innerHTML = `<div class="swatch" style="background:#${c.shirt.toString(16).padStart(6, '0')}"></div><div><b>${o.boss ? '👑 ' : ''}${c.name}・${o.title}</b><span>${STYLES[o.style].name}｜${o.points} 分｜${o.intro}</span></div><div class="state">${state}</div>`;
+      b.addEventListener('click', () => startTour(si, oi));
+      div.appendChild(b);
+    });
+    box.appendChild(div);
+  });
+}
+
+function startTour(stopIdx: number, oppIdx: number): void {
+  unlockAudio();
+  if (controls.isTouch || matchMedia('(pointer: coarse)').matches) document.documentElement.requestFullscreen?.().catch(() => {});
+  const stop = TOUR[stopIdx];
+  const opp = stop.opponents[oppIdx];
+  newMatch(false, opp, stop.venue);
+  tourCtx = { stop: stopIdx, idx: oppIdx };
+  again = () => startTour(stopIdx, oppIdx);
+  $('nextBtn').onclick = null;
+  acc = 0;
+  setMode('play');
+  hud.intro(`${opp.boss ? '👑 ' : ''}${hud.oppName}`, opp.intro);
+}
+
+$('tourBtn').addEventListener('click', () => {
+  buildTourList();
+  $('menu').classList.remove('show');
+  $('tour').classList.add('show');
+});
+$('tourBackBtn').addEventListener('click', () => {
+  $('tour').classList.remove('show');
   $('menu').classList.add('show');
 });

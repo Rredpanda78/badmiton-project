@@ -677,7 +677,7 @@ export class Match {
     }
 
     const target = this.settings.points;
-    const cap = target === 21 ? 30 : 15;
+    const cap = target === 21 ? 30 : target === 15 ? 21 : 15;
     const w = this.score[winner];
     const l = this.score[winner === 0 ? 1 : 0];
     if ((w >= target && w - l >= 2) || w >= cap) {

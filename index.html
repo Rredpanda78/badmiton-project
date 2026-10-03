@@ -62,6 +62,7 @@
           <div class="seg" data-key="vibration"><button data-v="true">開</button><button data-v="false">關</button></div>
         </div>
         <button id="startBtn" class="primary">開始比賽（對 AI）</button>
+        <button id="tourBtn">場館巡迴賽</button>
         <button id="drillsBtn">訓練關卡</button>
         <button class="ghost" disabled>線上房間（開發中）</button>
         <details class="howto">
@@ -106,6 +107,15 @@
       </div>
     </div>
 
+    <div id="tour" class="overlay">
+      <div class="panel">
+        <h2>場館巡迴賽</h2>
+        <p class="tag">每站兩位對手＋館主，打贏館主開放下一站。用上面選的球員和球拍。</p>
+        <div id="tourList"></div>
+        <button id="tourBackBtn">返回</button>
+      </div>
+    </div>
+
     <div id="drills" class="overlay">
       <div class="panel">
         <h2>訓練關卡</h2>
@@ -119,6 +129,7 @@
       <div class="panel small">
         <h2 id="resultTitle"></h2>
         <p id="resultScore"></p>
+        <button id="nextBtn" class="primary" style="display: none">下一場</button>
         <button id="againBtn" class="primary">再來一場</button>
         <button id="resultMenuBtn">回主選單</button>
       </div>

@@ -65,6 +65,11 @@ export class Hud {
     }
   }
 
+  /** 開場介紹對手 */
+  intro(name: string, text: string): void {
+    this.showBanner(name, text, 'intro', 2.6);
+  }
+
   /** 訓練關卡每一球的結果 */
   showRep(ok: boolean, msg: string): void {
     this.showBanner(`${ok ? '✔' : '✘'} ${msg}`, '', `rep ${ok ? 'win' : 'lose'}`, 1.1);

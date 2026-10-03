@@ -20,6 +20,41 @@ const PARAMS: Record<Difficulty, AIParams> = {
   hard: { reaction: 0.15, speedMul: 1.0, depthNoise: 0.3, timingJitter: 0.025, outJudge: 0.95, smartAim: 0.9, smashBias: 1.2, killRate: 0.55, jumpRate: 0.35 },
 };
 
+
+/** AI 打法個性：各球種選擇權重倍率＋跳殺、假動作、穩定度 */
+export interface AIStyle {
+  name: string;
+  smash: number;
+  drop: number; // 切球／放網
+  clear: number; // 高遠／挑球
+  drive: number;
+  jump: number; // 額外跳殺機率
+  feint: number; // 假動作機率（先蓄力、放掉、再蓄）
+  steady: number; // 落點誤差倍率（<1 越穩）
+}
+
+export const STYLES: Record<string, AIStyle> = {
+  allround: { name: '全能', smash: 1, drop: 1, clear: 1, drive: 1, jump: 0, feint: 0, steady: 1 },
+  attacker: { name: '進攻型', smash: 1.8, drop: 0.7, clear: 0.8, drive: 1, jump: 0.25, feint: 0, steady: 1.1 },
+  netter: { name: '網前型', smash: 0.7, drop: 2.0, clear: 0.8, drive: 0.8, jump: 0, feint: 0.15, steady: 0.85 },
+  defender: { name: '防守型', smash: 0.6, drop: 0.8, clear: 1.8, drive: 0.9, jump: 0, feint: 0, steady: 0.75 },
+  driver: { name: '平抽快攻', smash: 1.1, drop: 0.8, clear: 0.6, drive: 2.2, jump: 0, feint: 0.05, steady: 1 },
+  trickster: { name: '假動作大師', smash: 1, drop: 1.5, clear: 1, drive: 1, jump: 0.1, feint: 0.45, steady: 0.9 },
+};
+
+/** 難度連續值：0 = 簡單、1 = 普通、2 = 困難（中間線性內插），巡迴賽用 */
+export function aiLevel(t: number): AIParams {
+  const keys: Difficulty[] = ['easy', 'normal', 'hard'];
+  const c = Math.max(0, Math.min(2, t));
+  const i = Math.min(1, Math.floor(c));
+  const u = c - i;
+  const a = PARAMS[keys[i]];
+  const b = PARAMS[keys[i + 1]];
+  const out = {} as AIParams;
+  for (const k of Object.keys(a) as (keyof AIParams)[]) out[k] = a[k] + (b[k] - a[k]) * u;
+  return out;
+}
+
 interface ShotChoice {
   family: Family;
   depth: number;
@@ -37,6 +72,7 @@ interface Plan {
   flick: Flick;
   leave: boolean;
   jump: boolean;
+  feint: boolean; // 先假蓄力一次
   done: boolean;
 }
 
@@ -54,10 +90,11 @@ export class AIController {
   constructor(
     private match: Match,
     private id: 0 | 1,
-    difficulty: Difficulty,
+    difficulty: Difficulty | number,
     private moveOnly = false,
+    private style: AIStyle = STYLES.allround,
   ) {
-    this.p = PARAMS[difficulty];
+    this.p = typeof difficulty === 'number' ? aiLevel(difficulty) : PARAMS[difficulty];
   }
 
   private get me() {
@@ -97,7 +134,9 @@ export class AIController {
     if (now >= plan.reactAt) this.moveTo(inp, plan.standX, plan.standZ, 1);
     else this.moveTo(inp, 0, this.me.side * 3.6, 0.4);
 
-    if (now >= plan.chargeAt && now >= plan.reactAt) {
+    // 假動作：先蓄力一下再放掉（腳下光圈會亮又熄），然後才真的蓄力
+    const feinting = plan.feint && now >= plan.chargeAt - 0.5 && now < plan.chargeAt - 0.2;
+    if ((now >= plan.chargeAt || feinting) && now >= plan.reactAt) {
       inp.charging = true;
       inp.jump = plan.jump;
     }
@@ -138,7 +177,7 @@ export class AIController {
   }
 
   private chargeFor(depth: number): number {
-    const c = chargeForDepth(depth + this.match.rng.gauss() * this.p.depthNoise);
+    const c = chargeForDepth(depth + this.match.rng.gauss() * this.p.depthNoise * this.style.steady);
     return Math.max(0.02, Math.min(1, c));
   }
 
@@ -169,7 +208,7 @@ export class AIController {
     const rng = m.rng;
     const now = m.time;
     const p = this.p;
-    const leavePlan = (): Plan => ({ reactAt: now, standX: 0, standZ: me.side * 3.6, contactAt: 0, chargeAt: 1e9, flickAt: 1e9, charge: 0, flick: { x: 0, y: 1 }, leave: true, jump: false, done: false });
+    const leavePlan = (): Plan => ({ reactAt: now, standX: 0, standZ: me.side * 3.6, contactAt: 0, chargeAt: 1e9, flickAt: 1e9, charge: 0, flick: { x: 0, y: 1 }, leave: true, jump: false, feint: false, done: false });
     if (!pred || pred.hitsNet) return leavePlan();
 
     // 出界球判斷
@@ -198,7 +237,7 @@ export class AIController {
       const avail = tAbs - now - p.reaction;
       const cand = { score: 0, i, tAbs, sx, sz };
       fallback = cand;
-      if (travel / speed + 0.12 > avail && travel > 0.4) continue;
+      if (travel / speed + 0.12 / me.kit.accel > avail && travel > 0.4) continue;
       let score = -0.15 * (tAbs - now);
       if (pt.y >= GAME.highZoneY) score += 1 * p.smashBias;
       if (pt.y < 0.5) score -= 0.6;
@@ -235,7 +274,8 @@ export class AIController {
       charge,
       flick: this.flickFor(shot.family, shot.aimX),
       leave: false,
-      jump: shot.family === 'down' && shot.depth >= 2.6 && pt.y >= 2.1 && rng.chance(p.jumpRate),
+      jump: shot.family === 'down' && shot.depth >= 2.6 && pt.y >= 2.1 && rng.chance(p.jumpRate + this.style.jump),
+      feint: rng.chance(this.style.feint) && flickAt - timeForCharge(charge) - 0.55 > now + p.reaction,
       done: false,
     };
   }
@@ -254,12 +294,21 @@ export class AIController {
       ? -Math.sign(oppAim || rng.next() - 0.5) * rng.range(0.45, 0.85)
       : rng.range(-0.8, 0.8);
 
+    // 權重再乘上「打法個性」和「自己哪種球比較快」（會多打自己的強項）
+    const st = this.style;
+    const ks = me.kit.speed;
+    const bias = (family: Family, depth: number) => {
+      if (family === 'side') return st.drive * ks.push ** 4;
+      if (family === 'up') return st.clear * ks.clear ** 4;
+      return depth >= 2.6 ? st.smash * ks.smash ** 4 : st.drop * ks.drop ** 4;
+    };
     const pick = (opts: [number, ShotChoice['family'], number][]): ShotChoice => {
-      const total = opts.reduce((s, o) => s + o[0], 0);
+      const ws = opts.map(([w, f, d]) => w * bias(f, d));
+      const total = ws.reduce((s, w) => s + w, 0);
       let r = rng.next() * total;
-      for (const [w, family, depth] of opts) {
-        r -= w;
-        if (r <= 0) return { family, depth, aimX };
+      for (let i = 0; i < opts.length; i++) {
+        r -= ws[i];
+        if (r <= 0) return { family: opts[i][1], depth: opts[i][2], aimX };
       }
       return { family: opts[0][1], depth: opts[0][2], aimX };
     };

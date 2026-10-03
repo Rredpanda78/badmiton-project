@@ -86,7 +86,7 @@ export type Difficulty = 'easy' | 'normal' | 'hard';
 
 export interface MatchSettings {
   difficulty: Difficulty;
-  points: 11 | 21;
+  points: 11 | 15 | 21;
   games: 1 | 3;
   landingHint: boolean;
   vibration: boolean;
