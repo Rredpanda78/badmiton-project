@@ -7,10 +7,10 @@ import { buildTutorial, TutorialRunner, type TutStep } from '../src/modes/tutori
 import { chargeForDepth, type Flick } from '../src/sim/shots';
 
 const TAP: Record<string, Flick> = {
-  '挑球（下手）': { x: 0, y: 1, cmd: { family: 'up', depth: 5.7 } },
-  '放小球（下手）': { x: 0, y: -1, cmd: { family: 'down', depth: 1.0 } },
-  '高遠球（上手）': { x: 0, y: 1, cmd: { family: 'up', depth: 6.0 } },
-  '切球（上手）': { x: 0, y: -1, cmd: { family: 'down', depth: 1.5 } },
+  挑球: { x: 0, y: 1, cmd: { family: 'up', depth: 'auto' } },
+  放小球: { x: 0, y: -1, cmd: { family: 'down', depth: 'auto' } },
+  高遠球: { x: 0, y: 1, cmd: { family: 'up', depth: 'auto' } },
+  切球: { x: 0, y: -1, cmd: { family: 'down', depth: 'auto' } },
   平抽: { x: 1, y: 0, cmd: { family: 'side', depth: 5.0 } },
   '撲球（網前）': { x: 0, y: 0, cmd: { family: 'side', depth: 5.0, soft: true } },
   '殺球（殺球搖桿）': { x: 0, y: -1, cmd: { family: 'down', depth: 'smash' } },

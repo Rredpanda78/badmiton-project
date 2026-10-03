@@ -32,6 +32,7 @@ export interface Swing {
   triggeredJump: boolean; // 這一下划動直接觸發起跳（時機改用「是否在最高點擊中」評分）
   dive: boolean; // 魚躍撲救時的揮拍（撲出去的整段都能擊中）
   diveAuto: boolean; // 魚躍時沒有另外划 → 自動挑回
+  auto?: boolean; // 點擊滑放：深度等擊中時依擊球點高低決定（上手高遠／切球、下手挑球／放網）
 }
 
 export interface PlayerState {
@@ -324,7 +325,8 @@ export class Match {
         // 點擊滑放：不用蓄力，球種與深度由手勢決定；品質只看放開的時機
         family = flick.cmd.family;
         const dn = Math.abs(p.pos.z);
-        charge = chargeForDepth(flick.cmd.depth === 'smash' ? (dn > 2.5 ? 4.6 : 3.0) : flick.cmd.depth);
+        const cd = flick.cmd.depth;
+        charge = chargeForDepth(cd === 'smash' ? (dn > 2.5 ? 4.6 : 3.0) : cd === 'auto' ? autoDepth(family, GAME.highZoneY) : cd);
         if (this.phase === 'serve' && p.id === this.server) {
           // 發球：往上 = 發高遠球、其他 = 發小球（剛好過前發球線）
           family = family === 'up' ? 'up' : 'down';
@@ -359,6 +361,7 @@ export class Match {
         triggeredJump,
         dive: false,
         diveAuto: false,
+        auto: flick.cmd?.depth === 'auto',
       };
       p.charging = false;
       p.charge = 0;
@@ -771,6 +774,7 @@ export class Match {
       }
     }
     let charge = swing.preset ? swing.charge : Math.max(swing.charge, reboundCharge(incoming));
+    if (swing.auto) charge = chargeForDepth(autoDepth(swing.family, contact.y - p.pos.y));
     // 勉強接到（品質差、不是往下壓）→ 只能把球撈成一顆又高又慢、會晃的「機會球」到中場
     let family = swing.family;
     const weak = quality < 0.6 && !p.airborne && family !== 'down' && !stretchFail;
@@ -1216,6 +1220,14 @@ function timeQuality(t: number, f = 1): number {
   if (Math.abs(t - ideal) <= flat) return 1;
   if (t < ideal) return 1 - 0.2 * clamp((ideal - flat - t) / Math.max(0.01, ideal - flat) / f, 0, 1);
   return 1 - 0.28 * clamp((t - ideal - flat) / (GAME.swingWindow - ideal) / f, 0, 1);
+}
+
+/** 點擊滑放的深度：高點 = 上手（高遠球貼底線、切球），低點 = 下手（挑球、放網） */
+function autoDepth(family: Family, y: number): number {
+  const high = y >= GAME.highZoneY;
+  if (family === 'up') return high ? 6.3 : 6.1;
+  if (family === 'down') return high ? 1.2 : 0.9;
+  return 5.0;
 }
 
 /** 來球有多兇：硬伸手去接的難度 */

@@ -156,7 +156,8 @@ export class LocalControls {
       }
     } else if (!this.action) {
       const lt = this.lastTap;
-      pad.jump = !!lt && now - lt.t < DOUBLE_TAP_MS && Math.hypot(e.clientX - lt.x, e.clientY - lt.y) < DOUBLE_TAP_PX;
+      // 連按兩下 = 跳殺（只有蓄力划動用；點擊滑放的跳殺在「殺」搖桿）
+      pad.jump = this.scheme === 'charge' && !!lt && now - lt.t < DOUBLE_TAP_MS && Math.hypot(e.clientX - lt.x, e.clientY - lt.y) < DOUBLE_TAP_PX;
       this.lastTap = null;
       this.action = pad;
       this.pressFx(e.clientX, e.clientY, pad.jump);
@@ -231,12 +232,11 @@ export class LocalControls {
       const dx = a.x - a.ox;
       const dy = a.y - a.oy;
       if (this.scheme === 'tap' && Math.hypot(dx, dy) > SLIDE_PX) {
-        // 點擊滑放：放開的那一刻出拍。點一下 = 下手、點兩下 = 上手
-        this.pendingFlick = tapShot(dx, -dy, a.jump);
+        // 點擊滑放：放開的那一刻出拍。上手／下手由擊球點高低自動決定
+        this.pendingFlick = tapShot(dx, -dy);
       } else if (this.scheme === 'tap') {
-        // 只點不滑 = 平球（球快到身邊才出拍；球還遠就只是連按兩下的第一下）
+        // 只點不滑 = 平球（網前高於網 = 撲球）；球還沒到身邊就不算（避免太早亂點）
         this.pendingFlick = { x: 0, y: 0, cmd: { family: 'side', depth: 5.0, soft: true } };
-        if (performance.now() - a.downAt < TAP_MAX_MS) this.lastTap = { t: performance.now(), x: a.ox, y: a.oy };
       } else if (!a.flicked && performance.now() - a.downAt < TAP_MAX_MS) {
         // 沒划動、很快放開 = 點一下（可能是連按兩下的第一下）
         this.lastTap = { t: performance.now(), x: a.ox, y: a.oy };
@@ -531,8 +531,8 @@ export class LocalControls {
       this.labelEl.style.left = `${Math.max(half, Math.min(w - half, smashX))}px`;
       this.labelEl.style.top = `${smashY - 58}px`;
     } else if (showLabel && a) {
-      this.labelEl.textContent = a.jump ? '上手　↑高遠球　↓切球' : '下手　↑挑球　↓放小球';
-      this.labelEl.classList.toggle('over', a.jump);
+      this.labelEl.textContent = '↑ 高遠／挑球　↓ 切球／放網　←→ 平抽';
+      this.labelEl.classList.remove('over');
       this.labelEl.style.left = `${a.ox}px`;
       this.labelEl.style.top = `${a.oy - 86}px`;
     }
@@ -546,10 +546,9 @@ function mk(parent: HTMLElement, cls: string): HTMLElement {
   return el;
 }
 
-/** 點擊滑放的手勢 → 球種：下手（點一下）↑挑球 ↓放小球；上手（點兩下）↑高遠球 ↓切球；左右 = 平抽 */
-function tapShot(x: number, y: number, over: boolean): Flick {
+/** 點擊滑放的手勢 → 球種：↑ 高遠球／挑球、↓ 切球／放網（上手或下手看擊球點高低）、左右 = 平抽 */
+function tapShot(x: number, y: number): Flick {
   const nx = x / (Math.hypot(x, y) || 1);
   if (Math.abs(nx) >= 0.77) return { x, y, cmd: { family: 'side', depth: 5.0 } };
-  if (y > 0) return { x, y, cmd: { family: 'up', depth: over ? 6.3 : 6.1 } };
-  return { x, y, cmd: { family: 'down', depth: over ? 1.2 : 0.9 } };
+  return { x, y, cmd: { family: y > 0 ? 'up' : 'down', depth: 'auto' } };
 }
