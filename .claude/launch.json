@@ -4,29 +4,30 @@
     {
       "name": "badminton-dev",
       "runtimeExecutable": "npm",
-      "runtimeArgs": [
-        "run",
-        "dev",
-        "--",
-        "--port",
-        "5173",
-        "--strictPort"
-      ],
+      "runtimeArgs": ["run", "dev", "--", "--port", "5173", "--strictPort"],
       "port": 5173,
       "url": "http://localhost:5173"
     },
     {
       "name": "badminton-preview",
       "runtimeExecutable": "npx",
-      "runtimeArgs": [
-        "vite",
-        "preview",
-        "--port",
-        "4173",
-        "--strictPort"
-      ],
+      "runtimeArgs": ["vite", "preview", "--port", "4173", "--strictPort"],
       "port": 4173,
       "url": "http://localhost:4173"
+    },
+    {
+      "name": "badminton-4p-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--", "--port", "5175", "--strictPort"],
+      "port": 5175,
+      "url": "http://localhost:5175"
+    },
+    {
+      "name": "badminton-4p-rooms",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "server", "run", "dev"],
+      "port": 8787,
+      "url": "http://localhost:8787"
     }
   ]
 }

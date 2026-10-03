@@ -11,3 +11,12 @@ class_name = "Room"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Room"]
+
+# 遊戲大廳（所有公開房間的名單，一個物件）
+[[durable_objects.bindings]]
+name = "LOBBY"
+class_name = "Lobby"
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Lobby"]

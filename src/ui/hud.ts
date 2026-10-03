@@ -19,6 +19,9 @@ export class Hud {
   oppTag = 'AI';
   /** 訓練關卡進度（有值時記分板改顯示這個） */
   drill: { name: string; rep: number; reps: number; ok: number; goal: string } | null = null;
+  /** 觀戰：記分板兩邊都顯示真名（teamNames，以隊伍為索引），不顯示發球提示、蓄力條、自己的時機評價 */
+  spectator = false;
+  teamNames: [string, string] = ['', ''];
   private goal: HTMLElement;
 
   constructor(private root: HTMLElement) {
@@ -32,6 +35,7 @@ export class Hud {
   }
 
   onEvent(e: MatchEvent, match: Match, r: GameRenderer, humanId: PlayerId): void {
+    if (this.spectator) return this.onSpecEvent(e, match, r);
     const myTeam = match.teamOf(humanId);
     const we = match.doubles ? '你們' : '你';
     switch (e.type) {
@@ -89,6 +93,37 @@ export class Hud {
           const win = e.winner === myTeam;
           this.showBanner(win ? `${we}贏得這局！` : `${this.oppName} 贏得這局`, `局數 ${match.games[myTeam]} : ${match.games[myTeam === 0 ? 1 : 0]}`, win ? 'win' : 'lose', 1.8);
         }
+        break;
+    }
+  }
+
+  /** 觀戰：中立的字幕（球種＋球速、誰得分、誰贏得這局），顏色照隊伍（0 = 藍、1 = 紅） */
+  private onSpecEvent(e: MatchEvent, match: Match, r: GameRenderer): void {
+    switch (e.type) {
+      case 'hit': {
+        const at = r.project(v3(e.pos.x, e.pos.y + 0.6, e.pos.z));
+        const fast = (e.family === 'down' && e.speedKmh > 120) || e.jump;
+        let txt = (e.dive ? '魚躍救球・' : '') + e.name + (fast ? ` ${e.speedKmh} km/h` : '');
+        if (e.netFault) txt = `${e.name}（${e.powerShort ? '力道不足' : '擊球不佳'}）`;
+        this.float(txt, at.x, at.y, e.jump ? 'jump' : match.teamOf(e.player) === 0 ? 'me' : 'opp');
+        break;
+      }
+      case 'net': {
+        const at = r.project(v3(e.pos.x, e.pos.y + 0.5, e.pos.z));
+        this.float('掛網', at.x, at.y, 'miss');
+        break;
+      }
+      case 'land':
+        if (!e.inBounds) {
+          const at = r.project(v3(e.pos.x, 0.5, e.pos.z));
+          this.float('出界', at.x, at.y, 'miss');
+        }
+        break;
+      case 'point':
+        this.showBanner(e.reason, `${this.teamNames[e.winner]} 得分`, 'intro', 1.6);
+        break;
+      case 'game':
+        if (match.phase !== 'matchOver') this.showBanner(`${this.teamNames[e.winner]} 贏得這局`, `局數 ${match.games[0]} : ${match.games[1]}`, 'intro', 1.8);
         break;
     }
   }
@@ -153,6 +188,14 @@ export class Hud {
     if (d) {
       this.score.innerHTML = `<span>${d.name}</span><b>${Math.min(d.rep, d.reps)}/${d.reps}</b><span class="me">✔ ${d.ok}</span>`;
       this.goal.textContent = d.goal;
+    } else if (this.spectator) {
+      // 觀戰：左邊 = 畫面下方那隊（humanId 的隊伍），兩邊都是真名；顏色照隊伍（A 隊／房主藍、對方紅）
+      const name = (t: number) => `<span class="nm">${esc(this.teamNames[t])}</span>`;
+      const cls = (t: number) => (t === 0 ? 'me' : 'opp');
+      this.score.innerHTML =
+        `<span class="${cls(mine)}">${serveDot(mine)}${name(mine)}${multi ? `<small>${match.games[mine]}</small>` : ''}<b>${match.score[mine]}</b></span>` +
+        `<span class="sep">:</span>` +
+        `<span class="${cls(opp)}"><b>${match.score[opp]}</b>${multi ? `<small>${match.games[opp]}</small>` : ''}${name(opp)}${serveDot(opp)}</span>`;
     } else
       this.score.innerHTML =
         `<span class="me">${serveDot(mine)}${match.doubles ? '你們' : '你'}${multi ? `<small>${match.games[mine]}</small>` : ''}<b>${match.score[mine]}</b></span>` +
@@ -162,6 +205,13 @@ export class Hud {
     if (this.bannerTimer > 0) {
       this.bannerTimer -= dt;
       if (this.bannerTimer <= 0) this.banner.className = '';
+    }
+
+    if (this.spectator) {
+      // 觀眾沒有發球提示、蓄力條
+      this.hint.style.display = 'none';
+      this.meter.style.display = 'none';
+      return;
     }
 
     // 發球提示
@@ -196,6 +246,8 @@ export class Hud {
     }
   }
 }
+
+const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 /** 出拍時機：d = 比理想早多少（秒，正 = 早），flat = 完美的寬度 */
 function timingLabel(d: number, flat: number): string {

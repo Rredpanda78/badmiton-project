@@ -164,8 +164,8 @@ export function localSeats(r: QuadRoster, mySeat: number, myCid: string): boolea
  * 把一場 Match 設成 4 人線上：伺服器裁決、哪些球員是遠端、每個座位站的發球區、各人的擊球範圍
  * （別人的跑位設定也照著設，雙打分工 ballTaker 才會跟他自己手機上算的比較接近）
  */
-export function configureQuadMatch(m: Match, r: QuadRoster, mySeat: number, myCid: string, courts?: (1 | -1)[]): boolean[] {
-  const local = localSeats(r, mySeat, myCid);
+export function configureQuadMatch(m: Match, r: QuadRoster, mySeat: number, myCid: string, courts?: (1 | -1)[], spectator = false): boolean[] {
+  const local = spectator ? r.seats.map(() => false) : localSeats(r, mySeat, myCid); // 觀眾：四個人都是遠端
   m.arbitrated = true;
   let mask = 0;
   for (let seat = 0; seat < 4; seat++) {

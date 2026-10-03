@@ -163,6 +163,7 @@ export interface MatchSettings {
   // ---- 比賽設定畫面（開始比賽前選，記住上次的選擇）----
   matchType: 'singles' | 'doubles' | 'quad'; // 單打／雙打（實際比賽用 doubles 欄位）；quad = 線上雙打 4 人房（只有建立線上房間能選）
   allManual?: boolean; // 線上 4 人房：全員手動跑位（房主選）
+  roomPublic?: boolean; // 建立線上房間：公開到遊戲大廳（預設開；關掉 = 只能用房號進）
   venuePick: Venue | 'random'; // 比賽場地（隨機 = 每場隨機）
   myColor: string; // 自己的球衣色：'auto' = 球員原色，其他 = ui/colors.ts 色盤 id
   oppColor: string; // 對手（隊）球衣色：'random' = 隨機，其他 = 色盤 id
@@ -197,6 +198,7 @@ export const DEFAULT_SETTINGS: MatchSettings = {
   venue: 'sakura',
   matchType: 'singles',
   allManual: false,
+  roomPublic: true,
   venuePick: 'sakura',
   myColor: 'auto',
   oppColor: 'random',
