@@ -350,6 +350,7 @@ function handleEvent(e: MatchEvent): void {
       }
       break;
   }
+  renderer.fxEvent(e, match, live); // 殺球特效：擊球爆閃、飛行拖尾、落地爆炸（render/fx.ts）
   if (live) hud.onEvent(e, match, renderer, HUMAN);
   drill?.onEvent(e);
   tutorial?.onEvent(e);

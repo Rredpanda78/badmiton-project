@@ -1,11 +1,12 @@
 import * as THREE from 'three';
 import { CAMERA, COURT, GAME, type Venue } from '../config';
 import { ballTaker } from '../ai/doubles';
-import { flickNow, timeUntilInReach, type Match, type PlayerId } from '../sim/match';
+import { flickNow, timeUntilInReach, type Match, type MatchEvent, type PlayerId } from '../sim/match';
 import { v3, type Vec3 } from '../sim/physics';
 import { predictContact, type ContactHint } from './anim/contact';
 import { makeCourt } from './court';
 import { buildVenue, type Environment } from './environment';
+import { FxSystem } from './fx';
 import { PlayerModel, playerStyle } from './playerModel';
 import { makeShuttleMesh } from './shuttle';
 
@@ -38,8 +39,12 @@ export class GameRenderer {
   private target: THREE.Mesh;
   private baseFov = 40;
   private fovPunch = 0;
-  private bursts: { mesh: THREE.Mesh; t: number }[] = [];
-  private shakeAmt = 0;
+  private fx: FxSystem; // 擊球／殺球特效（render/fx.ts）
+  // 鏡頭震動：振幅隨時間平方衰減，幾個高頻正弦疊起來（比每幀亂數順、看得清楚）
+  private shakeAmp = 0;
+  private shakeDur = 0.25;
+  private shakeT = 1;
+  private shakePh = [0, 0, 0, 0];
   private camX = 0;
   private hemi: THREE.HemisphereLight;
   private sun: THREE.DirectionalLight;
@@ -70,8 +75,18 @@ export class GameRenderer {
     for (const m of this.models) this.scene.add(m.root);
 
     // 羽球：軟木頭在原點、羽毛往 +Y 展開
-    this.shuttle.add(makeShuttleMesh(SHUTTLE_SCALE));
+    const shuttleMesh = makeShuttleMesh(SHUTTLE_SCALE);
+    this.shuttle.add(shuttleMesh);
     this.scene.add(this.shuttle);
+
+    // 特效（殺球殘影共用羽球本體的幾何）
+    this.fx = new FxSystem((shuttleMesh.children[0] as THREE.Mesh).geometry, this.camera, {
+      shake: (amp, dur) => this.shake(amp, dur),
+      punch: (deg) => (this.fovPunch = Math.max(this.fovPunch, deg)),
+    });
+    this.scene.add(this.fx.group);
+    // 特效平常是隱藏的，shader 會等第一次殺球才編譯（手機上會卡一下）：先編好
+    this.renderer.compile(this.fx.group, this.camera, this.scene);
 
     this.shuttleShadow = new THREE.Mesh(
       new THREE.CircleGeometry(0.075, 16),
@@ -250,41 +265,70 @@ export class GameRenderer {
     }
     this.models = looks.map((l) => new PlayerModel(l.shirt, l.shorts, l.id ? playerStyle(l.id, l.racketColor, l.racket) : undefined));
     for (const m of this.models) this.scene.add(m.root);
+    this.fx.clear(); // 新的一場：上一場的焦痕、拖尾清掉
   }
 
   resetTrail(p: Vec3): void {
     for (const t of this.trailPts) t.set(p.x, p.y, p.z);
   }
 
-  /** 擊球特效：品質越好越大越金，殺球加鏡頭震動與視角衝擊 */
+  /** 擊球特效（一般球）：品質越好越大越金；殺球的特效在 fxEvent（render/fx.ts） */
   burst(p: Vec3, quality: number, smash: boolean, jump: boolean): void {
+    if (smash || jump) return;
     const perfect = quality >= 0.9;
     const poor = quality < 0.74;
-    const color = jump ? 0x7ff7ff : perfect ? 0xffd54a : poor ? 0x9aa4b0 : 0xffffff;
-    const size = jump ? 1.8 : smash ? 1.4 : perfect ? 1.25 : poor ? 0.7 : 1;
-    this.addFx(p, color, size, false);
-    if (perfect || smash || jump) this.addFx(p, 0xffffff, size * 0.6, false, 0.06);
-    if (smash || jump) {
-      this.shakeAmt = Math.max(this.shakeAmt, jump ? 0.18 : 0.12);
-      this.fovPunch = jump ? 3.5 : 2;
+    const color = perfect ? 0xffd54a : poor ? 0x9aa4b0 : 0xffffff;
+    const size = perfect ? 1.25 : poor ? 0.7 : 1;
+    this.fx.ring(p, color, size, false);
+    if (perfect) {
+      this.fx.ring(p, 0xffffff, size * 0.6, false, 0.06);
+      this.fx.sparkle(p, color);
     }
   }
 
   /** 落地揚塵 */
   dust(p: Vec3): void {
-    this.addFx(v3(p.x, 0.02, p.z), 0xd7dee8, 2.2, true);
+    this.fx.ring(v3(p.x, 0.02, p.z), 0xd7dee8, 2.2, true);
   }
 
-  private addFx(p: Vec3, color: number, size: number, flat: boolean, delay = 0): void {
-    const mesh = new THREE.Mesh(
-      new THREE.RingGeometry(0.05 * size, 0.09 * size, 28),
-      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false }),
-    );
-    mesh.position.set(p.x, p.y, p.z);
-    if (flat) mesh.rotation.x = -Math.PI / 2;
-    else mesh.lookAt(this.camera.position);
-    this.scene.add(mesh);
-    this.bursts.push({ mesh, t: -delay });
+  /**
+   * 比賽事件 → 畫面特效（main.ts 的 handleEvent 每個事件呼叫一次）。
+   * 殺球（往下壓且超過 120 km/h，或跳殺）：擊球點爆閃、震波、音爆圈、火花、螢幕閃光＋集中線、鏡頭震動；
+   * 飛行中能量拖尾＋殘影；落地炸開（地面震波、碎屑、焦痕，得分更大）。
+   * live = false（主選單示範）不閃螢幕、震動減半。跟擊中停頓無關（線上沒有停頓也一樣）。
+   */
+  fxEvent(e: MatchEvent, match: Match, live = true): void {
+    switch (e.type) {
+      case 'hit': {
+        const smash = !e.serve && ((e.family === 'down' && e.speedKmh > 120) || e.jump);
+        if (!smash) {
+          this.fx.endFlight();
+          break;
+        }
+        const chance = e.name === '機會殺球';
+        // 機會殺球的 jump 旗標不代表真的跳起來：看擊球的人是不是在空中
+        const electric = chance ? !!match.players[e.player]?.airborne : e.jump;
+        const near = e.pos.z * this.viewSide > 0;
+        this.fx.smash({ pos: e.pos, vel: e.vel, kmh: e.speedKmh, perfect: e.grade === '完美', electric, chance, near, live });
+        break;
+      }
+      case 'land':
+        this.fx.land(e.pos, e.inBounds);
+        break;
+      case 'net':
+        this.fx.net(e.pos);
+        break;
+    }
+  }
+
+  /** 鏡頭震動 amp 公尺、dur 秒（比現在還在震的小就忽略） */
+  shake(amp: number, dur = 0.25): void {
+    const env = Math.max(0, 1 - this.shakeT / this.shakeDur);
+    if (amp < this.shakeAmp * env * env) return;
+    this.shakeAmp = amp;
+    this.shakeDur = dur;
+    this.shakeT = 0;
+    for (let i = 0; i < 4; i++) this.shakePh[i] = Math.random() * Math.PI * 2;
   }
 
   update(match: Match, dt: number, showHint: boolean, humanId: PlayerId): void {
@@ -299,9 +343,16 @@ export class GameRenderer {
 
     // 鏡頭：在自己這側後上方，稍微跟著自己左右移動
     this.camX += (me.pos.x * this.pose.follow - this.camX) * Math.min(1, dt * 3);
-    const shake = this.shakeAmt;
-    this.shakeAmt = Math.max(0, this.shakeAmt - dt * 0.6);
-    this.placeCamera(this.camX, (Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+    this.shakeT += dt;
+    const env = Math.max(0, 1 - this.shakeT / this.shakeDur);
+    const amp = this.shakeAmp * env * env;
+    const st = this.shakeT;
+    const ph = this.shakePh;
+    this.placeCamera(
+      this.camX,
+      amp * (Math.sin(st * 57 + ph[0]) * 0.65 + Math.sin(st * 103 + ph[1]) * 0.35),
+      amp * (Math.sin(st * 49 + ph[2]) * 0.65 + Math.sin(st * 89 + ph[3]) * 0.35),
+    );
     if (this.target.visible) (this.target.material as THREE.MeshBasicMaterial).opacity = 0.32 + Math.sin(match.time * 4) * 0.08;
     if (this.fovPunch > 0 || this.camera.fov !== this.baseFov) {
       this.fovPunch = Math.max(0, this.fovPunch - dt * 25);
@@ -351,7 +402,7 @@ export class GameRenderer {
 
     // 拖尾
     const flying = sh.mode === 'flight' || sh.mode === 'netfall';
-    this.trail.visible = flying;
+    this.trail.visible = flying && !this.fx.smashing; // 殺球有自己的能量拖尾
     if (flying) {
       for (let i = TRAIL_LEN - 1; i > 0; i--) this.trailPts[i].copy(this.trailPts[i - 1]);
       this.trailPts[0].set(sh.pos.x, sh.pos.y, sh.pos.z);
@@ -401,23 +452,8 @@ export class GameRenderer {
       (this.serveBoxLine.material as THREE.LineBasicMaterial).opacity = 0.5 + Math.sin(match.time * 6) * 0.2;
     }
 
-    // 特效動畫
-    for (const b of this.bursts) {
-      b.t += dt;
-      if (b.t < 0) continue;
-      const s = 1 + b.t * 14;
-      b.mesh.scale.set(s, s, s);
-      (b.mesh.material as THREE.MeshBasicMaterial).opacity = Math.max(0, 0.9 - b.t * 3.5);
-    }
-    this.bursts = this.bursts.filter((b) => {
-      if (b.t > 0.3) {
-        this.scene.remove(b.mesh);
-        b.mesh.geometry.dispose();
-        (b.mesh.material as THREE.Material).dispose();
-        return false;
-      }
-      return true;
-    });
+    // 特效動畫（鏡頭已經擺好，粒子才能面向鏡頭）
+    this.fx.update(dt, sh, this.camera, window.innerWidth / Math.max(1, window.innerHeight));
   }
 
   render(): void {
