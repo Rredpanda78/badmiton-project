@@ -127,6 +127,12 @@ export class LocalControls {
 
   private onDown = (e: PointerEvent) => {
     if (!this.enabled) return;
+    // 電腦：滑鼠右鍵 = 「殺」搖桿（按住拖曳放開；只點 = 直線殺球；連按兩下 = 跳殺）
+    if (e.pointerType === 'mouse' && e.button === 2) {
+      if (this.scheme === 'tap') this.startSmash(e, this.surface);
+      e.preventDefault();
+      return;
+    }
     const touch = e.pointerType !== 'mouse';
     if (touch) this.isTouch = true;
     // 第一根手指按下 = 目前沒有其他手指在螢幕上 → 之前的搖桿一定是殘留的
@@ -219,6 +225,11 @@ export class LocalControls {
   };
 
   private onUp = (e: PointerEvent) => {
+    // 右鍵殺球（滑鼠）放開：觸控的殺球搖桿由按鈕自己的 pointerup 處理
+    if (this.smashPad?.id === e.pointerId && e.pointerType === 'mouse') {
+      this.onSmashUp(e);
+      return;
+    }
     const mv = this.move;
     if (mv?.id === e.pointerId) {
       // 移動搖桿快速點一下（沒怎麼拖）= 可能是連按兩下魚躍的第一下
@@ -250,7 +261,9 @@ export class LocalControls {
    * 往下／左右 = 殺球（左右決定落點）；往上 = 假殺真切（切球）。後場殺球、前場撲球。
    * 點一下再按住 = 跳殺待命（球快到時自動起跳，滯空時放開）
    */
-  private onSmashDown = (e: PointerEvent) => {
+  private onSmashDown = (e: PointerEvent) => this.startSmash(e, this.smashEl);
+
+  private startSmash(e: PointerEvent, captureEl: Element): void {
     if (!this.enabled) return;
     e.preventDefault();
     e.stopPropagation();
@@ -261,12 +274,12 @@ export class LocalControls {
     this.smashPad = { id: e.pointerId, ox: e.clientX, oy: e.clientY, x: e.clientX, y: e.clientY, flicked: false, jump, downAt: now };
     this.smashEl.classList.add('down');
     try {
-      this.smashEl.setPointerCapture(e.pointerId);
+      captureEl.setPointerCapture(e.pointerId);
     } catch {
       /* ignore */
     }
     this.onPress?.(jump);
-  };
+  }
 
   private onSmashUp = (e: PointerEvent) => {
     const s = this.smashPad;

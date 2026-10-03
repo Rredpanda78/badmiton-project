@@ -1024,3 +1024,44 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden) void checkUpdate();
 });
 void checkUpdate();
+
+// ---------- 加到主畫面（變成 App） ----------
+// iPhone：Safari 的「分享 → 加入主畫面」；Android Chrome：會給安裝提示，按「安裝成 App」就好
+{
+  const tip = document.createElement('div');
+  tip.id = 'a2hsTip';
+  document.body.appendChild(tip);
+  const standalone = matchMedia('(display-mode: standalone), (display-mode: fullscreen)').matches || (navigator as unknown as { standalone?: boolean }).standalone === true;
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  let dismissed = false;
+  try {
+    dismissed = localStorage.getItem('badminton.a2hs') === '1';
+  } catch {
+    /* ignore */
+  }
+  const close = () => {
+    tip.classList.remove('show');
+    try {
+      localStorage.setItem('badminton.a2hs', '1');
+    } catch {
+      /* ignore */
+    }
+  };
+  const show = (html: string) => {
+    if (standalone || dismissed) return;
+    tip.innerHTML = `${html}<button class="x" aria-label="關閉">×</button>`;
+    tip.querySelector('.x')!.addEventListener('click', close);
+    tip.classList.add('show');
+  };
+  if (ios) show('📲 把遊戲加到主畫面：點下方「分享」或「⋯」→「<b>加入主畫面</b>」，就能全螢幕、像 App 一樣玩');
+  // Android Chrome：攔下安裝提示，改成自己的按鈕
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    const ev = e as Event & { prompt: () => Promise<void> };
+    show('📲 可以把遊戲安裝成 App（全螢幕、主畫面有圖示）<button class="install">安裝成 App</button>');
+    tip.querySelector('.install')?.addEventListener('click', () => {
+      void ev.prompt();
+      close();
+    });
+  });
+}
