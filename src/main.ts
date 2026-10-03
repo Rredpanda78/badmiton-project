@@ -930,3 +930,24 @@ $('tutBtn').addEventListener('click', () => {
   else tutorial.button();
 });
 $('tutBtn2').addEventListener('click', () => toMenu());
+
+// ---------- 新版提示 ----------
+// GitHub Pages 的 index.html 會被瀏覽器快取 10 分鐘：打開或切回來時檢查有沒有新版，有就提示更新
+let lastUpdateCheck = 0;
+async function checkUpdate(): Promise<void> {
+  if (import.meta.env.DEV || Date.now() - lastUpdateCheck < 60_000) return;
+  lastUpdateCheck = Date.now();
+  try {
+    const html = await (await fetch(`${import.meta.env.BASE_URL}?v=${Date.now()}`, { cache: 'no-store' })).text();
+    const latest = html.match(/assets\/index-[\w-]+\.js/)?.[0];
+    const current = document.querySelector<HTMLScriptElement>('script[type="module"][src*="assets/index-"]')?.src;
+    if (latest && current && !current.endsWith(latest)) $('updateBar').classList.add('show');
+  } catch {
+    /* 離線就算了 */
+  }
+}
+$('updateBar').addEventListener('click', () => location.reload());
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) void checkUpdate();
+});
+void checkUpdate();
