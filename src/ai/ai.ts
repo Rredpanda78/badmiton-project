@@ -232,10 +232,14 @@ export class AIController {
     return this.match.doubles ? formationSpot(this.match, this.id) : { x: 0, z: this.me.side * 3.6 };
   }
 
+  /** 測試用：改寫「這球我接不接」（assigned = 分工的結果；4 人線上測試用來故意讓兩個隊友都去搶） */
+  takeHook: ((assigned: boolean) => boolean) | null = null;
+
   /** 這一球是不是我接（單打一定是；雙打看分工） */
   private takesBall(): boolean {
     if (!this.match.doubles) return true;
-    return ballTaker(this.match, this.me.team)?.id === this.id;
+    const assigned = ballTaker(this.match, this.me.team)?.id === this.id;
+    return this.takeHook ? this.takeHook(assigned) : assigned;
   }
 
   private serveInput(inp: PlayerInput): PlayerInput {

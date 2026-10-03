@@ -56,6 +56,7 @@
         <div class="section-title">球拍</div>
         <div id="racketCards" class="cards rackets"></div>
         <div id="kitSummary" class="kit-summary"></div>
+        <button id="rejoinBtn" class="primary rejoin" style="display: none"></button>
         <button id="startBtn" class="primary">開始比賽（對 AI）</button>
         <button id="tutorialBtn">新手教學</button>
         <button id="tourBtn">場館巡迴賽</button>
@@ -180,7 +181,8 @@
         <div class="setup-grid">
           <div class="field">
             <div class="section-title">模式</div>
-            <div class="seg fill" data-key="matchType"><button data-v="singles">單打</button><button data-v="doubles">雙打（你＋AI 夥伴）</button></div>
+            <div class="seg fill wrap3" data-key="matchType"><button data-v="singles">單打</button><button data-v="doubles">雙打（你＋AI 夥伴）</button><button data-v="quad">雙打（4 人）</button></div>
+            <p id="matchTypeHint" class="hint-line"></p>
           </div>
           <div class="field">
             <div class="section-title">難度</div>
@@ -188,6 +190,15 @@
               <button data-v="easy">簡單</button><button data-v="normal">普通</button><button data-v="hard">困難</button><button data-v="extreme">超難</button><button data-v="hell">地獄</button>
             </div>
             <p id="diffHint" class="hint-line"></p>
+          </div>
+          <div class="field">
+            <div class="section-title">跑位</div>
+            <div class="seg fill" data-key="allManual"><button data-v="false">各自選</button><button data-v="true">全員手動跑位</button></div>
+            <p class="hint-line">各自選 = 每個人用自己「你的跑位」的設定（自動／輔助／手動）</p>
+          </div>
+          <div class="field">
+            <div class="section-title">你的跑位</div>
+            <div class="seg fill" data-key="moveMode"><button data-v="auto">自動</button><button data-v="assist">輔助</button><button data-v="manual">手動</button></div>
           </div>
           <div class="field">
             <div class="section-title">場地</div>
@@ -247,7 +258,7 @@
     <div id="online" class="overlay">
       <div class="panel small">
         <h2>線上對戰</h2>
-        <p class="tag">跟朋友對打：建立房間時選單打或雙打（雙打 = 各帶一個 AI 隊友），再把房號或連結傳給對方。分數、局數、場地照房主的設定。</p>
+        <p class="tag">跟朋友對打：建立房間時選單打、雙打（各帶一個 AI 隊友）或雙打（4 人，2 對 2，空位可以 AI 補），再把房號或連結傳給朋友。分數、局數、場地照房主的設定。</p>
         <div class="online-me"><span id="onlineMe"></span><button id="onlinePickBtn">更換選手</button></div>
         <div id="onlineIdle">
           <button id="createRoomBtn" class="primary">建立房間</button>
@@ -260,9 +271,22 @@
           <div class="room-code-label">房號</div>
           <div id="roomCode" class="room-code"></div>
           <button id="shareRoomBtn">分享連結給朋友</button>
+          <div id="quadLobby" style="display: none"></div>
         </div>
         <p id="roomStatus" class="room-status"></p>
         <button id="onlineBackBtn">返回</button>
+      </div>
+    </div>
+
+    <div id="netWait" class="overlay">
+      <div class="panel small">
+        <h2 id="netWaitTitle"></h2>
+        <p id="netWaitText" class="room-status"></p>
+        <div id="netWaitCodeBox" class="net-wait-code"><span>房號</span><b id="netWaitCode"></b></div>
+        <button id="netWaitAi" class="primary">AI 接手繼續</button>
+        <button id="netWaitKeep">繼續等待</button>
+        <button id="netWaitShare">分享房號連結</button>
+        <button id="netWaitLeave">離開</button>
       </div>
     </div>
 

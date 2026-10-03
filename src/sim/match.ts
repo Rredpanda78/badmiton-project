@@ -100,6 +100,8 @@ export type MatchEvent =
       timingFlat?: number; // 算「完美」的寬度（秒）
       pressure?: number; // 被調動多少（0..1，球質因此變差）
       heat?: number; // 來球多快（0..1，接殺球的難度）
+      ct?: number; // 4 人線上：沿著來球飛了多久才擊中（tick 時間，裁決誰先打到用）
+      dist?: number; // 4 人線上：擊中時球員到球的水平距離（同時打到時比這個）
     }
   | { type: 'whiff'; player: PlayerId; reason: WhiffReason; airborne: boolean }
   | { type: 'jump'; player: PlayerId }
@@ -132,6 +134,15 @@ export interface ShuttleState {
   pace: number; // 來球有多兇（0..1）：殺球 1、撲／壓 0.8、平抽 0.5（硬伸手接的懲罰用）
   holdT: number; // 線上：這一球在對方球拍附近「等對方擊球」已經放慢了多久
   dilate: number; // 線上：自己打過去的球在本機放慢的倍率（整段飛行平均放慢，抵掉來回的網路延遲）
+  ft: number; // 這一球照確定軌跡飛了多久（tick 時間；放慢時走得比較少，跟 prediction 的 t 同一把尺）
+}
+
+/** 4 人線上：本機搶先打出去（還沒被伺服器確認）之前的狀態，被別人搶先時用來還原 */
+export interface PreLaunch {
+  shuttle: ShuttleState;
+  rallyHits: number;
+  phase: Phase;
+  phaseT: number;
 }
 
 const clamp = (x: number, a: number, b: number) => Math.max(a, Math.min(b, x));
@@ -200,6 +211,26 @@ export class Match {
   remote: 0 | 1 | null = null;
   /** 線上：單程網路延遲（模擬秒，OnlineSync 用 ping 量的） */
   netLag = 0;
+  /**
+   * 4 人線上：哪些球員是別支手機控制的（位元遮罩，bit i = i 號球員）。設了就取代 remote 的「整隊」判斷
+   * （4 人房每支手機只控制自己，房主另外控制 AI 補位的人）
+   */
+  remoteMask: number | null = null;
+  /**
+   * 4 人線上：比分由伺服器裁決。落地不在本機判分（進 await、等伺服器廣播的落地事件），
+   * 本機擊球先打出去（搶先顯示），被別人搶先時還原（preLaunch）
+   */
+  arbitrated = false;
+  /** 4 人線上：本機最近一次擊球前的狀態 */
+  preLaunch: PreLaunch | null = null;
+  /** 4 人線上：最近一次落地的判定（照確定軌跡算，每支手機都一樣）；t = 落地（掛網）時間 */
+  landClaim: { winner: TeamId; reason: string; t: number } | null = null;
+  /** 4 人線上：這位球員打出去的球在本機放慢的倍率（1 = 不放慢；sync4.ts 依各人的延遲算）。null = 用 2 人的規則 */
+  flightDilate: ((hitter: PlayerId) => number) | null = null;
+  /**
+   * 4 人線上：球到了遠端球員 id 附近，本機要放慢等他的擊球訊息多久（模擬秒；這球不是分給他接 = 0，見 quadHold）
+   */
+  holdNeed: ((id: PlayerId) => number) | null = null;
   private remoteStates = new Map<PlayerId, { rs: RemoteState; at: number }>();
 
   constructor(readonly settings: MatchSettings, seed = Date.now()) {
@@ -239,7 +270,7 @@ export class Match {
       chase: null,
     });
     this.players = settings.doubles && !settings.practice ? [mk(0, 1), mk(1, -1), mk(2, 1), mk(3, -1)] : [mk(0, 1), mk(1, -1)];
-    this.shuttle = { pos: v3(), vel: v3(), mode: 'held', lastHitter: null, isServe: false, serveBoxSign: 1, prediction: null, stepDt: PHYS.dt, launchTime: 0, wobble: false, attack: 0, pace: 0, holdT: 0, dilate: 1 };
+    this.shuttle = { pos: v3(), vel: v3(), mode: 'held', lastHitter: null, isServe: false, serveBoxSign: 1, prediction: null, stepDt: PHYS.dt, launchTime: 0, wobble: false, attack: 0, pace: 0, holdT: 0, dilate: 1, ft: 0 };
     if (settings.practice) this.enterDrillIdle();
     else this.setupServe();
   }
@@ -744,6 +775,8 @@ export class Match {
       stepDt: shot.stepDt,
       wobble: false,
       attack: 0,
+      ct: 0,
+      dist: 0,
     });
     this.phase = 'rally';
     this.phaseT = 0;
@@ -751,6 +784,7 @@ export class Match {
 
   private launch(p: PlayerState, vel: Vec3, stepDt: number, isServe: boolean): void {
     const sh = this.shuttle;
+    if (this.arbitrated) this.preLaunch = { shuttle: cloneShuttle(sh), rallyHits: this.rallyHits, phase: this.phase, phaseT: this.phaseT };
     sh.vel = copy3(vel);
     sh.mode = 'flight';
     sh.lastHitter = p.id;
@@ -761,11 +795,15 @@ export class Match {
     sh.attack = 0;
     sh.pace = 0;
     sh.holdT = 0;
+    sh.ft = 0;
     // 線上：自己打過去的球，對方要晚「單程延遲」才開始看到、擊球訊息再晚「單程延遲」才回來 →
     // 本機整段飛行平均放慢，讓球差不多在對方擊球訊息到的時候才飛到對方球拍附近
     sh.prediction = predict(sh.pos, sh.vel, stepDt);
     sh.dilate = 1;
-    if (GAME.online.dilate && this.remote !== null && this.teamOf(p.id) !== this.remote && sh.prediction && !sh.prediction.hitsNet) {
+    if (this.flightDilate) {
+      // 4 人線上：放慢多少看這球打向誰（接球那隊有本機的人就不放慢）
+      if (GAME.online.dilate && sh.prediction && !sh.prediction.hitsNet) sh.dilate = this.flightDilate(p.id);
+    } else if (GAME.online.dilate && this.remote !== null && this.teamOf(p.id) !== this.remote && sh.prediction && !sh.prediction.hitsNet) {
       const T = sh.prediction.landTime;
       sh.dilate = T > 0.05 ? T / (T + 2 * this.netLag) : 1;
     }
@@ -832,7 +870,9 @@ export class Match {
     const sh = this.shuttle;
     const pz = sh.pos.z;
     const py = sh.pos.y;
-    stepShuttle(sh.pos, sh.vel, sh.stepDt * sh.dilate * this.onlineHold());
+    const hold = this.onlineHold();
+    stepShuttle(sh.pos, sh.vel, sh.stepDt * sh.dilate * hold);
+    sh.ft += PHYS.dt * sh.dilate * hold;
     if (sh.mode === 'flight' && pz !== 0 && Math.sign(pz) !== Math.sign(sh.pos.z)) {
       const a = pz / (pz - sh.pos.z);
       const yCross = py + (sh.pos.y - py) * a;
@@ -941,6 +981,7 @@ export class Match {
     swing.contacted = true;
     swing.contactPoint = contact;
     swing.contactT = swing.t;
+    const ct = sh.ft; // 沿著來球飛了多久才擊中（launch 會歸零）
     this.launch(p, shot.vel, stepDt, false);
     sh.wobble = weak;
     sh.pace = paceOf(shot.name);
@@ -970,6 +1011,8 @@ export class Match {
       timingFlat: 0.035 * sf,
       pressure,
       heat,
+      ct,
+      dist,
     });
   }
 
@@ -1038,6 +1081,13 @@ export class Match {
       }
     }
     this.events.push({ type: 'land', pos: copy3(sh.pos), inBounds });
+    if (this.arbitrated) {
+      // 4 人線上：不在本機判分，照確定軌跡算出判定交給伺服器裁決（每支手機算出來都一樣），等廣播
+      this.landClaim = this.predictedVerdict() ?? { winner, reason, t: sh.ft };
+      this.phase = 'await';
+      this.phaseT = 0;
+      return;
+    }
     if (this.remote !== null && this.teamOf(hitter) !== this.remote) {
       // 線上：自己打出去的球由對方（接球方）判定，等對方的結果（避免兩邊各判一次）
       this.phase = 'await';
@@ -1052,6 +1102,29 @@ export class Match {
       return;
     }
     this.awardPoint(winner, reason);
+  }
+
+  /**
+   * 4 人線上：照這一球的確定軌跡（prediction，從擊球點＋初速算，跟本機有沒有放慢無關）判定，
+   * 所以每支手機送出的落地判定都一樣。沒有預測（測試手動擺的球）= null
+   */
+  private predictedVerdict(): { winner: TeamId; reason: string; t: number } | null {
+    const sh = this.shuttle;
+    const pred = sh.prediction;
+    if (!pred || sh.lastHitter === null) return null;
+    const hitTeam = this.teamOf(sh.lastHitter);
+    const other: TeamId = hitTeam === 0 ? 1 : 0;
+    if (pred.hitsNet) return { winner: other, reason: '掛網', t: pred.landTime };
+    const L = pred.landing;
+    if (!L) return null;
+    if ((L.z >= 0 ? 1 : -1) === this.players[sh.lastHitter].side) return { winner: other, reason: '未過網', t: pred.landTime };
+    const ax = Math.abs(L.x);
+    const az = Math.abs(L.z);
+    const tol = 0.03; // 壓線算好球
+    let inBounds = ax <= this.halfWidth + tol && az <= COURT.halfLength + tol;
+    if (sh.isServe) inBounds = inBounds && az >= COURT.shortService - tol && az <= this.serveLongLine + tol && L.x * sh.serveBoxSign >= -tol;
+    if (inBounds) return { winner: hitTeam, reason: sh.isServe ? '發球得分' : '落地得分', t: pred.landTime };
+    return { winner: other, reason: sh.isServe ? '發球失誤' : '出界', t: pred.landTime };
   }
 
   private awardPoint(winner: TeamId, reason: string, byRemote = false): void {
@@ -1250,6 +1323,7 @@ export class Match {
    * 判定是對方（接球方）做的，本機放慢不影響比分。
    */
   private onlineHold(): number {
+    if (this.remoteMask !== null) return this.quadHold();
     const sh = this.shuttle;
     if (this.remote === null || GAME.online.holdMax <= 0 || sh.mode !== 'flight' || sh.lastHitter === null) return 1;
     const rp = this.players[this.remote]; // 遠端隊伍的真人（單打 = 對手；雙打 = 對方玩家）
@@ -1263,6 +1337,36 @@ export class Match {
     return GAME.online.holdScale;
   }
 
+  /**
+   * 4 人線上：打向接球隊的球，接球隊有本機的人（這支手機看的是沒放慢的球）、球到了遠端那位隊友的球拍附近、
+   * 本機的人都搆不到 → 放慢（GAME.quadHold），等隊友的擊球訊息（不然球會先落地、收到擊球又彈回來）。
+   * 只影響這支手機的畫面；比分照伺服器裁決，擊中時間用 ft（照確定軌跡的時間）算，所以不會不公平
+   */
+  private quadHold(): number {
+    const sh = this.shuttle;
+    const H = GAME.quadHold;
+    if (H.max <= 0 || sh.mode !== 'flight' || sh.lastHitter === null || sh.holdT >= H.max) return 1;
+    const hitTeam = this.teamOf(sh.lastHitter);
+    const q = sh.pos;
+    if (sh.dilate < 1) return 1; // 這支手機已經整段放慢了（接球的人在別支手機上）
+    let near: PlayerState | null = null;
+    for (const p of this.players) {
+      if (p.team === hitTeam) continue;
+      if (q.z * p.side < 0.05) return 1; // 還沒過網
+      const remote = this.isRemote(p.id);
+      const d = Math.hypot(q.x - p.pos.x, q.z - p.pos.z);
+      if (d > this.reachOf(p) + H.margin + (p.dive ? GAME.dive.reachBonus + 1 : 0) || q.y > GAME.reachMaxY + 0.6 + p.pos.y) continue;
+      if (!remote) return 1; // 本機的人也搆得到：時間要準，不放慢
+      near = p;
+    }
+    if (!near) return 1;
+    // 要等多久（他的擊球傳過來的時間）；這球分給本機的人接（只是先經過隊友附近）= 0 → 不放慢，不然本機的人時機會不準
+    const need = this.holdNeed ? this.holdNeed(near.id) : H.max * (1 - H.scale);
+    if (sh.holdT * (1 - H.scale) >= need) return 1;
+    sh.holdT += PHYS.dt;
+    return H.scale;
+  }
+
   /** 對方最新的狀態（收到時的 match.time 一起存） */
   setRemoteState(id: PlayerId, rs: RemoteState): void {
     this.remoteStates.set(id, { rs, at: this.time });
@@ -1270,6 +1374,7 @@ export class Match {
 
   /** 這位球員是遠端（對方手機）控制的：線上對戰時整個對方隊伍（對方玩家＋他的 AI 隊友） */
   isRemote(id: PlayerId): boolean {
+    if (this.remoteMask !== null) return ((this.remoteMask >> id) & 1) === 1;
     return this.remote !== null && this.teamOf(id) === this.remote;
   }
 
@@ -1330,10 +1435,10 @@ export class Match {
    * 對方擊球：從擊球點用同樣的初速發出去（軌跡是確定的，兩邊算出來一樣），
    * 再往前補 lat 秒（訊息在路上的時間），讓兩邊的羽球位置對齊。
    */
-  applyRemoteHit(h: RemoteHit, lat: number): void {
-    if (this.remote === null || this.phase === 'matchOver') return;
+  applyRemoteHit(h: RemoteHit, lat: number, force = false): void {
+    if ((this.remote === null && this.remoteMask === null) || this.phase === 'matchOver') return;
     const p = this.players[h.player];
-    if (!p || !this.isRemote(p.id)) return;
+    if (!p || (!this.isRemote(p.id) && !force)) return; // force：4 人房伺服器裁決的擊球一定要套用
     if (h.serve && this.phase === 'point') this.afterPoint(); // 對方比較快：先把發球準備好
     const sh = this.shuttle;
     sh.pos = copy3(h.contact);
@@ -1379,13 +1484,34 @@ export class Match {
     for (let i = 0; i < n && sh.mode !== 'down' && this.phase === 'rally'; i++) this.advanceShuttle();
   }
 
-  /** 線上斷線重連後：從這個比分、這位發球，重新發球 */
-  resumePoint(score: [number, number], games: [number, number], server: PlayerId): void {
+  /** 線上斷線重連後：從這個比分、這位發球，重新發球（courts = 雙打每位球員站的發球區，4 人房一起同步） */
+  resumePoint(score: [number, number], games: [number, number], server: PlayerId, courts?: (1 | -1)[]): void {
     this.score = [score[0], score[1]];
     this.games = [games[0], games[1]];
     this.server = server;
     this.gameJustEnded = false;
+    if (courts) this.players.forEach((p, i) => (p.court = courts[i] ?? p.court));
     this.setupServe();
+  }
+
+  /** 4 人線上：伺服器裁決的落地 → 判這一分（每支手機照同樣的順序套用，比分一定一樣） */
+  applyArbitratedPoint(winner: TeamId, reason: string): void {
+    if (this.phase === 'matchOver') return;
+    const sh = this.shuttle;
+    if (sh.mode !== 'down') {
+      sh.mode = 'down';
+      sh.vel = v3();
+      sh.pos.y = Math.max(0, sh.pos.y);
+    }
+    this.awardPoint(winner, reason, true);
+  }
+
+  /** 4 人線上：本機搶先打的那一下沒被採用 → 還原成擊球前（來球的狀態），接著套用被採用的事件 */
+  restorePreLaunch(s: PreLaunch): void {
+    this.shuttle = cloneShuttle(s.shuttle);
+    this.rallyHits = s.rallyHits;
+    this.phase = s.phase;
+    this.phaseT = s.phaseT;
   }
 
   /** 對方（接球方）判定這一分；score/games 是判定後的比分（本機 id 順序），以判定方為準 */
@@ -1413,6 +1539,10 @@ export class Match {
     this.events = [];
     return e;
   }
+}
+
+function cloneShuttle(s: ShuttleState): ShuttleState {
+  return { ...s, pos: copy3(s.pos), vel: copy3(s.vel) };
 }
 
 /** 羽球還要多久會進入這位球員目前的擊球範圍（UI 提示用）；不會進入則 null */

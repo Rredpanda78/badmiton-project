@@ -458,7 +458,9 @@ export class GameRenderer {
     // 羽球
     const sh = match.shuttle;
     // 線上：收到對方擊球時，球從本機看到的位置滑順地接到對方的擊球點（不要瞬移），約 0.1 秒收斂
-    if (match.remote !== null && match.hitSerial !== this.shSerial && sh.lastHitter === match.remote && this.shSerial >= 0) {
+    // （4 人房：別支手機上的人打的都算，包含本機搶先的那一下被別人的取代）
+    const remoteHit = match.remoteMask !== null ? sh.lastHitter !== null && match.isRemote(sh.lastHitter) : sh.lastHitter === match.remote;
+    if ((match.remote !== null || match.remoteMask !== null) && match.hitSerial !== this.shSerial && remoteHit && this.shSerial >= 0) {
       this.shOffset.set(this.shuttle.position.x - sh.pos.x, this.shuttle.position.y - sh.pos.y, this.shuttle.position.z - sh.pos.z);
       if (this.shOffset.length() > 2.5) this.shOffset.set(0, 0, 0);
     }
