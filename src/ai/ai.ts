@@ -1,5 +1,5 @@
 import { chargeFromTime, COURT, GAME, PHYS, timeForCharge, type Difficulty } from '../config';
-import { idleInput, type Match, type PlayerId, type PlayerInput } from '../sim/match';
+import { idealContactFor, idleInput, type Match, type PlayerId, type PlayerInput } from '../sim/match';
 import type { Prediction } from '../sim/physics';
 import { chargeForDepth, depthFromCharge, reboundCharge, type Family, type Flick } from '../sim/shots';
 import { ballTaker, formationSpot, isLift } from './doubles';
@@ -294,7 +294,7 @@ export class AIController {
     const pt = pred.points[pick.i].p;
     const dn = Math.abs(pt.z);
     const contactAt = pick.tAbs;
-    const flickAt = contactAt - GAME.idealContactT + rng.gauss() * p.timingJitter;
+    const flickAt = contactAt - idealContactFor(pt.y - this.me.pos.y) + rng.gauss() * p.timingJitter;
     // 來不及蓄滿就改打需要較少力道的球（放網／擋網前）；快球有反彈力可借
     const pts = pred.points;
     const j = Math.min(pick.i + 1, pts.length - 1);

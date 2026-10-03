@@ -33,6 +33,7 @@ export interface Swing {
   dive: boolean; // 魚躍撲救時的揮拍（撲出去的整段都能擊中）
   diveAuto: boolean; // 魚躍時沒有另外划 → 自動挑回
   auto?: boolean; // 點擊滑放：深度等擊中時依擊球點高低決定（上手高遠／切球、下手挑球／放網）
+  smash?: boolean; // 「殺」搖桿：擊中時依擊球點決定殺球／撲球／下壓
 }
 
 /**
@@ -426,6 +427,7 @@ export class Match {
         dive: false,
         diveAuto: false,
         auto: flick.cmd?.depth === 'auto',
+        smash: flick.cmd?.depth === 'smash',
       };
       p.charging = false;
       p.charge = 0;
@@ -759,8 +761,8 @@ export class Match {
   }
 
   /** 擊球品質：時機（划動後 idealContactT 最好）× 位置（0.25~0.85 m 最好） */
-  private contactQuality(p: PlayerState, t: number, dist: number): number {
-    return timeQuality(t, setFactor(p)) * posQuality(dist, this.reachOf(p));
+  private contactQuality(p: PlayerState, t: number, dist: number, y = this.shuttle.pos.y): number {
+    return timeQuality(t, setFactor(p), idealContactFor(y - p.pos.y)) * posQuality(dist, this.reachOf(p));
   }
 
   private updateRally(): void {
@@ -819,7 +821,7 @@ export class Match {
     const swing = p.swing!;
     const sh = this.shuttle;
     // 在空中擊中：越接近跳躍最高點越好。划動直接起跳的那一下只看這個；先起跳再划的取兩者較好的
-    let qTime = timeQuality(swing.t, setFactor(p));
+    let qTime = timeQuality(swing.t, setFactor(p), idealContactFor(sh.pos.y - p.pos.y));
     if (p.airborne) {
       const apexQ = 1 - 0.35 * clamp(Math.abs(this.time - p.takeoffAt - jumpApexTime()) / 0.15, 0, 1);
       qTime = swing.triggeredJump ? apexQ : Math.max(qTime, apexQ);
@@ -870,6 +872,15 @@ export class Match {
       family = 'down';
       charge = chargeForDepth(GAME.intercept.depth);
       intercept = true;
+    }
+    // 「殺」搖桿：擊中時依擊球點決定 — 上手高球不論前後場都是殺球；網前比網高的球 = 撲球；其他 = 下壓
+    if (swing.smash && !weak && !stretchFail && family === 'down') {
+      const h = contact.y - p.pos.y;
+      if (h >= GAME.highZoneY && dnC >= 1.2) charge = chargeForDepth(dnC > 2.5 ? 4.6 : 4.0);
+      else if (dnC < GAME.netKill.zone && contact.y >= COURT.netTop + 0.05) {
+        charge = chargeForDepth(GAME.netKill.depth);
+        killCap = GAME.netKill.maxSpeed;
+      } else charge = chargeForDepth(4.4);
     }
     const attackIn = sh.attack; // 對方送來的球有多好打（不到位的高球、機會球）
     const shot = resolveShot({ side: p.side, contact, family, aimX: swing.aimX, charge, quality, serve: null, jump: p.airborne, kit: p.kit, killCap }, this.rng);
@@ -1292,6 +1303,11 @@ export class Match {
 
 /** 羽球還要多久會進入這位球員目前的擊球範圍（UI 提示用）；不會進入則 null */
 export function timeUntilInReach(m: Match, id: PlayerId): number | null {
+  return reachInfo(m, id)?.t ?? null;
+}
+
+/** 羽球什麼時候、在多高（離腳的高度）進入這位球員的擊球範圍；不會進入則 null */
+export function reachInfo(m: Match, id: PlayerId): { t: number; y: number } | null {
   const sh = m.shuttle;
   const p = m.players[id];
   if (sh.mode !== 'flight' || m.hitByTeam(p.team) || !sh.prediction) return null;
@@ -1300,9 +1316,20 @@ export function timeUntilInReach(m: Match, id: PlayerId): number | null {
     if (pt.t < elapsed) continue;
     const q = pt.p;
     if (q.z * p.side < 0.05 || q.y < GAME.reachMinY + p.pos.y || q.y > GAME.reachMaxY + p.pos.y) continue;
-    if (Math.hypot(q.x - p.pos.x, q.z - p.pos.z) <= GAME.reach * p.reachMul) return pt.t - elapsed;
+    if (Math.hypot(q.x - p.pos.x, q.z - p.pos.z) <= GAME.reach * p.reachMul) return { t: pt.t - elapsed, y: q.y - p.pos.y };
   }
   return null;
+}
+
+/** 出拍到擊中的理想時間：下手（擊球點低於網子：放網、挑球）拍子揮得短，要晚一點放開 */
+export function idealContactFor(y: number): number {
+  return y < COURT.netTop ? GAME.idealContactTLow : GAME.idealContactT;
+}
+
+/** 出拍時機是不是「現在」（腳邊圈變綠的提示、教學暫停用） */
+export function flickNow(m: Match, id: PlayerId, slack: number): boolean {
+  const r = reachInfo(m, id);
+  return r !== null && r.t <= idealContactFor(r.y) + slack;
 }
 
 /** 時機分數：划動後 GAME.idealContactT 擊中最好；划太晚（球已經在身邊）扣分較少，划太早扣較多 */
@@ -1317,9 +1344,8 @@ function setFactor(p: PlayerState): number {
   return 0.8 + 0.6 * set;
 }
 
-function timeQuality(t: number, f = 1): number {
+function timeQuality(t: number, f = 1, ideal = GAME.idealContactT): number {
   // 理想時機前後各 0.035 秒內都算滿分；超出後扣分也比較溫和（判定放寬）
-  const ideal = GAME.idealContactT;
   const flat = 0.035 * f;
   if (Math.abs(t - ideal) <= flat) return 1;
   if (t < ideal) return 1 - 0.2 * clamp((ideal - flat - t) / Math.max(0.01, ideal - flat) / f, 0, 1);

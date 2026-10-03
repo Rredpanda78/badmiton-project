@@ -1,7 +1,7 @@
 // 新手教學：固定流程，一步一步教每個搖桿、每個方向。
 // 球快到時畫面會「暫停」，等玩家照提示操作才繼續；做錯就重來那一步。
 import { GAME, type ControlScheme } from '../config';
-import { jumpApexTime, timeUntilInReach, type Match, type MatchEvent, type PlayerInput } from '../sim/match';
+import { flickNow, jumpApexTime, type Match, type MatchEvent, type PlayerInput } from '../sim/match';
 import { chargeForDepth } from '../sim/shots';
 
 export type TutHighlight = 'move' | 'action' | 'smash' | 'dive' | null;
@@ -343,8 +343,7 @@ export class TutorialRunner {
     } else {
       if (st.freeze === 'jump' && me.airborne) freeze = m.time - me.takeoffAt >= jumpApexTime() * 0.8;
       else {
-        const tIn = timeUntilInReach(m, 0);
-        freeze = tIn !== null && tIn <= GAME.idealContactT + 0.01;
+        freeze = flickNow(m, 0, 0.01);
       }
     }
     if (!freeze) return false;

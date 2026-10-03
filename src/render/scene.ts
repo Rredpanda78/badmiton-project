@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { CAMERA, COURT, GAME, type Venue } from '../config';
 import { ballTaker } from '../ai/doubles';
-import { timeUntilInReach, type Match, type PlayerId } from '../sim/match';
+import { flickNow, timeUntilInReach, type Match, type PlayerId } from '../sim/match';
 import { v3, type Vec3 } from '../sim/physics';
 import { predictContact, type ContactHint } from './anim/contact';
 import { makeCourt } from './court';
@@ -377,7 +377,7 @@ export class GameRenderer {
     const tIn = incoming && match.phase === 'rally' ? timeUntilInReach(match, humanId) : null;
     const mineToTake = !match.doubles || taker === humanId || tIn !== null;
     if (incoming && match.phase === 'rally' && mineToTake) {
-      const now = tIn !== null && tIn <= GAME.idealContactT + 0.05;
+      const now = tIn !== null && flickNow(match, humanId, 0.05);
       this.reachRing.visible = true;
       this.reachRing.position.set(me.pos.x, 0.011, me.pos.z);
       this.reachRing.scale.setScalar(me.reachMul);

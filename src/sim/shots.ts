@@ -119,6 +119,8 @@ export function resolveShot(req: ShotRequest, rng: Rng): ShotResult {
   const y0 = contact.y;
 
   let name = shotName(family, y0, dn, D, !!req.serve);
+  // 平球在網前變的撲球：就算擊球點很高也維持撲球（限速），不會變成超快殺球
+  if (req.killCap && name === '殺球') name = '撲球';
   // 在空中往下壓：後場叫跳殺；網前叫跳撲（仍套用撲球限速）
   const jumpSmash = req.jump && (name === '殺球' || name === '撲球');
   if (jumpSmash) name = name === '撲球' ? '跳撲' : '跳殺';
@@ -177,7 +179,9 @@ function shotName(family: Family, y: number, dn: number, D: number, serve: boole
   const aboveNet = y >= COURT.netTop;
   if (family === 'up') return high ? '高遠球' : '挑球';
   if (family === 'side') return high && D > 4.5 ? '平高球' : '平抽';
-  // 靠網 2.5 m 內往下壓到中後場都算撲球（會被限速），不論擊球點多高
+  // 上手高球往下壓：中前場也是殺球（只有貼網 1.2 m 內才算撲球）
+  if (high && dn >= 1.2 && D >= 2.6) return '殺球';
+  // 靠網 2.5 m 內、比網高的球往下壓到中後場算撲球（會被限速）
   if (aboveNet && dn < 2.5 && D >= 2.6) return '撲球';
   if (high) return D < 2.6 ? '切球' : '殺球';
   if (aboveNet) return D < 2.6 ? '切球' : '下壓';

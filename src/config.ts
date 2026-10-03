@@ -41,6 +41,7 @@ export const GAME = {
   swingWindow: 0.2, // 划動後這段時間內羽球進入範圍就會擊中
   swingDuration: 0.32,
   idealContactT: 0.07, // 划動後這麼久擊中最完美（拍子需要時間揮過來）
+  idealContactTLow: 0.04, // 下手球（擊球點低於網：放網、挑球）拍子揮得短，完美時機晚一點
   flickBuffer: 0.08, // 揮拍／硬直結束前這段時間內划的會被保留
   softTapLead: 0.32, // 點擊滑放「只點不滑」：羽球這麼久內會到身邊才出拍（否則當作連按兩下的第一下）
   whiffRecover: 0.15,
