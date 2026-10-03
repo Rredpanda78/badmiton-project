@@ -108,7 +108,8 @@ export type ControlScheme = 'charge' | 'tap';
 
 export type Venue = 'indoor' | 'bamboo' | 'sakura' | 'night' | 'market' | 'paddy' | 'beach';
 
-export type Difficulty = 'easy' | 'normal' | 'hard';
+/** 難度：簡單／普通／困難／超難／地獄 */
+export type Difficulty = 'easy' | 'normal' | 'hard' | 'extreme' | 'hell';
 
 export interface MatchSettings {
   difficulty: Difficulty;
@@ -124,7 +125,12 @@ export interface MatchSettings {
   autoMove: boolean; // 簡單模式：自動跑位，只控制擊球
   autoDive: boolean; // 自動跑位時由電腦自動魚躍（否則左邊划動自己撲）
   scheme: ControlScheme; // 擊球操作方式
-  venue: Venue; // 場地
+  venue: Venue; // 場地（訓練、教學、線上房主、選單背景用；比賽設定選「隨機」時不變）
+  // ---- 比賽設定畫面（開始比賽前選，記住上次的選擇）----
+  matchType: 'singles' | 'doubles'; // 單打／雙打（實際比賽用 doubles 欄位）
+  venuePick: Venue | 'random'; // 比賽場地（隨機 = 每場隨機）
+  myColor: string; // 自己的球衣色：'auto' = 球員原色，其他 = ui/colors.ts 色盤 id
+  oppColor: string; // 對手（隊）球衣色：'random' = 隨機，其他 = 色盤 id
   aiCharacter?: string; // 對手（每場隨機）
   aiRacket?: string;
   practice?: boolean; // 練習模式：發球機餵球、不計分
@@ -151,6 +157,10 @@ export const DEFAULT_SETTINGS: MatchSettings = {
   autoDive: false,
   scheme: 'tap',
   venue: 'sakura',
+  matchType: 'singles',
+  venuePick: 'sakura',
+  myColor: 'auto',
+  oppColor: 'random',
 };
 
 /**

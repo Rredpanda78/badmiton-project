@@ -15,13 +15,25 @@ interface AIParams {
   killRate: number; // 網前高球選擇撲殺的比例
   jumpRate: number; // 高球殺球時改用跳殺的比例
   diveRate: number; // 跑不到的低球改用魚躍撲救的比例
+  aimWide: number; // 打空檔時往邊線瞄多寬（1 = 標準；超難、地獄更貼邊線）
 }
 
-const PARAMS: Record<Difficulty, AIParams> = {
-  easy: { reaction: 0.38, speedMul: 0.78, depthNoise: 0.9, timingJitter: 0.05, outJudge: 0.5, smartAim: 0.35, smashBias: 0.6, killRate: 0.25, jumpRate: 0, diveRate: 0.2 },
-  normal: { reaction: 0.25, speedMul: 0.9, depthNoise: 0.5, timingJitter: 0.04, outJudge: 0.8, smartAim: 0.7, smashBias: 1, killRate: 0.4, jumpRate: 0.15, diveRate: 0.6 },
-  hard: { reaction: 0.15, speedMul: 1.0, depthNoise: 0.3, timingJitter: 0.025, outJudge: 0.95, smartAim: 0.9, smashBias: 1.2, killRate: 0.55, jumpRate: 0.35, diveRate: 0.9 },
+/**
+ * 各難度的 AI 參數（測試腳本會讀／覆寫，所以 export）。
+ * 超難、地獄：反應更快、落點與出拍時機更準、出界球幾乎不碰、更常打空檔、多殺多撲多跳殺、跑不到就撲；
+ * speedMul > 1 = 跑速／起步比同一位球員快一點（搖桿推滿也追不上的那一點點）
+ */
+export const DIFFICULTY_PARAMS: Record<Difficulty, AIParams> = {
+  easy: { reaction: 0.38, speedMul: 0.78, depthNoise: 0.9, timingJitter: 0.05, outJudge: 0.5, smartAim: 0.35, smashBias: 0.6, killRate: 0.25, jumpRate: 0, diveRate: 0.2, aimWide: 1 },
+  normal: { reaction: 0.25, speedMul: 0.9, depthNoise: 0.5, timingJitter: 0.04, outJudge: 0.8, smartAim: 0.7, smashBias: 1, killRate: 0.4, jumpRate: 0.15, diveRate: 0.6, aimWide: 1 },
+  hard: { reaction: 0.15, speedMul: 1.0, depthNoise: 0.3, timingJitter: 0.025, outJudge: 0.95, smartAim: 0.9, smashBias: 1.2, killRate: 0.55, jumpRate: 0.35, diveRate: 0.9, aimWide: 1 },
+  extreme: { reaction: 0.1, speedMul: 1.02, depthNoise: 0.2, timingJitter: 0.015, outJudge: 0.98, smartAim: 0.95, smashBias: 1.35, killRate: 0.65, jumpRate: 0.45, diveRate: 0.95, aimWide: 1.06 },
+  hell: { reaction: 0.055, speedMul: 1.05, depthNoise: 0.12, timingJitter: 0.008, outJudge: 0.995, smartAim: 0.98, smashBias: 1.5, killRate: 0.75, jumpRate: 0.55, diveRate: 1, aimWide: 1.12 },
 };
+const PARAMS = DIFFICULTY_PARAMS;
+
+/** 難度由低到高（aiLevel 的 0..4） */
+export const DIFFICULTIES: Difficulty[] = ['easy', 'normal', 'hard', 'extreme', 'hell'];
 
 
 /** AI 打法個性：各球種選擇權重倍率＋跳殺、假動作、穩定度 */
@@ -45,14 +57,14 @@ export const STYLES: Record<string, AIStyle> = {
   trickster: { name: '假動作大師', smash: 1, drop: 1.5, clear: 1, drive: 1, jump: 0.1, feint: 0.45, steady: 0.9 },
 };
 
-/** 難度連續值：0 = 簡單、1 = 普通、2 = 困難（中間線性內插），巡迴賽用 */
+/** 難度連續值：0 = 簡單、1 = 普通、2 = 困難、3 = 超難、4 = 地獄（中間線性內插），巡迴賽用 */
 export function aiLevel(t: number): AIParams {
-  const keys: Difficulty[] = ['easy', 'normal', 'hard'];
-  const c = Math.max(0, Math.min(2, t));
-  const i = Math.min(1, Math.floor(c));
+  const top = DIFFICULTIES.length - 1;
+  const c = Math.max(0, Math.min(top, t));
+  const i = Math.min(top - 1, Math.floor(c));
   const u = c - i;
-  const a = PARAMS[keys[i]];
-  const b = PARAMS[keys[i + 1]];
+  const a = PARAMS[DIFFICULTIES[i]];
+  const b = PARAMS[DIFFICULTIES[i + 1]];
   const out = {} as AIParams;
   for (const k of Object.keys(a) as (keyof AIParams)[]) out[k] = a[k] + (b[k] - a[k]) * u;
   return out;
@@ -102,6 +114,17 @@ export class AIController {
     private style: AIStyle = STYLES.allround,
   ) {
     this.p = typeof difficulty === 'number' ? aiLevel(difficulty) : PARAMS[difficulty];
+    // speedMul > 1（地獄）：搖桿推滿也只有 1，所以直接把這位 AI 的跑速／起步加成（只有這位，自動跑位不會）
+    const boost = Math.max(1, this.p.speedMul);
+    if (boost > 1 && !moveOnly) {
+      const k = this.me.kit;
+      this.me.kit = { ...k, move: k.move * boost, accel: k.accel * boost };
+    }
+  }
+
+  /** 搖桿推多少（speedMul ≤ 1 = 跑慢一點；> 1 的部分已經加在 kit 上） */
+  private get stickMul(): number {
+    return Math.min(1, this.p.speedMul);
   }
 
   private get me() {
@@ -223,7 +246,8 @@ export class AIController {
 
   private flickFor(family: Family, aimX: number): Flick {
     if (family === 'side') return { x: Math.sign(aimX || 1), y: 0.05 };
-    const nx = Math.max(-0.7, Math.min(0.7, aimX / 1.15));
+      const lim = 0.7 * this.p.aimWide; // 超難／地獄瞄得更貼邊線
+    const nx = Math.max(-lim, Math.min(lim, aimX / 1.15));
     const ny = Math.sqrt(1 - nx * nx);
     return { x: nx, y: family === 'up' ? ny : -ny };
   }
@@ -234,7 +258,7 @@ export class AIController {
     const dz = z - me.pos.z;
     const d = Math.hypot(dx, dz);
     if (d < 0.05) return;
-    const s = Math.min(1, d / 0.35) * this.p.speedMul * urgency;
+    const s = Math.min(1, d / 0.35) * this.stickMul * urgency;
     // 世界座標 → 自己視角
     inp.moveX = (dx / d) * me.side * s;
     inp.moveY = (-dz / d) * me.side * s;
@@ -262,7 +286,7 @@ export class AIController {
       if (margin >= 0 && margin < 0.3 && rng.chance((1 - p.outJudge) * 0.4)) return leavePlan();
     }
 
-    const speed = GAME.moveSpeed * p.speedMul * me.kit.move;
+    const speed = GAME.moveSpeed * this.stickMul * me.kit.move;
     type Cand = { score: number; i: number; tAbs: number; sx: number; sz: number };
     let best: Cand | null = null;
     let fallback: Cand | null = null;
@@ -362,7 +386,7 @@ export class AIController {
     const p = this.p;
     const D = GAME.dive;
     if (!this.match.rng.chance(this.moveOnly ? 1 : p.diveRate)) return null;
-    const speed = GAME.moveSpeed * p.speedMul * me.kit.move;
+    const speed = GAME.moveSpeed * this.stickMul * me.kit.move;
     const reach = GAME.reach * me.reachMul;
     // 用跑的其實搆得到就不撲；但快球（殺球）硬伸手接球質很差，要能「舒服地」接到才不撲
     const sh = this.match.shuttle;
@@ -450,7 +474,7 @@ export class AIController {
       oppFront = Math.abs(opp.pos.z) < 3.0;
       // 打對手空檔：對手在我視角的左右
       const oppAim = (opp.pos.x * me.side) / 2.3;
-      aimX = rng.chance(this.p.smartAim) ? -Math.sign(oppAim || rng.next() - 0.5) * rng.range(0.45, 0.85) : rng.range(-0.8, 0.8);
+      aimX = rng.chance(this.p.smartAim) ? -Math.sign(oppAim || rng.next() - 0.5) * rng.range(0.45, 0.85) * this.p.aimWide : rng.range(-0.8, 0.8);
     }
 
     // 權重再乘上「打法個性」和「自己哪種球比較快」（會多打自己的強項）

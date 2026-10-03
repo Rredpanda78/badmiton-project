@@ -803,6 +803,147 @@ h2 {
 .card {
   width: 104px;
 }
+/* 卡片上的 3D 小圖（球員：同比例看得出身高；球拍：外型照取捨） */
+.card .thumb {
+  position: relative;
+  height: 104px;
+  margin: -2px -2px 4px;
+  border-radius: 9px;
+  background: radial-gradient(ellipse at 50% 85%, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.03) 70%);
+  overflow: hidden;
+}
+.card .thumb img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+.card .thumb img:not([src]),
+.card .thumb img[src=''] {
+  visibility: hidden;
+}
+.card.on .thumb {
+  background: radial-gradient(ellipse at 50% 85%, rgba(255, 213, 74, 0.3), rgba(255, 213, 74, 0.04) 70%);
+}
+
+/* 比賽設定、設定畫面打開時不顯示「加到主畫面」提示（會蓋住下面的按鈕） */
+body:has(#setup.show) #a2hsTip,
+body:has(#settings.show) #a2hsTip {
+  display: none;
+}
+
+/* 比賽設定 */
+.panel.wide {
+  width: min(460px, 100%);
+}
+.setup-grid .field {
+  margin-bottom: 4px;
+}
+.setup-grid .section-title {
+  margin: 10px 0 5px;
+}
+.seg.fill {
+  width: 100%;
+}
+.seg.fill button {
+  flex: 1 1 0;
+  padding: 8px 4px;
+  white-space: nowrap;
+}
+.seg.wrap4 {
+  flex-wrap: wrap;
+}
+.seg.wrap4 button {
+  flex: 1 0 25%;
+}
+.seg.diff button[data-v='extreme'].on {
+  background: #e8862a;
+}
+.seg.diff button[data-v='hell'].on {
+  background: #c8222a;
+}
+.setup-grid .hint-line {
+  margin: 5px 0 0;
+  min-height: 1.5em;
+}
+.swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.swatch-btn {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  background: var(--c);
+  color: #fff;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+.swatch-btn.on {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.swatch-btn.on::after {
+  content: '✓';
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 15px;
+}
+.swatch-btn.light.on::after {
+  color: #1a1a1a;
+  text-shadow: none;
+}
+/* 文字款（原色、隨機）：寬一點的膠囊 */
+.swatch-btn.text {
+  width: auto;
+  padding: 0 10px;
+  border-radius: 17px;
+}
+.swatch-btn.text.on::after {
+  content: none;
+}
+.swatches .swatch-btn:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+.swatch-btn:disabled::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 3px;
+  bottom: 3px;
+  width: 2px;
+  background: rgba(255, 255, 255, 0.85);
+  transform: rotate(45deg);
+}
+.panel button.primary.big {
+  padding: 15px;
+  font-size: 19px;
+  letter-spacing: 2px;
+}
+/* 橫向手機／寬螢幕：設定排成兩欄 */
+@media (min-width: 700px) and (orientation: landscape) {
+  .panel.wide {
+    width: min(760px, 100%);
+  }
+  .setup-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: 22px;
+    align-items: start;
+  }
+}
 /* 殺球搖桿 */
 .smash-btn span {
   position: absolute;

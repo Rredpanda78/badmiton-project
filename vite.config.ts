@@ -4,5 +4,5 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   base: '/badmiton-project/',
   server: { host: true },
-  build: { chunkSizeWarningLimit: 800 }, // three.js 本身就約 500 KB
+  build: { chunkSizeWarningLimit: 900 }, // three.js 本身就約 500 KB
 });

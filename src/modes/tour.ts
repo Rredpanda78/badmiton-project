@@ -6,7 +6,7 @@ export interface TourOpponent {
   racket: string;
   title: string; // 顯示的稱號
   style: string; // ai.ts STYLES 的 key
-  level: number; // 0 簡單 ～ 2 困難（可帶小數）
+  level: number; // 0 簡單 ～ 2 困難（～ 3 超難、4 地獄，可帶小數；見 ai.ts 的 aiLevel）
   points: 11 | 15 | 21;
   boss?: boolean;
   intro: string; // 開場介紹

@@ -23,6 +23,7 @@ import {
   type SwingType,
 } from './anim/poses';
 import { merge, paint } from './geo';
+import { makeRacket } from './racket';
 import { RacketTrail, SWOOSH_JUMP, SWOOSH_NORMAL, SWOOSH_SMASH } from './swoosh';
 
 /** 髮型（頭上一個頂點色合併的 mesh；馬尾另外一個會甩的 mesh） */
@@ -31,6 +32,7 @@ export type HairStyle = 'short' | 'crop' | 'ponytail' | 'spiky' | 'cap';
 /** 球員外觀（全部可省略，省略 = 預設的小羽） */
 export interface PlayerStyle {
   racketColor?: number; // 拍框顏色（拍線維持淺色）；省略 = 球衣色
+  racket?: string; // 球拍種類（kits.ts 的 RACKETS id，決定拍框外型）；省略 = 均衡拍
   hair?: number; // 髮色
   hairStyle?: HairStyle;
   skin?: number; // 膚色
@@ -56,10 +58,11 @@ export const CHARACTER_STYLES: Record<string, PlayerStyle> = {
   runner: { hairStyle: 'spiky', hair: 0x7a5230, skin: 0xedc29c, height: 1.01, build: 0.86, number: 3, accent: 0xffffff },
 };
 
-/** 球員外觀＋球拍顏色：new PlayerModel(shirt, shorts, playerStyle(characterId, racket.color)) */
-export function playerStyle(characterId: string, racketColor?: number): PlayerStyle {
+/** 球員外觀＋球拍顏色／種類：new PlayerModel(shirt, shorts, playerStyle(characterId, racket.color, racket.id)) */
+export function playerStyle(characterId: string, racketColor?: number, racket?: string): PlayerStyle {
   const s: PlayerStyle = { ...(CHARACTER_STYLES[characterId] ?? {}) };
   if (racketColor !== undefined) s.racketColor = racketColor;
+  if (racket !== undefined) s.racket = racket;
   return s;
 }
 
@@ -475,27 +478,8 @@ export class PlayerModel {
     sleeveR.position.y = 0.05;
     sleeveR.scale.set(limb, 1, limb);
     this.armR.add(sleeveR);
-    // 球拍：握把（深色）＋拍桿＋拍框（球拍色），合成一個幾何；拍線維持淺色半透明
-    const rc = style.racketColor ?? shirt;
-    const frameGeo = new THREE.TorusGeometry(0.115, 0.012, 6, 20);
-    frameGeo.scale(0.82, 1, 1).rotateY(Math.PI / 2).translate(0, 0.94, 0);
-    const racket = new THREE.Mesh(
-      merge([
-        paint(new THREE.CylinderGeometry(0.017, 0.015, 0.16, 6).translate(0, 0.6, 0), 0x262626),
-        paint(new THREE.CylinderGeometry(0.0075, 0.0075, 0.17, 5).translate(0, 0.755, 0), rc),
-        paint(frameGeo, rc),
-      ]),
-      vcM,
-    );
-    this.armR.add(racket);
-    const strings = new THREE.Mesh(
-      new THREE.CircleGeometry(0.11, 16),
-      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35, side: THREE.DoubleSide }),
-    );
-    strings.scale.set(0.82, 1, 1);
-    strings.rotation.y = Math.PI / 2;
-    strings.position.y = 0.94;
-    this.armR.add(strings);
+    // 球拍：握把（深色）＋拍桿＋拍框（球拍色）合成一個幾何，拍線淺色半透明；外型照球拍種類（racket.ts）
+    this.armR.add(makeRacket(style.racketColor ?? shirt, style.racket, vcM));
     this.armR.quaternion.copy(ARM_READY);
     this.root.add(this.armR);
     // 揮拍拖尾（頂點是世界座標，見 update 最後）

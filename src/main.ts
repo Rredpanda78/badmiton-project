@@ -1,7 +1,9 @@
 import './style.css';
 import { AIController, STYLES } from './ai/ai';
 import { ambience, callScore, music, setMusicOn, setSfxOn, setSpeechOn, sfx, unlockAudio } from './audio';
-import { DEFAULT_SETTINGS, GAME, PHYS, type MatchSettings, type Venue } from './config';
+import { DEFAULT_SETTINGS, GAME, PHYS, type Difficulty, type MatchSettings, type Venue } from './config';
+import { colorById, colorDist, hexCss, pickOppColor, shade, SHIRT_COLORS, tooClose } from './ui/colors';
+import { playerThumb, racketThumb } from './render/thumbs';
 import { LocalControls } from './input/controls';
 import { GameRenderer, type Look } from './render/scene';
 import { idleInput, Match, type MatchEvent, type TeamId } from './sim/match';
@@ -103,11 +105,19 @@ function newMatch(demo: boolean, tourOpp?: TourOpponent, venue?: Venue, doubles 
   }
   setupAssist(demo);
   controls.scheme = settings.scheme;
-  const look = (c: Character, racket: string): Look => ({ ...c, racketColor: racketById(racket).color });
+  const look = (c: Character, racket: string): Look => ({ ...c, racketColor: racketById(racket).color, racket });
+  // 球衣顏色：示範對打 = 各自球員原色；巡迴賽 = 自己選的顏色 vs 對手球員原色（太像就換）；
+  // 單打／雙打 = 比賽設定選的「你的顏色」「對手顏色」（對手預設隨機，跟你太像會自動換）
+  const mine = demo ? { shirt: me.shirt, shorts: me.shorts } : myColors(me);
+  const avoid = doubles ? [mine.shirt, shade(mine.shirt, -0.32)] : [mine.shirt];
+  const theirs = demo ? { shirt: opp.shirt, shorts: opp.shorts } : pickOppColor(tourOpp ? oppIdColor(opp) : settings.oppColor, avoid);
   renderer.setLooks(
     doubles
-      ? teamLooks([look(me, s.racket), look(opp, s.aiRacket!), look(partner!, s.partnerRacket!), look(opp2!, s.ai2Racket!)])
-      : [look(me, s.racket), look(opp, s.aiRacket!)],
+      ? teamLooks([look(me, s.racket), look(opp, s.aiRacket!), look(partner!, s.partnerRacket!), look(opp2!, s.ai2Racket!)], mine, theirs)
+      : [
+          { ...look(me, s.racket), ...mine },
+          { ...look(opp, s.aiRacket!), shirt: theirs.shirt, shorts: theirs.shorts },
+        ],
   );
   applyVenue(venue ?? settings.venue);
   hud.oppName = tourOpp ? tourOpp.title : doubles ? '對手' : opp.name;
@@ -120,39 +130,28 @@ function newMatch(demo: boolean, tourOpp?: TourOpponent, venue?: Venue, doubles 
   return { partner, opps: opp2 ? [opp, opp2] : [opp] };
 }
 
-/** 顏色往黑（k<0）或往白（k>0）調 */
-function shade(c: number, k: number): number {
-  const ch = (v: number) => Math.round(k < 0 ? v * (1 + k) : v + (255 - v) * k);
-  return (ch((c >> 16) & 255) << 16) | (ch((c >> 8) & 255) << 8) | ch(c & 255);
+type Colors = { shirt: number; shorts: number };
+
+/** 自己的球衣色：比賽設定選的顏色；「原色」= 球員自己的顏色 */
+function myColors(c: Character): Colors {
+  const pc = colorById(settings.myColor);
+  return pc ? { shirt: pc.shirt, shorts: pc.shorts } : { shirt: c.shirt, shorts: c.shorts };
 }
 
-/** 色相（0..360），選對手隊色用 */
-function hueOf(c: number): number {
-  const r = ((c >> 16) & 255) / 255;
-  const g = ((c >> 8) & 255) / 255;
-  const b = (c & 255) / 255;
-  const mx = Math.max(r, g, b);
-  const d = mx - Math.min(r, g, b);
-  if (d < 1e-6) return 0;
-  const h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
-  return (h * 60 + 360) % 360;
+/** 球員原色對應的色盤 id（巡迴賽對手穿自己的顏色；跟你太像時 pickOppColor 會換掉） */
+function oppIdColor(c: Character): string {
+  return SHIRT_COLORS.find((x) => x.shirt === c.shirt)?.id ?? 'random';
 }
 
 /**
- * 雙打隊服：自己這隊穿自己球員的球衣顏色（夥伴深一點），對手那隊穿對比色（藍或紅，選離自己色相遠的），
- * 一眼分得出兩隊；髮型、身高、背號、球拍還是各自的。looks 的順序 = 球員編號（0 自己、1 對手、2 夥伴、3 對手）
+ * 雙打隊服：自己這隊穿你的顏色（夥伴深一點），對手那隊穿對手顏色（第二位深一點），一眼分得出兩隊；
+ * 髮型、身高、背號、球拍還是各自的。looks 的順序 = 球員編號（0 自己、1 對手、2 夥伴、3 對手）
  */
-function teamLooks(looks: Look[]): Look[] {
-  const mine = looks[0].shirt;
-  const hd = (a: number, b: number) => {
-    const d = Math.abs(hueOf(a) - hueOf(b));
-    return Math.min(d, 360 - d);
-  };
-  const theirs = hd(mine, 0x2f7fe0) >= hd(mine, 0xe0483a) ? { shirt: 0x2f7fe0, shorts: 0x1b2a44 } : { shirt: 0xe0483a, shorts: 0x3a1b1b };
+function teamLooks(looks: Look[], mine: Colors, theirs: Colors): Look[] {
   return looks.map((l, i) => {
-    const partner = i >= 2;
-    const base = i % 2 === 0 ? { shirt: mine, shorts: looks[0].shorts } : theirs;
-    return { ...l, shirt: partner ? shade(base.shirt, -0.32) : base.shirt, shorts: base.shorts };
+    const second = i >= 2;
+    const base = i % 2 === 0 ? mine : theirs;
+    return { ...l, shirt: second ? shade(base.shirt, -0.32) : base.shirt, shorts: base.shorts };
   });
 }
 
@@ -185,14 +184,34 @@ function bars(k: Kit, full: boolean): string {
     .join('');
 }
 
-/** 選球員／球拍的卡片（附能力長條圖） */
-function buildCards(): void {
+/**
+ * 選球員／球拍的卡片（附能力長條圖）。卡片上是 3D 小圖（render/thumbs.ts）：球員穿球衣、拿著目前選的球拍
+ * （選中的那位穿「你的顏色」），所有球員同比例看得出身高；球拍照種類有不同外型。
+ * deferThumbs：啟動時先把選單顯示出來，小圖下一刻再畫
+ */
+function buildCards(deferThumbs = false): void {
   const charBox = $('charCards');
+  const rBox = $('racketCards');
+  const scroll = [charBox.scrollLeft, rBox.scrollLeft]; // 重建卡片不要跳回最左邊
+  const rk = racketById(settings.racket);
+  const jobs: [HTMLImageElement, () => string][] = [];
+  const thumbBox = (b: HTMLElement, alt: string, job: () => string) => {
+    const box = document.createElement('div');
+    box.className = 'thumb';
+    const img = document.createElement('img');
+    img.alt = alt;
+    box.appendChild(img);
+    b.prepend(box);
+    jobs.push([img, job]);
+  };
   charBox.innerHTML = '';
   for (const c of CHARACTERS) {
     const b = document.createElement('button');
-    b.className = 'card' + (c.id === settings.character ? ' on' : '');
-    b.innerHTML = `<div class="swatch" style="background:#${c.shirt.toString(16).padStart(6, '0')}"></div><b>${c.name}</b><small>${c.title}</small><span>${c.desc}</span>`;
+    const sel = c.id === settings.character;
+    b.className = 'card' + (sel ? ' on' : '');
+    b.innerHTML = `<b>${c.name}</b><small>${c.title}</small><span>${c.desc}</span>`;
+    const col = sel ? myColors(c) : { shirt: c.shirt, shorts: c.shorts };
+    thumbBox(b, c.name, () => playerThumb(c.id, col.shirt, col.shorts, rk.color, rk.id));
     b.addEventListener('click', () => {
       settings.character = c.id;
       saveSettings();
@@ -200,12 +219,12 @@ function buildCards(): void {
     });
     charBox.appendChild(b);
   }
-  const rBox = $('racketCards');
   rBox.innerHTML = '';
   for (const r of RACKETS) {
     const b = document.createElement('button');
     b.className = 'card' + (r.id === settings.racket ? ' on' : '');
-    b.innerHTML = `<div class="swatch" style="background:#${r.color.toString(16).padStart(6, '0')}"></div><b>${r.name}</b><span>${r.desc}</span>`;
+    b.innerHTML = `<b>${r.name}</b><span>${r.desc}</span>`;
+    thumbBox(b, r.name, () => racketThumb(r.id, r.color));
     b.addEventListener('click', () => {
       settings.racket = r.id;
       saveSettings();
@@ -213,9 +232,13 @@ function buildCards(): void {
     });
     rBox.appendChild(b);
   }
+  charBox.scrollLeft = scroll[0];
+  rBox.scrollLeft = scroll[1];
+  const fill = () => jobs.forEach(([img, job]) => (img.src = job()));
+  if (deferThumbs) window.setTimeout(fill, 60);
+  else fill();
   // 球員 × 球拍 組合後的實際能力
   const me = characterById(settings.character);
-  const rk = racketById(settings.racket);
   $('kitSummary').innerHTML = `<div class="kit-title">${me.name} ＋ ${rk.name}</div><div class="bars">${bars(buildKit(me.id, rk.id), true)}</div>`;
 }
 
@@ -233,6 +256,7 @@ function setMode(m: Mode): void {
   $('drills').classList.remove('show');
   if (m !== 'menu') $('online').classList.remove('show');
   if (m !== 'menu') $('settings').classList.remove('show');
+  $('setup').classList.remove('show');
   $('restartBtn').style.display = online?.sync ? 'none' : ''; // 線上不能重新開始
   $('hud').style.visibility = m === 'menu' ? 'hidden' : 'visible';
 }
@@ -417,19 +441,66 @@ function frame(now: number): void {
 }
 
 // ---------- 選單 ----------
+const DIFF_LABEL: Record<Difficulty, string> = { easy: '簡單', normal: '普通', hard: '困難', extreme: '超難', hell: '地獄' };
+const DIFF_HINT: Record<Difficulty, string> = {
+  easy: '對手反應慢、常失誤，適合剛上手',
+  normal: '一般對手，會打空檔也會殺球',
+  hard: '反應快、落點準、會跳殺和魚躍',
+  extreme: '反應更快、球球打空檔、多殺多撲，很少失誤',
+  hell: '反應極快、腳步比你快一點、球貼邊線又狠——要靠落點和假動作拉開',
+};
+const VENUE_LABEL: Record<Venue, string> = { sakura: '櫻花園', night: '夜櫻', bamboo: '竹林', indoor: '室內球館', market: '市場', paddy: '稻田', beach: '海灘' };
+const VENUES = Object.keys(VENUE_LABEL) as Venue[];
+
+/** 這場的場地：比賽設定選的；「隨機」每場重抽 */
+function matchVenue(): Venue {
+  return settings.venuePick === 'random' ? pick(VENUES) : settings.venuePick;
+}
+
+function goFullscreen(): void {
+  if (controls.isTouch || matchMedia('(pointer: coarse)').matches) document.documentElement.requestFullscreen?.().catch(() => {});
+}
+
+/** 單打（對 AI）：難度／場地／分數／局數／顏色照比賽設定 */
 function startGame(): void {
   unlockAudio();
-  if (controls.isTouch || matchMedia('(pointer: coarse)').matches) {
-    const el = document.documentElement;
-    el.requestFullscreen?.().catch(() => {});
-  }
-  newMatch(false);
+  goFullscreen();
+  const venue = matchVenue();
+  const { opps } = newMatch(false, undefined, venue);
   again = () => startGame();
   acc = 0;
   setMode('play');
+  hud.intro(`對手：${opps[0].name}`, `${DIFF_LABEL[settings.difficulty]}・${VENUE_LABEL[venue]}・${settings.points} 分${settings.games > 1 ? '・三戰兩勝' : ''}`);
 }
 
-document.querySelectorAll<HTMLElement>('.seg').forEach((seg) => {
+/** 雙打（自己＋AI 夥伴 對 兩位 AI），難度／場地／分數／局數／顏色照比賽設定 */
+function startDoubles(): void {
+  unlockAudio();
+  goFullscreen();
+  const venue = matchVenue();
+  const { partner, opps } = newMatch(false, undefined, venue, true);
+  again = () => startDoubles();
+  acc = 0;
+  setMode('play');
+  hud.intro(`雙打・${DIFF_LABEL[settings.difficulty]}`, `夥伴：${partner!.name}\n對手：${opps.map((o) => o.name).join('、')}`);
+}
+
+/** 照比賽設定的模式開始（單打／雙打） */
+const startSelected = () => (settings.matchType === 'doubles' ? startDoubles() : startGame());
+
+/** 設定改了之後要跟著更新的東西（場地預覽、提示文字、音效開關） */
+function onSettingChanged(key: string): void {
+  if (key === 'venuePick' && settings.venuePick !== 'random') {
+    settings.venue = settings.venuePick; // 選了固定場地：訓練、教學、選單背景也用這個
+    saveSettings();
+    applyVenue(settings.venue);
+  }
+  if (key === 'difficulty') $('diffHint').textContent = DIFF_HINT[settings.difficulty] ?? '';
+  applyAudioSettings();
+}
+
+// 設定／比賽設定的分段按鈕：data-key = settings 的欄位，data-v = 值
+document.querySelectorAll<HTMLElement>('.seg[data-key]').forEach((seg) => {
   const key = seg.dataset.key as keyof MatchSettings;
   const buttons = seg.querySelectorAll<HTMLButtonElement>('button');
   const sync = () => buttons.forEach((b) => b.classList.toggle('on', b.dataset.v === String(settings[key])));
@@ -439,26 +510,73 @@ document.querySelectorAll<HTMLElement>('.seg').forEach((seg) => {
       (settings as unknown as Record<string, unknown>)[key] = v === 'true' ? true : v === 'false' ? false : /^\d+$/.test(v) ? Number(v) : v;
       saveSettings();
       sync();
-      if (key === 'venue') applyVenue(settings.venue);
-      applyAudioSettings();
+      onSettingChanged(key);
     }),
   );
   sync();
 });
 
-/** 雙打（自己＋AI 夥伴 對 兩位 AI），難度／分數／局數／場地照設定 */
-function startDoubles(): void {
-  unlockAudio();
-  if (controls.isTouch || matchMedia('(pointer: coarse)').matches) document.documentElement.requestFullscreen?.().catch(() => {});
-  const { partner, opps } = newMatch(false, undefined, undefined, true);
-  again = () => startDoubles();
-  acc = 0;
-  setMode('play');
-  hud.intro('雙打', `夥伴：${partner!.name}\n對手：${opps.map((o) => o.name).join('、')}`);
+/** 比賽設定的顏色選擇：你的顏色（原色＋色盤）、對手顏色（隨機＋色盤，跟你太像的不能選） */
+function buildColorPickers(): void {
+  const me = characterById(settings.character);
+  const mine = myColors(me).shirt;
+  const swatch = (label: string, color: number | null, on: boolean, title: string, onClick: () => void, disabled = false) => {
+    const b = document.createElement('button');
+    b.className = 'swatch-btn' + (on ? ' on' : '') + (label ? ' text' : '') + (color !== null && colorDist(color, 0xffffff) < 120 ? ' light' : '');
+    if (color === null) b.style.background = 'conic-gradient(#e0483a,#f2a23a,#f2d43a,#34c38f,#2f7fe0,#8a5cf0,#f27fb0,#e0483a)'; // 隨機 = 彩色
+    else b.style.setProperty('--c', hexCss(color));
+    b.textContent = label;
+    b.title = title;
+    b.disabled = disabled;
+    b.addEventListener('click', () => {
+      onClick();
+      saveSettings();
+      buildColorPickers();
+    });
+    return b;
+  };
+  const myBox = $('myColors');
+  myBox.innerHTML = '';
+  myBox.appendChild(swatch('原色', me.shirt, settings.myColor === 'auto', `${me.name}原本的顏色`, () => (settings.myColor = 'auto')));
+  for (const c of SHIRT_COLORS) myBox.appendChild(swatch('', c.shirt, settings.myColor === c.id, c.name, () => (settings.myColor = c.id)));
+  // 對手顏色：跟你（雙打還有夥伴的深色）太像的不能選；原本選的變成太像 → 改回隨機
+  const avoid = settings.matchType === 'doubles' ? [mine, shade(mine, -0.32)] : [mine];
+  const isClose = (c: number) => avoid.some((a) => tooClose(c, a));
+  const oc = colorById(settings.oppColor);
+  if (settings.oppColor !== 'random' && (!oc || isClose(oc.shirt))) {
+    settings.oppColor = 'random';
+    saveSettings();
+  }
+  const oppBox = $('oppColors');
+  oppBox.innerHTML = '';
+  oppBox.appendChild(swatch('🎲 隨機', null, settings.oppColor === 'random', '每場隨機（不會跟你太像）', () => (settings.oppColor = 'random')));
+  for (const c of SHIRT_COLORS) {
+    const close = isClose(c.shirt);
+    oppBox.appendChild(swatch('', c.shirt, settings.oppColor === c.id, close ? `${c.name}（跟你的顏色太像）` : c.name, () => (settings.oppColor = c.id), close));
+  }
+  $('colorHint').textContent = settings.matchType === 'doubles' ? '雙打：夥伴穿你的顏色（深一點），對手兩人穿對手顏色' : '';
+  // 選了顏色：主選單上選中的球員小圖也換成這個顏色
+  buildCards();
 }
 
-$('startBtn').addEventListener('click', startGame);
-$('doublesBtn').addEventListener('click', startDoubles);
+function openSetup(): void {
+  unlockAudio();
+  buildColorPickers();
+  $('diffHint').textContent = DIFF_HINT[settings.difficulty] ?? '';
+  $('menu').classList.remove('show');
+  $('setup').classList.add('show');
+  $('setup').scrollTop = 0;
+  document.querySelector('#setup .panel')!.scrollTop = 0;
+}
+
+$('startBtn').addEventListener('click', openSetup);
+$('setupStartBtn').addEventListener('click', startSelected);
+$('setupBackBtn').addEventListener('click', () => {
+  $('setup').classList.remove('show');
+  $('menu').classList.add('show');
+});
+// 換模式時更新顏色提示（雙打說明）
+document.querySelector('#setup .seg[data-key="matchType"]')?.addEventListener('click', () => buildColorPickers());
 $('againBtn').addEventListener('click', () => again());
 $('restartBtn').addEventListener('click', () => again());
 $('pauseBtn').addEventListener('click', () => mode === 'play' && setMode('paused'));
@@ -504,13 +622,24 @@ function loadSettings(): MatchSettings {
       }
       // v3：預設改成點擊滑放
       if ((s.settingsVersion ?? 1) < 3) s.scheme = 'tap';
-      s.settingsVersion = 3;
+      // v4：難度、場地、分數、局數搬到「比賽設定」（值照舊）；比賽場地沿用原本選的場地，新增單雙打與顏色
+      if ((s.settingsVersion ?? 1) < 4) {
+        s.venuePick = s.venue;
+        s.matchType = 'singles';
+        s.myColor = 'auto';
+        s.oppColor = 'random';
+      }
+      // 防呆：存檔裡不認得的值改回預設
+      if (!['easy', 'normal', 'hard', 'extreme', 'hell'].includes(s.difficulty)) s.difficulty = DEFAULT_SETTINGS.difficulty;
+      if (s.myColor !== 'auto' && !colorById(s.myColor)) s.myColor = 'auto';
+      if (s.oppColor !== 'random' && !colorById(s.oppColor)) s.oppColor = 'random';
+      s.settingsVersion = 4;
       return s;
     }
   } catch {
     /* 私密模式等情況讀不到就用預設 */
   }
-  return { ...DEFAULT_SETTINGS, settingsVersion: 3 };
+  return { ...DEFAULT_SETTINGS, settingsVersion: 4 };
 }
 function saveSettings(): void {
   try {
@@ -521,7 +650,7 @@ function saveSettings(): void {
 }
 
 applyAudioSettings();
-buildCards();
+buildCards(true);
 newMatch(true);
 setMode('menu');
 requestAnimationFrame(frame);
@@ -571,7 +700,7 @@ function startDrill(d: Drill): void {
   demoPlayer = null;
   setupAssist(false);
   controls.scheme = settings.scheme;
-  renderer.setLooks([{ ...me, racketColor: racketById(settings.racket).color }, { shirt: 0x8a96a8, shorts: 0x2a2f38 }]); // 對面是灰色的發球機教練
+  renderer.setLooks([{ ...me, ...myColors(me), racketColor: racketById(settings.racket).color, racket: settings.racket }, { shirt: 0x8a96a8, shorts: 0x2a2f38 }]); // 對面是灰色的發球機教練
   applyVenue(settings.venue);
   renderer.setTarget(d.target);
   hud.oppName = '發球機';
@@ -818,9 +947,10 @@ function startOnlineMatch(start: StartInfo, peer: Hello, host: boolean): void {
   setupAssist(false);
   controls.scheme = settings.scheme;
   renderer.setLooks([
-    { ...me, racketColor: racketById(settings.racket).color },
+    // 線上：兩邊都穿球員原色（對方畫面也是這樣）
+    { ...me, racketColor: racketById(settings.racket).color, racket: settings.racket },
     // 兩邊選同一位球員：對手換成紅色球衣，才分得出來
-    { ...opp, ...(opp.id === me.id ? { shirt: 0xe0483a, shorts: 0x3a1b1b } : {}), racketColor: racketById(peer.racket).color },
+    { ...opp, ...(opp.id === me.id ? { shirt: 0xe0483a, shorts: 0x3a1b1b } : {}), racketColor: racketById(peer.racket).color, racket: peer.racket },
   ]);
   applyVenue(start.venue);
   renderer.setTarget(null);
@@ -982,7 +1112,7 @@ function startTutorial(): void {
   assist.allowDive = false;
   controls.autoDive = false;
   controls.scheme = settings.scheme;
-  renderer.setLooks([{ ...me, racketColor: racketById(settings.racket).color }, { shirt: 0x8a96a8, shorts: 0x2a2f38 }]);
+  renderer.setLooks([{ ...me, ...myColors(me), racketColor: racketById(settings.racket).color, racket: settings.racket }, { shirt: 0x8a96a8, shorts: 0x2a2f38 }]);
   applyVenue(settings.venue);
   renderer.setTarget(null);
   hud.oppName = '教練';
@@ -1000,7 +1130,7 @@ function startTutorial(): void {
 $('tutorialBtn').addEventListener('click', startTutorial);
 $('tutBtn').addEventListener('click', () => {
   if (!tutorial) return;
-  if (tutorial.done) startGame();
+  if (tutorial.done) startSelected();
   else tutorial.button();
 });
 $('tutBtn2').addEventListener('click', () => toMenu());

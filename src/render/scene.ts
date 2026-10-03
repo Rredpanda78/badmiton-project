@@ -15,6 +15,7 @@ export interface Look {
   shorts: number;
   id?: string;
   racketColor?: number;
+  racket?: string; // 球拍種類（拍框外型）
 }
 
 const SHUTTLE_SCALE = 2.4; // 真實羽球太小，放大一點比較看得清楚
@@ -247,7 +248,7 @@ export class GameRenderer {
       this.scene.remove(m.root);
       m.dispose();
     }
-    this.models = looks.map((l) => new PlayerModel(l.shirt, l.shorts, l.id ? playerStyle(l.id, l.racketColor) : undefined));
+    this.models = looks.map((l) => new PlayerModel(l.shirt, l.shorts, l.id ? playerStyle(l.id, l.racketColor, l.racket) : undefined));
     for (const m of this.models) this.scene.add(m.root);
   }
 

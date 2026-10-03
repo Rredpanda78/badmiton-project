@@ -44,7 +44,6 @@
         <div id="racketCards" class="cards rackets"></div>
         <div id="kitSummary" class="kit-summary"></div>
         <button id="startBtn" class="primary">開始比賽（對 AI）</button>
-        <button id="doublesBtn">雙打（對 AI）</button>
         <button id="tutorialBtn">新手教學</button>
         <button id="tourBtn">場館巡迴賽</button>
         <button id="drillsBtn">訓練關卡</button>
@@ -55,6 +54,7 @@
           <h3>手機（直向、橫向都可以）</h3>
           <ul>
             <li>第一次玩建議先跑一次<b>新手教學</b></li>
+            <li><b>開始比賽</b>後選單打／雙打、難度（簡單～地獄）、場地、分數、局數，還有你和對手的球衣顏色</li>
             <li><b>預設自動跑位</b>：電腦幫你跑位，右手只管擊球</li>
             <li><b>右手</b>（預設：點擊滑放）：按住往上／下／左右滑、放開出拍；上手或下手依球的高低自動判斷；右上「殺」搖桿殺球</li>
             <li><b>時機</b>：放開得越準（完美），高遠球越貼底線、小球越貼網、殺球越快；高遠球不到位，對手殺得更兇</li>
@@ -85,16 +85,16 @@
             <li>球打過來時腳邊的白圈 = 擊球範圍，變<b>綠色</b>就是現在划剛好</li>
             <li>擊球會顯示評價（完美／不錯／勉強），揮空會告訴你原因（太早／太晚／太遠／太高）</li>
           </ul>
-          <h3>雙打（對 AI）</h3>
+          <h3>雙打（開始比賽 → 模式選「雙打」）</h3>
           <ul>
-            <li>你＋AI 夥伴對兩位 AI；頭上有<b>黃色箭頭</b>的是你，夥伴穿同色系深一點的球衣</li>
+            <li>你＋AI 夥伴對兩位 AI；頭上有<b>黃色箭頭</b>的是你，夥伴穿你的顏色深一點的球衣，對手兩人穿對手顏色</li>
             <li>每邊只能打一拍；電腦會決定這球誰接（腳下出現擊球範圍圈 = 你的球），沒輪到你就讓夥伴打</li>
             <li>用雙打邊線；發球要發到對角、不能超過雙打後發球線；發球方得分就換左右區再發</li>
           </ul>
           <h3>線上對戰</h3>
           <ul>
             <li>建立房間後把<b>房號</b>或<b>分享連結</b>傳給朋友，朋友輸入房號或點連結就會進房</li>
-            <li>分數、局數、場地照房主的設定；球員、球拍、操作方式各用自己的</li>
+            <li>分數、局數、場地照房主上次在「比賽設定」選的；球員、球拍、操作方式各用自己的</li>
             <li>右下角是連線延遲；暫停時比賽不會停</li>
           </ul>
           <h3>電腦／手把</h3>
@@ -125,28 +125,7 @@
           <label>擊球</label>
           <div class="seg" data-key="scheme"><button data-v="tap">點擊滑放（推薦）</button><button data-v="charge">蓄力划動</button></div>
         </div>
-        <div class="section-title">比賽</div>
-        <div class="row">
-          <label>場地</label>
-          <div class="seg wrap" data-key="venue">
-            <button data-v="sakura">櫻花園</button><button data-v="night">夜櫻</button><button data-v="bamboo">竹林</button><button data-v="indoor">室內</button>
-            <button data-v="market">市場</button><button data-v="paddy">稻田</button><button data-v="beach">海灘</button>
-          </div>
-        </div>
-        <div class="row">
-          <label>難度</label>
-          <div class="seg" data-key="difficulty">
-            <button data-v="easy">簡單</button><button data-v="normal">普通</button><button data-v="hard">困難</button>
-          </div>
-        </div>
-        <div class="row">
-          <label>每局</label>
-          <div class="seg" data-key="points"><button data-v="11">11 分</button><button data-v="21">21 分</button></div>
-        </div>
-        <div class="row">
-          <label>局數</label>
-          <div class="seg" data-key="games"><button data-v="1">一局</button><button data-v="3">三戰兩勝</button></div>
-        </div>
+        <p class="hint-line">單打／雙打、難度、場地、分數、局數和球衣顏色在按「開始比賽」之後選。</p>
         <div class="section-title">畫面與聲音</div>
         <div class="row">
           <label>落點提示</label>
@@ -169,6 +148,49 @@
           <div class="seg" data-key="umpire"><button data-v="true">開</button><button data-v="false">關</button></div>
         </div>
         <button id="settingsDoneBtn" class="primary">完成</button>
+      </div>
+    </div>
+
+    <div id="setup" class="overlay">
+      <div class="panel wide">
+        <h2>比賽設定</h2>
+        <div class="setup-grid">
+          <div class="field">
+            <div class="section-title">模式</div>
+            <div class="seg fill" data-key="matchType"><button data-v="singles">單打</button><button data-v="doubles">雙打（你＋AI 夥伴）</button></div>
+          </div>
+          <div class="field">
+            <div class="section-title">難度</div>
+            <div class="seg fill diff" data-key="difficulty">
+              <button data-v="easy">簡單</button><button data-v="normal">普通</button><button data-v="hard">困難</button><button data-v="extreme">超難</button><button data-v="hell">地獄</button>
+            </div>
+            <p id="diffHint" class="hint-line"></p>
+          </div>
+          <div class="field">
+            <div class="section-title">場地</div>
+            <div class="seg fill wrap4" data-key="venuePick">
+              <button data-v="sakura">櫻花園</button><button data-v="night">夜櫻</button><button data-v="bamboo">竹林</button><button data-v="indoor">室內</button>
+              <button data-v="market">市場</button><button data-v="paddy">稻田</button><button data-v="beach">海灘</button><button data-v="random">🎲 隨機</button>
+            </div>
+          </div>
+          <div class="field">
+            <div class="section-title">每局分數</div>
+            <div class="seg fill" data-key="points"><button data-v="11">11 分</button><button data-v="15">15 分</button><button data-v="21">21 分</button></div>
+            <div class="section-title">局數</div>
+            <div class="seg fill" data-key="games"><button data-v="1">一局</button><button data-v="3">三戰兩勝</button></div>
+          </div>
+          <div class="field">
+            <div class="section-title">你的顏色</div>
+            <div id="myColors" class="swatches"></div>
+          </div>
+          <div class="field">
+            <div class="section-title">對手顏色</div>
+            <div id="oppColors" class="swatches"></div>
+            <p id="colorHint" class="hint-line"></p>
+          </div>
+        </div>
+        <button id="setupStartBtn" class="primary big">開始</button>
+        <button id="setupBackBtn">返回</button>
       </div>
     </div>
 
