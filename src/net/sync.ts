@@ -78,6 +78,7 @@ export class OnlineSync {
         const rtt = this.now() - msg.a;
         this.rttMs = this.rttMs ? this.rttMs * 0.7 + rtt * 0.3 : rtt;
         this.latency = (Math.min(400, this.rttMs) / 2 / 1000) * GAME.simSpeed;
+        this.match.netLag = this.latency;
         break;
       }
       case 'st':

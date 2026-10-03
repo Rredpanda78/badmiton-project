@@ -127,6 +127,8 @@ export interface ShuttleState {
   wobble: boolean; // 勉強接回的機會球（會晃、比較慢、適合殺）
   attack: number; // 這顆球有多好殺（0..1）：高球越短越好殺，機會球 = 1
   pace: number; // 來球有多兇（0..1）：殺球 1、撲／壓 0.8、平抽 0.5（硬伸手接的懲罰用）
+  holdT: number; // 線上：這一球在對方球拍附近「等對方擊球」已經放慢了多久
+  dilate: number; // 線上：自己打過去的球在本機放慢的倍率（整段飛行平均放慢，抵掉來回的網路延遲）
 }
 
 const clamp = (x: number, a: number, b: number) => Math.max(a, Math.min(b, x));
@@ -192,6 +194,8 @@ export class Match {
   private gameJustEnded = false;
   /** 線上對戰：遠端玩家的 id（移動、擊球都由網路訊息決定）；離線 = null */
   remote: 0 | 1 | null = null;
+  /** 線上：單程網路延遲（模擬秒，OnlineSync 用 ping 量的） */
+  netLag = 0;
   private remoteState: { rs: RemoteState; at: number } | null = null;
 
   constructor(readonly settings: MatchSettings, seed = Date.now()) {
@@ -230,7 +234,7 @@ export class Match {
       reachMul: 1,
     });
     this.players = settings.doubles && !settings.practice ? [mk(0, 1), mk(1, -1), mk(2, 1), mk(3, -1)] : [mk(0, 1), mk(1, -1)];
-    this.shuttle = { pos: v3(), vel: v3(), mode: 'held', lastHitter: null, isServe: false, serveBoxSign: 1, prediction: null, stepDt: PHYS.dt, launchTime: 0, wobble: false, attack: 0, pace: 0 };
+    this.shuttle = { pos: v3(), vel: v3(), mode: 'held', lastHitter: null, isServe: false, serveBoxSign: 1, prediction: null, stepDt: PHYS.dt, launchTime: 0, wobble: false, attack: 0, pace: 0, holdT: 0, dilate: 1 };
     if (settings.practice) this.enterDrillIdle();
     else this.setupServe();
   }
@@ -742,7 +746,15 @@ export class Match {
     sh.wobble = false;
     sh.attack = 0;
     sh.pace = 0;
+    sh.holdT = 0;
+    // 線上：自己打過去的球，對方要晚「單程延遲」才開始看到、擊球訊息再晚「單程延遲」才回來 →
+    // 本機整段飛行平均放慢，讓球差不多在對方擊球訊息到的時候才飛到對方球拍附近
     sh.prediction = predict(sh.pos, sh.vel, stepDt);
+    sh.dilate = 1;
+    if (GAME.online.dilate && this.remote !== null && this.teamOf(p.id) !== this.players[this.remote].team && sh.prediction && !sh.prediction.hitsNet) {
+      const T = sh.prediction.landTime;
+      sh.dilate = T > 0.05 ? T / (T + 2 * this.netLag) : 1;
+    }
     this.rallyHits++;
     this.hitSerial++;
   }
@@ -804,7 +816,7 @@ export class Match {
     const sh = this.shuttle;
     const pz = sh.pos.z;
     const py = sh.pos.y;
-    stepShuttle(sh.pos, sh.vel, sh.stepDt);
+    stepShuttle(sh.pos, sh.vel, sh.stepDt * sh.dilate * this.onlineHold());
     if (sh.mode === 'flight' && pz !== 0 && Math.sign(pz) !== Math.sign(sh.pos.z)) {
       const a = pz / (pz - sh.pos.z);
       const yCross = py + (sh.pos.y - py) * a;
@@ -1177,6 +1189,25 @@ export class Match {
 
   // ---------- 線上對戰 ----------
 
+  /**
+   * 線上：自己打過去的球飛到對方球拍附近時，本機先放慢等對方的擊球訊息（網路延遲），
+   * 不然球會在本機繼續往下掉、收到擊球後又「瞬移」回對方的擊球點。對方沒打到就照常落地（最多等 holdMax 秒）。
+   * 判定是對方（接球方）做的，本機放慢不影響比分。
+   */
+  private onlineHold(): number {
+    const sh = this.shuttle;
+    if (this.remote === null || sh.mode !== 'flight' || sh.lastHitter === null) return 1;
+    const rp = this.players[this.remote];
+    if (this.teamOf(sh.lastHitter) === rp.team) return 1;
+    if (sh.holdT >= GAME.online.holdMax) return 1;
+    // 對方在本機的位置是網路傳來的（慢一點），範圍放寬一些
+    const q = sh.pos;
+    if (q.z * rp.side < 0.05 || q.y > GAME.reachMaxY + 0.6 + rp.pos.y) return 1;
+    if (Math.hypot(q.x - rp.pos.x, q.z - rp.pos.z) > this.reachOf(rp) + GAME.online.holdMargin + (rp.dive ? GAME.dive.reachBonus + 1 : 0)) return 1;
+    sh.holdT += PHYS.dt;
+    return GAME.online.holdScale;
+  }
+
   /** 對方最新的狀態（收到時的 match.time 一起存） */
   setRemoteState(rs: RemoteState): void {
     this.remoteState = { rs, at: this.time };
@@ -1280,9 +1311,19 @@ export class Match {
       wobble: h.wobble,
       attack: h.attack,
     });
-    const n = Math.min(36, Math.round(lat / PHYS.dt));
+    // 網路延遲：預設不補（接球方拿到完整的反應時間；這一球由接球方判定，所以不會兩邊不一致）
+    const n = Math.min(36, Math.round((lat * GAME.online.fastForward) / PHYS.dt));
     sh.launchTime -= n * PHYS.dt;
     for (let i = 0; i < n && sh.mode !== 'down' && this.phase === 'rally'; i++) this.advanceShuttle();
+  }
+
+  /** 線上斷線重連後：從這個比分、這位發球，重新發球 */
+  resumePoint(score: [number, number], games: [number, number], server: PlayerId): void {
+    this.score = [score[0], score[1]];
+    this.games = [games[0], games[1]];
+    this.server = server;
+    this.gameJustEnded = false;
+    this.setupServe();
   }
 
   /** 對方（接球方）判定這一分；score/games 是判定後的比分（本機 id 順序），以判定方為準 */

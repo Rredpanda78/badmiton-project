@@ -35,6 +35,8 @@ export class GameRenderer {
   private trailPts: THREE.Vector3[] = [];
   private marker: THREE.Mesh;
   private reachRing: THREE.Mesh;
+  private shOffset = new THREE.Vector3(); // 線上：對方擊球時的位置修正（慢慢歸零）
+  private shSerial = -1;
   private serveBoxLine: THREE.LineLoop;
   private target: THREE.Mesh;
   private baseFov = 40;
@@ -381,7 +383,14 @@ export class GameRenderer {
 
     // 羽球
     const sh = match.shuttle;
-    this.shuttle.position.set(sh.pos.x, sh.pos.y, sh.pos.z);
+    // 線上：收到對方擊球時，球從本機看到的位置滑順地接到對方的擊球點（不要瞬移），約 0.1 秒收斂
+    if (match.remote !== null && match.hitSerial !== this.shSerial && sh.lastHitter === match.remote && this.shSerial >= 0) {
+      this.shOffset.set(this.shuttle.position.x - sh.pos.x, this.shuttle.position.y - sh.pos.y, this.shuttle.position.z - sh.pos.z);
+      if (this.shOffset.length() > 2.5) this.shOffset.set(0, 0, 0);
+    }
+    this.shSerial = match.hitSerial;
+    this.shOffset.multiplyScalar(Math.exp(-dt / 0.05));
+    this.shuttle.position.set(sh.pos.x + this.shOffset.x, sh.pos.y + this.shOffset.y, sh.pos.z + this.shOffset.z);
     const sp = Math.hypot(sh.vel.x, sh.vel.y, sh.vel.z);
     if (sh.mode === 'held') {
       this.shuttle.quaternion.identity();

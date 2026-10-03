@@ -127,6 +127,18 @@ export class Hud {
     this.tfbTimer = 1.6;
   }
 
+  /** 一直顯示的提示（線上斷線等待等）；null = 收起 */
+  notice(text: string | null): void {
+    if (!this.noticeEl) {
+      this.noticeEl = document.createElement('div');
+      this.noticeEl.id = 'notice';
+      this.root.appendChild(this.noticeEl);
+    }
+    this.noticeEl.textContent = text ?? '';
+    this.noticeEl.classList.toggle('show', !!text);
+  }
+  private noticeEl: HTMLElement | null = null;
+
   /** 開場介紹對手 */
   intro(name: string, text: string): void {
     this.showBanner(name, text, 'intro', 2.6);

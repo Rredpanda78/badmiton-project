@@ -1355,3 +1355,23 @@ body.in-menu #a2hsTip.show {
   background: #fff;
   box-shadow: 0 0 6px #fff;
 }
+
+/* 線上斷線等待提示 */
+#notice {
+  display: none;
+  position: absolute;
+  left: 50%;
+  top: 42%;
+  transform: translate(-50%, -50%);
+  padding: 12px 18px;
+  border-radius: 12px;
+  background: rgba(10, 16, 24, 0.88);
+  border: 1px solid rgba(255, 213, 74, 0.5);
+  font-size: 16px;
+  font-weight: 700;
+  white-space: nowrap;
+  pointer-events: none;
+}
+#notice.show {
+  display: block;
+}

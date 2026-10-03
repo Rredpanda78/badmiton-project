@@ -8,6 +8,8 @@ import type { PeerMsg } from '../src/net/protocol';
 import { OnlineSync } from '../src/net/sync';
 
 const latMs = Number(process.argv[2] ?? 60);
+// 例：ONLINE='{"dilate":false,"holdScale":1}' 試不同的延遲處理
+if (process.env.ONLINE) Object.assign(GAME.online, JSON.parse(process.env.ONLINE));
 const games = Number(process.argv[3] ?? 3);
 const tickMs = (PHYS.dt / GAME.simSpeed) * 1000; // 一個 tick 的真實時間
 const delayTicks = Math.max(1, Math.round(latMs / tickMs));
@@ -33,12 +35,21 @@ for (let g = 0; g < games; g++) {
   const aiA = new AIController(A, 0, 'hard');
   const aiB = new AIController(B, 0, 'hard');
   let maxAwait = 0;
+  const jumps: number[] = [];
+  const lowest: number[] = [];
   let awaitT = [0, 0];
   let hits = 0;
   let netHitsLate = 0;
   for (; tick < 120 * 60 * 30 && !(A.phase === 'matchOver' && B.phase === 'matchOver'); tick++) {
     while (queue.length && queue[0].at <= tick) {
       const q = queue.shift()!;
+      if (q.msg.t === 'hit' && !q.msg.s) {
+        // 收到對方擊球前，本機的球在哪：跟對方擊球點差多遠（瞬移距離）、離地多高
+        const M = q.to === 'A' ? A : B;
+        const c = q.msg.c;
+        jumps.push(Math.hypot(M.shuttle.pos.x + c[0], M.shuttle.pos.y - c[1], M.shuttle.pos.z + c[2]));
+        lowest.push(M.shuttle.pos.y);
+      }
       (q.to === 'A' ? sA : sB).receive(q.msg);
     }
     A.step([aiA.input(), { moveX: 0, moveY: 0, charging: false, jump: false, flick: null, dive: null }]);
@@ -60,5 +71,8 @@ for (let g = 0; g < games; g++) {
   const same = A.games[0] === B.games[1] && A.games[1] === B.games[0];
   if (same && A.phase === 'matchOver') ok++;
   console.log(`第 ${g + 1} 場：A 局數 ${A.games} 比分 ${A.score}｜B 局數 ${B.games} 比分 ${B.score}｜${same ? '一致' : '不一致！'}｜擊球 ${hits}｜等判定最久 ${maxAwait.toFixed(2)}s｜RTT ${sA.rttMs.toFixed(0)}ms｜${A.phase}/${B.phase}`);
+  jumps.sort((a, b) => a - b);
+  const pct = (a: number[], f: number) => (a.length ? a[Math.floor(a.length * f)].toFixed(2) : '-');
+  console.log(`  收到對方擊球時，本機的球跳回擊球點的距離：中位 ${pct(jumps, 0.5)} m、90% ${pct(jumps, 0.9)} m、最大 ${pct(jumps, 0.999)} m；當下球離地 中位 ${pct(lowest.sort((a, b) => a - b), 0.5)} m、最低 10% ${pct(lowest, 0.1)} m`);
 }
 console.log(`延遲 ${latMs}ms（${delayTicks} tick）：${ok}/${games} 場兩邊結果一致`);

@@ -3,7 +3,7 @@ import type { Family } from '../sim/shots';
 import type { HitGrade } from '../sim/match';
 
 /** 兩邊版本不同就不能一起玩（改了訊息格式或物理就 +1） */
-export const PROTOCOL = 2;
+export const PROTOCOL = 3;
 
 type V3 = [number, number, number];
 
@@ -12,6 +12,8 @@ export type PeerMsg =
   | { t: 'hello'; v: number; name: string; character: string; racket: string; points: 11 | 15 | 21; games: 1 | 3; venue: Venue }
   | { t: 'start'; points: 11 | 15 | 21; games: 1 | 3; venue: Venue }
   | { t: 'rematch' }
+  // 斷線重連後由房主送：從這個比分重新發球（sc / gm = [送出方, 接收方]，srv = 誰發球）
+  | { t: 'resume'; sc: [number, number]; gm: [number, number]; srv: 'me' | 'you' }
   | { t: 'bye' }
   | { t: 'ping'; a: number }
   | { t: 'pong'; a: number }

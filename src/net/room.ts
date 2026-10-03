@@ -39,6 +39,12 @@ export class RoomClient {
   private wantRematch = false;
   private peerRematch = false;
   private closedByMe = false;
+  private retries = 0;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 這個房間是自己建的（顯示的等待文字不同） */
+  creator = false;
+  /** 比賽進行中（對方重新連線時改送「繼續比賽」而不是重開一場） */
+  inMatch = false;
 
   /** 狀態文字（給 UI 顯示） */
   onStatus: (text: string, kind: 'wait' | 'ok' | 'error') => void = () => {};
@@ -47,11 +53,19 @@ export class RoomClient {
   onGame: (msg: PeerMsg) => void = () => {};
   /** 對方離開或斷線 */
   onPeerLeft: () => void = () => {};
+  /** 自己跟伺服器斷線（會自動重連） */
+  onDisconnect: () => void = () => {};
+  /** 比賽中對方（重新）連上：host = 自己是房主（由房主送「繼續比賽」） */
+  onRejoin: (peer: Hello, host: boolean) => void = () => {};
+  /** 房主送來的「繼續比賽」 */
+  onResume: (msg: Extract<PeerMsg, { t: 'resume' }>) => void = () => {};
 
   constructor(readonly code: string, private hello: () => Hello) {}
 
   connect(): void {
-    this.onStatus('連線中…', 'wait');
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    this.onStatus(this.retries ? '重新連線中…' : '連線中…', 'wait');
     let ws: WebSocket;
     try {
       ws = new WebSocket(`${ROOM_SERVER}/room/${this.code}`);
@@ -72,12 +86,34 @@ export class RoomClient {
     ws.onclose = () => {
       if (this.ws !== ws) return;
       this.ws = null;
-      if (!this.closedByMe) {
-        this.onStatus('跟伺服器斷線了', 'error');
+      if (this.closedByMe) return;
+      // 斷線（例如切到別的 App 分享房號、網路不穩）：自動重連，對方會先看到我離開、我回來後繼續
+      this.peer = null;
+      this.sentHello = false;
+      if (this.retries >= 8) {
+        this.onStatus('跟伺服器斷線了，請回主選單重新進房', 'error');
         this.onPeerLeft();
+        return;
       }
+      this.onStatus('連線中斷，重新連線中…', 'wait');
+      this.onDisconnect();
+      const delay = Math.min(5000, 400 * 2 ** this.retries++);
+      this.retryTimer = setTimeout(() => this.connect(), delay);
     };
-    ws.onerror = () => this.onStatus('連不上伺服器', 'error');
+    ws.onerror = () => {
+      if (!this.retries) this.onStatus('連不上伺服器，重試中…', 'error');
+    };
+  }
+
+  /** 回到遊戲（從別的 App 切回來）：沒連上就馬上重連 */
+  wake(): void {
+    if (this.closedByMe || (this.ws && this.ws.readyState <= WebSocket.OPEN)) return;
+    this.retries = Math.max(1, this.retries);
+    this.connect();
+  }
+
+  get connected(): boolean {
+    return this.ws?.readyState === WebSocket.OPEN;
   }
 
   send(msg: PeerMsg): void {
@@ -86,6 +122,7 @@ export class RoomClient {
 
   close(): void {
     this.closedByMe = true;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
     this.send({ t: 'bye' });
     this.ws?.close(1000);
     this.ws = null;
@@ -121,8 +158,12 @@ export class RoomClient {
     switch (msg.t) {
       case 'welcome':
         this.role = msg.role;
-        if (msg.peers === 0) this.onStatus('等待對手加入…（把房號或連結傳給朋友）', 'wait');
-        else this.sendHello();
+        this.retries = 0;
+        if (msg.peers === 0) {
+          if (this.inMatch) this.onStatus('重新連上了，等對手回來…', 'wait');
+          else if (this.creator) this.onStatus('等待對手加入…（把房號或連結傳給朋友）', 'wait');
+          else this.onStatus(`房間 ${this.code} 目前沒有人（房主可能暫時離開，或房號打錯），等對方回來…`, 'wait');
+        } else this.sendHello();
         break;
       case 'full':
         this.closedByMe = true;
@@ -148,6 +189,10 @@ export class RoomClient {
         }
         this.peer = { name: msg.name, character: msg.character, racket: msg.racket, points: msg.points, games: msg.games, venue: msg.venue };
         if (!this.sentHello) this.sendHello();
+        if (this.inMatch) {
+          this.onRejoin(this.peer, this.role === 'host');
+          return;
+        }
         if (this.role === 'host') this.sendStart();
         else this.onStatus('對手準備好了，等房主開始…', 'ok');
         break;
@@ -156,6 +201,9 @@ export class RoomClient {
           this.wantRematch = this.peerRematch = false;
           this.onStart({ points: msg.points, games: msg.games, venue: msg.venue }, this.peer, false);
         }
+        break;
+      case 'resume':
+        this.onResume(msg);
         break;
       case 'rematch':
         this.peerRematch = true;

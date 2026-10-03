@@ -90,6 +90,11 @@ export const GAME = {
   // 硬伸手接快球的懲罰：品質 × (1 - penalty × 來球兇度 × 遠)；兇度：殺球 1、撲壓 0.8、平抽 0.5；遠 = 離身體 comfy m → 擊球範圍邊緣
   stretch: { comfy: 0.6, penalty: 0.75, maxFail: 0.8 },
 
+  // 線上：收到對方擊球後要補多少網路延遲（0 = 不補，接球方拿到完整反應時間）；
+  // dilate：自己打過去的球在本機整段平均放慢（抵掉來回延遲），對方回球時球就在他的球拍附近、不會瞬移
+  // （holdScale／holdMax：另一種做法「到對方球拍附近才放慢」，實測比較差，預設關掉）
+  online: { fastForward: 0, dilate: true, holdScale: 1, holdMax: 0, holdMargin: 0 },
+
   serveContactY: 0.95,
   pointPause: 1.8,
 };

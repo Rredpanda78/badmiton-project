@@ -40,7 +40,8 @@ let again: () => void = () => startGame(); // 「再來一次」要重開什麼
 let demoPlayer: AIController | null = null; // 主選單背景的 AI 示範對打
 let resultTimer: number | undefined;
 /** 線上對戰：房間連線＋比賽同步（還在大廳時 sync = null） */
-let online: { room: RoomClient; sync: OnlineSync | null } | null = null;
+/** waiting：斷線等待中（比賽暫停）；graceT：對方斷線後還等幾秒 */
+let online: { room: RoomClient; sync: OnlineSync | null; waiting: boolean; graceT: number } | null = null;
 let netInfoT = 0;
 /** 新手教學（暫停時玩家的那一下輸入先存著，下一個 tick 用） */
 let tutorial: TutorialRunner | null = null;
@@ -315,6 +316,7 @@ function handleEvent(e: MatchEvent): void {
       }
       break;
     case 'match':
+      if (online) online.room.inMatch = false;
       if (live) {
         const ctx = tourCtx;
         resultTimer = window.setTimeout(() => {
@@ -375,6 +377,7 @@ function tick(now: number): void {
     }
   }
   if (hitStop > 0) hitStop -= dt;
+  else if (onlineWaitTick(dt)) acc = 0; // 線上斷線等待中：比賽暫停
   else if (mode === 'play' || mode === 'menu' || (online?.sync && mode === 'paused')) {
     // 線上：暫停畫面時比賽照樣進行（對方不會等你）
     acc += dt * GAME.simSpeed * (tutorial && mode === 'play' ? tutorial.timeScale : 1);
@@ -681,6 +684,9 @@ requestAnimationFrame(frame);
   get tutorial() {
     return tutorial;
   },
+  get online() {
+    return online;
+  },
   get bots() {
     return bots;
   },
@@ -918,17 +924,19 @@ function openOnline(): void {
 }
 
 function leaveOnline(): void {
+  hud.notice(null);
   online?.room.close();
   online = null;
   $('againBtn').style.display = '';
   $('netInfo').textContent = '';
 }
 
-function joinRoom(code: string): void {
+function joinRoom(code: string, creator = false): void {
   leaveOnline();
   unlockAudio();
   const room = new RoomClient(code, myHello);
-  online = { room, sync: null };
+  room.creator = creator;
+  online = { room, sync: null, waiting: false, graceT: 0 };
   room.onStatus = (text, kind) => {
     const el = $('roomStatus');
     el.textContent = text;
@@ -939,13 +947,40 @@ function joinRoom(code: string): void {
   room.onGame = (msg) => online?.sync?.receive(msg);
   room.onPeerLeft = () => {
     if (online?.room !== room || !online.sync) return;
-    // 比賽中對方離開：結束這場
-    online.sync = null;
-    clearTimeout(resultTimer);
-    $('resultTitle').textContent = '對手離開了';
-    $('resultScore').textContent = `比分 ${match.score[0]} : ${match.score[1]}`;
-    $('againBtn').style.display = 'none';
-    setMode('result');
+    if (match.phase === 'matchOver' || !room.connected) return endOnlineMatch('對手離開了');
+    // 比賽中對方斷線：先暫停等 20 秒（可能只是切到別的 App），回來就從目前比分繼續
+    online.waiting = true;
+    online.graceT = 20;
+  };
+  room.onDisconnect = () => {
+    if (online?.room !== room || !online.sync) return;
+    online.waiting = true; // 自己斷線：等自動重連
+    online.graceT = 0;
+  };
+  room.onRejoin = (_peer, host) => {
+    if (online?.room !== room || !online.sync) return;
+    if (host) {
+      // 房主決定從哪裡繼續：目前比分、目前發球方，重新發球
+      const L = HUMAN;
+      const R = match.remote ?? 1;
+      room.send({ t: 'resume', sc: [match.score[L], match.score[R]], gm: [match.games[L], match.games[R]], srv: match.server === L ? 'me' : 'you' });
+      match.resumePoint(match.score.slice() as [number, number], match.games.slice() as [number, number], match.server);
+      resumed();
+    }
+    // 不是房主：等房主送「繼續比賽」
+  };
+  room.onResume = (msg) => {
+    if (online?.room !== room || !online.sync) return;
+    const L = HUMAN;
+    const R = match.remote ?? 1;
+    const sc: [number, number] = [0, 0];
+    const gm: [number, number] = [0, 0];
+    sc[R] = msg.sc[0];
+    sc[L] = msg.sc[1];
+    gm[R] = msg.gm[0];
+    gm[L] = msg.gm[1];
+    match.resumePoint(sc, gm, msg.srv === 'me' ? R : L);
+    resumed();
   };
   showLobby(code);
   room.connect();
@@ -985,6 +1020,9 @@ function startOnlineMatch(start: StartInfo, peer: Hello, host: boolean): void {
   hitStop = 0;
   const room = online.room;
   online.sync = new OnlineSync(match, (msg) => room.send(msg));
+  online.waiting = false;
+  online.graceT = 0;
+  room.inMatch = true;
   again = () => room.requestRematch();
   $('againBtn').style.display = '';
   acc = 0;
@@ -1019,7 +1057,7 @@ $('onlineBackBtn').addEventListener('click', () => {
   $('online').classList.remove('show');
   $('menu').classList.add('show');
 });
-$('createRoomBtn').addEventListener('click', () => joinRoom(newRoomCode()));
+$('createRoomBtn').addEventListener('click', () => joinRoom(newRoomCode(), true));
 $('joinRoomBtn').addEventListener('click', () => {
   const code = normalizeCode(($('roomCodeInput') as HTMLInputElement).value);
   if (code.length < 4) {
@@ -1303,3 +1341,45 @@ function steerAssist(mine: PlayerInput, a: PlayerInput): void {
     mine.moveY = a.moveY * 0.85;
   }
 }
+
+// ---------- 線上：斷線暫停、重連後繼續 ----------
+/** 結束線上比賽（對手離開、等不到人） */
+function endOnlineMatch(title: string): void {
+  if (!online) return;
+  online.sync = null;
+  online.waiting = false;
+  online.room.inMatch = false;
+  clearTimeout(resultTimer);
+  $('resultTitle').textContent = title;
+  $('resultScore').textContent = `比分 ${match.score[0]} : ${match.score[1]}`;
+  $('againBtn').style.display = 'none';
+  setMode('result');
+}
+
+/** 斷線後重新連上、從目前比分重新發球 */
+function resumed(): void {
+  if (!online) return;
+  online.waiting = false;
+  online.graceT = 0;
+  acc = 0;
+  hud.notice(null);
+  hud.intro('對手回來了', '從目前比分繼續');
+}
+
+/** 每幀：斷線等待中暫停比賽，顯示倒數；等不到就結束 */
+function onlineWaitTick(dt: number): boolean {
+  if (!online?.sync || !online.waiting) return false;
+  if (online.graceT > 0) {
+    online.graceT -= dt;
+    hud.notice(`對手斷線了，等他回來… ${Math.ceil(online.graceT)}`);
+    if (online.graceT <= 0) {
+      hud.notice(null);
+      endOnlineMatch('對手斷線了');
+    }
+  } else hud.notice('連線中斷，重新連線中…');
+  return true;
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) online?.room.wake();
+});
