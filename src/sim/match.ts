@@ -307,17 +307,8 @@ export class Match {
     // 只點不滑：羽球快到身邊才算出拍，否則只是連按兩下的第一下（不揮拍）
     if (p.bufferT > 0 && p.bufferedFlick?.cmd?.soft && !this.softTapLive(p)) p.bufferT = 0;
     const flick = p.bufferT > 0 ? p.bufferedFlick : null;
-    const ds = p.swing;
-    if (flick && ds?.dive && !ds.contacted && !ds.whiffed && p.dive) {
-      // 撲出去時另外划 = 自己決定怎麼救（球種、方向），不用蓄力：力道照手勢或來球反彈
-      p.bufferT = 0;
-      const cls = classifyFlick(flick);
-      ds.family = flick.cmd ? flick.cmd.family : cls.family;
-      ds.aimX = cls.aimX;
-      ds.preset = !!flick.cmd;
-      ds.charge = flick.cmd ? chargeForDepth(flick.cmd.depth === 'smash' ? 3.0 : flick.cmd.depth) : 0;
-      ds.diveAuto = false;
-    }
+    // 撲出去時右手划動不算（撲到就自動救回網前，不用同時操作兩邊）
+    if (flick && p.dive) p.bufferT = 0;
     if (flick && !p.swing && !busy && p.recover <= 0 && this.phase !== 'matchOver') {
       p.bufferT = 0;
       const cls = classifyFlick(flick);
@@ -525,7 +516,7 @@ export class Match {
       window: GAME.dive.dur + 0.04,
       charge: chargeForDepth(GAME.dive.depth),
       preset: true,
-      family: 'up',
+      family: 'down', // 救回網前
       aimX: 0,
       contacted: false,
       contactPoint: null,
@@ -1000,6 +991,21 @@ export class Match {
       if (Math.hypot(q.x - p.pos.x, q.z - p.pos.z) <= this.reachOf(p) + 0.7) return true;
     }
     return false;
+  }
+
+  /** 教學暫停時：世界停住，只讓這位球員繼續蓄力（放開就歸零） */
+  holdCharge(id: 0 | 1, charging: boolean, dt: number): void {
+    const p = this.players[id];
+    if (charging && !p.swing) {
+      p.charging = true;
+      p.chargeT += dt;
+      p.charge = chargeFromTime(p.chargeT);
+      if (p.jumpArmed || p.airborne) p.charge = Math.min(p.charge, JUMP_CHARGE_CAP);
+    } else if (!charging) {
+      p.charging = false;
+      p.charge = 0;
+      p.chargeT = 0;
+    }
   }
 
   // ---------- 線上對戰 ----------

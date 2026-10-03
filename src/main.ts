@@ -11,6 +11,8 @@ import { buildKit, CHARACTERS, characterById, racketById, RACKETS, type Kit } fr
 import { Hud } from './ui/hud';
 import { chargeZones } from './sim/shots';
 import { OnlineSync } from './net/sync';
+import { buildTutorial, TutorialRunner, type TutUI } from './modes/tutorial';
+import type { PlayerInput } from './sim/match';
 import { newRoomCode, normalizeCode, RoomClient, type Hello, type StartInfo } from './net/room';
 
 const HUMAN = 0 as const;
@@ -19,6 +21,7 @@ const $ = (id: string) => document.getElementById(id)!;
 type Mode = 'menu' | 'play' | 'paused' | 'result';
 
 const settings = loadSettings();
+saveSettings(); // 舊存檔遷移後立刻存回
 const renderer = new GameRenderer($('app'));
 const controls = new LocalControls(renderer.renderer.domElement, $('touch'));
 const hud = new Hud($('hud'));
@@ -34,6 +37,9 @@ let resultTimer: number | undefined;
 /** 線上對戰：房間連線＋比賽同步（還在大廳時 sync = null） */
 let online: { room: RoomClient; sync: OnlineSync | null } | null = null;
 let netInfoT = 0;
+/** 新手教學（暫停時玩家的那一下輸入先存著，下一個 tick 用） */
+let tutorial: TutorialRunner | null = null;
+let tutInput: PlayerInput | null = null;
 
 /** 手機震動（iPhone 的 Safari 不支援，會自動略過） */
 function buzz(pattern: number | number[]): void {
@@ -56,6 +62,7 @@ let assist: AIController | null = null; // 簡單模式：幫玩家自動跑位
 const pick = <T,>(xs: T[]) => xs[Math.floor(Math.random() * xs.length)];
 
 function newMatch(demo: boolean, tourOpp?: TourOpponent, venue?: Venue): void {
+  endTutorial();
   // 對手每場隨機換一位球員、一支球拍（不跟自己同一位）
   const me = demo ? pick(CHARACTERS) : characterById(settings.character);
   const opp = tourOpp ? characterById(tourOpp.character) : pick(CHARACTERS.filter((c) => c.id !== me.id));
@@ -166,6 +173,7 @@ function setMode(m: Mode): void {
   $('result').classList.toggle('show', m === 'result');
   $('drills').classList.remove('show');
   if (m !== 'menu') $('online').classList.remove('show');
+  if (m !== 'menu') $('settings').classList.remove('show');
   $('restartBtn').style.display = online?.sync ? 'none' : ''; // 線上不能重新開始
   $('hud').style.visibility = m === 'menu' ? 'hidden' : 'visible';
 }
@@ -255,6 +263,7 @@ function handleEvent(e: MatchEvent): void {
   }
   if (live) hud.onEvent(e, match, renderer, HUMAN);
   drill?.onEvent(e);
+  tutorial?.onEvent(e);
 }
 
 // ---------- 主迴圈：固定步長模擬，畫面照幀率跑 ----------
@@ -264,14 +273,24 @@ function tick(now: number): void {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
   if (drill && mode === 'play' && hitStop <= 0) drill.tick(dt);
+  if (tutorial && mode === 'play') {
+    tutorial.tick(dt);
+    if (tutorial.frozen) {
+      // 教學暫停：世界停住，只收玩家的輸入（蓄力照算），做對了才繼續
+      const inp = controls.poll();
+      if (!inp.flick) match.holdCharge(HUMAN, inp.charging, dt * GAME.simSpeed); // 划的那一下保留蓄力
+      tutInput = tutorial.frozenInput(inp) ?? tutInput;
+    }
+  }
   if (hitStop > 0) hitStop -= dt;
   else if (mode === 'play' || mode === 'menu' || (online?.sync && mode === 'paused')) {
     // 線上：暫停畫面時比賽照樣進行（對方不會等你）
-    acc += dt * GAME.simSpeed;
+    acc += dt * GAME.simSpeed * (tutorial && mode === 'play' ? tutorial.timeScale : 1);
     let n = 0;
     while (acc >= PHYS.dt && n++ < 40 && hitStop <= 0) {
-      const mine = demoPlayer ? demoPlayer.input() : controls.poll();
-      if (assist) {
+      const mine = demoPlayer ? demoPlayer.input() : (tutInput ?? controls.poll());
+      tutInput = null;
+      if (assist && (!tutorial || tutorial.wantAssist)) {
         // 簡單模式：移動交給自動跑位，蓄力／出拍還是玩家自己
         const a = assist.input();
         mine.moveX = a.moveX;
@@ -294,6 +313,10 @@ function tick(now: number): void {
         handleEvent(e);
       }
       sync?.afterStep();
+      if (tutorial?.checkFreeze()) {
+        acc = 0;
+        break;
+      }
     }
     if (hitStop > 0) acc = 0;
   }
@@ -397,11 +420,20 @@ document.addEventListener('fullscreenchange', () => controls.reset());
 function loadSettings(): MatchSettings {
   try {
     const raw = localStorage.getItem('badminton.settings');
-    if (raw) return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    if (raw) {
+      const s: MatchSettings = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+      // v2：預設改成自動跑位＋自己划撲救（舊存檔一次性套用新預設）
+      if ((s.settingsVersion ?? 1) < 2) {
+        s.autoMove = true;
+        s.autoDive = false;
+      }
+      s.settingsVersion = 2;
+      return s;
+    }
   } catch {
     /* 私密模式等情況讀不到就用預設 */
   }
-  return { ...DEFAULT_SETTINGS };
+  return { ...DEFAULT_SETTINGS, settingsVersion: 2 };
 }
 function saveSettings(): void {
   try {
@@ -421,6 +453,9 @@ requestAnimationFrame(frame);
 (window as unknown as { game: unknown }).game = {
   get match() {
     return match;
+  },
+  get tutorial() {
+    return tutorial;
   },
   settings,
   renderer,
@@ -447,6 +482,7 @@ function buildDrillList(): void {
 }
 
 function startDrill(d: Drill): void {
+  endTutorial();
   unlockAudio();
   if (controls.isTouch || matchMedia('(pointer: coarse)').matches) document.documentElement.requestFullscreen?.().catch(() => {});
   const me = characterById(settings.character);
@@ -686,6 +722,7 @@ function joinRoom(code: string): void {
 
 function startOnlineMatch(start: StartInfo, peer: Hello, host: boolean): void {
   if (!online) return;
+  endTutorial();
   unlockAudio();
   if (controls.isTouch || matchMedia('(pointer: coarse)').matches) document.documentElement.requestFullscreen?.().catch(() => {});
   const me = characterById(settings.character);
@@ -737,6 +774,14 @@ function updateNetInfo(dt: number): void {
 }
 
 $('onlineBtn').addEventListener('click', openOnline);
+$('settingsBtn').addEventListener('click', () => {
+  $('menu').classList.remove('show');
+  $('settings').classList.add('show');
+});
+$('settingsDoneBtn').addEventListener('click', () => {
+  $('settings').classList.remove('show');
+  $('menu').classList.add('show');
+});
 $('onlineBackBtn').addEventListener('click', () => {
   leaveOnline();
   $('online').classList.remove('show');
@@ -788,3 +833,97 @@ $('shareRoomBtn').addEventListener('click', async () => {
     joinRoom(normalizeCode(code));
   }
 }
+
+// ---------- 新手教學 ----------
+const tutUI: TutUI = {
+  card(title, html, button, progress) {
+    $('tutCard').style.display = 'block';
+    $('tutTitle').textContent = title;
+    $('tutProg').textContent = progress;
+    $('tutText').innerHTML = html;
+    $('tutBtn').style.display = button ? '' : 'none';
+    $('tutBtn').textContent = button ?? '';
+    $('tutBtn2').style.display = 'none';
+    if (hud.drill && tutorial) hud.drill = { ...hud.drill, rep: tutorial.idx + 1 };
+  },
+  prompt(text) {
+    $('tutPrompt').textContent = text ?? '';
+    $('tutPrompt').classList.toggle('show', !!text);
+  },
+  highlight(h) {
+    controls.highlight(h);
+  },
+  target(zone) {
+    renderer.setTarget(zone);
+  },
+  toast(ok, msg) {
+    hud.showRep(ok, msg);
+    sfx.point(ok);
+    buzz(ok ? 20 : [8, 40, 8]);
+    if (ok && hud.drill) hud.drill = { ...hud.drill, ok: hud.drill.ok + 1 };
+  },
+  finish() {
+    $('tutCard').style.display = 'block';
+    $('tutTitle').textContent = '教學完成！🎉';
+    $('tutProg').textContent = '';
+    $('tutText').innerHTML = '基本操作都學會了。可以開始比賽，或到「訓練關卡」把每種球練熟。';
+    $('tutBtn').style.display = '';
+    $('tutBtn').textContent = '開始比賽';
+    $('tutBtn2').style.display = '';
+    $('tutBtn2').textContent = '回主選單';
+    try {
+      localStorage.setItem('badminton.tutorialDone', '1');
+    } catch {
+      /* ignore */
+    }
+  },
+};
+
+/** 離開教學（開始其他模式時呼叫） */
+function endTutorial(): void {
+  tutorial = null;
+  tutInput = null;
+  $('tutCard').style.display = 'none';
+  $('tutPrompt').classList.remove('show'); // 不能用 tutUI（啟動時還沒宣告）
+  controls.highlight(null);
+}
+
+function startTutorial(): void {
+  unlockAudio();
+  if (controls.isTouch || matchMedia('(pointer: coarse)').matches) document.documentElement.requestFullscreen?.().catch(() => {});
+  leaveOnline();
+  endTutorial();
+  const me = characterById(settings.character);
+  match = new Match({ ...settings, practice: true, aiCharacter: 'allround', aiRacket: 'balance' }, (Date.now() ^ (Math.random() * 1e9)) >>> 0);
+  opponent = null;
+  demoPlayer = null;
+  drill = null;
+  tourCtx = null;
+  setupAssist(false);
+  // 教學一律有跑位輔助（每一步自己決定用不用），撲救一定自己划
+  assist = new AIController(match, HUMAN, 'hard', true);
+  assist.allowDive = false;
+  controls.autoDive = false;
+  controls.scheme = settings.scheme;
+  renderer.setLooks([{ ...me, racketColor: racketById(settings.racket).color }, { shirt: 0x8a96a8, shorts: 0x2a2f38 }]);
+  applyVenue(settings.venue);
+  renderer.setTarget(null);
+  hud.oppName = '教練';
+  hud.oppTag = 'AI';
+  const steps = buildTutorial(settings.scheme, settings.autoMove);
+  hud.drill = { name: '新手教學', rep: 1, reps: steps.length, ok: 0, goal: '' };
+  hitStop = 0;
+  clearTimeout(resultTimer);
+  tutorial = new TutorialRunner(match, steps, tutUI, settings.scheme);
+  again = () => startTutorial();
+  acc = 0;
+  setMode('play');
+}
+
+$('tutorialBtn').addEventListener('click', startTutorial);
+$('tutBtn').addEventListener('click', () => {
+  if (!tutorial) return;
+  if (tutorial.done) startGame();
+  else tutorial.button();
+});
+$('tutBtn2').addEventListener('click', () => toMenu());

@@ -63,6 +63,9 @@ export class LocalControls {
   private smashPad: Pad | null = null;
   private lastSmashTap = 0;
   private smashKnob!: HTMLElement;
+  /** 教學：目前要閃的控制 */
+  private hl: 'move' | 'action' | 'smash' | 'dive' | null = null;
+  private hlEl: HTMLElement;
   /** 按下蓄力鍵的瞬間（jump = 這次是連按兩下） */
   onPress: ((jump: boolean) => void) | null = null;
 
@@ -84,6 +87,7 @@ export class LocalControls {
     this.smashEl.addEventListener('pointerup', this.onSmashUp);
     this.smashEl.addEventListener('pointercancel', () => (this.smashPad = null));
     this.smashKnob = mk(this.smashEl, 'smash-knob');
+    this.hlEl = mk(overlay, 'tut-ring');
 
     surface.addEventListener('pointerdown', this.onDown);
     window.addEventListener('pointermove', this.onMove);
@@ -100,6 +104,11 @@ export class LocalControls {
     window.addEventListener('touchcancel', this.reconcile);
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
+  }
+
+  /** 教學：讓某個控制一直閃（null = 不閃） */
+  highlight(h: 'move' | 'action' | 'smash' | 'dive' | null): void {
+    this.hl = h;
   }
 
   /** 清掉所有按住狀態（切換畫面、分頁隱藏、全螢幕切換、轉向時呼叫） */
@@ -499,6 +508,18 @@ export class LocalControls {
     }
     this.smashKnob.style.transform = `translate(${kx}px, ${ky}px)`;
     this.smashEl.classList.toggle('jump', !!sp?.jump);
+
+    // 教學的閃爍圈：疊在要用的那個控制上
+    const hlTarget = this.hl === 'action' ? this.ringEl : this.hl === 'smash' ? this.smashEl : this.hl ? this.baseEl : null;
+    const hlOn = !!hlTarget && hlTarget.style.display !== 'none';
+    this.hlEl.style.display = hlOn ? 'block' : 'none';
+    if (hlOn) {
+      const size = hlTarget.offsetWidth + 24;
+      this.hlEl.style.left = hlTarget.style.left;
+      this.hlEl.style.top = hlTarget.style.top;
+      this.hlEl.style.width = this.hlEl.style.height = `${size}px`;
+      this.hlEl.style.margin = `${-size / 2}px 0 0 ${-size / 2}px`;
+    }
 
     const showLabel = tap && (!!a || !!sp);
     this.labelEl.style.display = showLabel ? 'block' : 'none';

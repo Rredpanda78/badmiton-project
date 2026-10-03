@@ -64,15 +64,15 @@ export const GAME = {
     smashMaxSpeed: 62, // 跳殺初速上限（m/s，約 225 km/h）
   },
 
-  // 魚躍（撲救）：移動搖桿連按兩下再往某方向划（自動跑位：左邊撲救區直接划）
+  // 魚躍（撲救）：移動搖桿連按兩下再往某方向划（自動跑位：左邊撲救區直接划）；撲到就自動救回網前
   dive: {
     dur: 0.36, // 撲出去到身體著地（秒）
     dist: 1.7, // 從靜止撲出的距離（m）
     reachBonus: 0.5, // 身體撲平、手臂和拍子伸直：擊球範圍往撲的方向多出這麼多
     maxY: 1.5, // 撲出去時打得到的最高點
     down: 0.8, // 趴在地上到爬起來（秒），不能動也不能揮拍
-    quality: 0.66, // 自動接回（沒另外划）的品質：一顆普通的挑球
-    depth: 4.6, // 自動接回的落點深度
+    quality: 0.66, // 自動救球的品質
+    depth: 1.3, // 自動救回網前（放網）的深度
   },
   manualReachMul: 1.2, // 手動跑位時玩家的擊球範圍倍率（自動跑位與 AI = 1）
 
@@ -118,6 +118,7 @@ export interface MatchSettings {
   aiCharacter?: string; // 對手（每場隨機）
   aiRacket?: string;
   practice?: boolean; // 練習模式：發球機餵球、不計分
+  settingsVersion?: number; // 存檔格式版本（改預設值時用來遷移舊存檔）
 }
 
 export const DEFAULT_SETTINGS: MatchSettings = {
@@ -131,7 +132,7 @@ export const DEFAULT_SETTINGS: MatchSettings = {
   umpire: true,
   character: 'allround',
   racket: 'balance',
-  autoMove: false,
+  autoMove: true,
   autoDive: false,
   scheme: 'charge',
   venue: 'sakura',

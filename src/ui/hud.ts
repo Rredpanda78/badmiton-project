@@ -99,7 +99,7 @@ export class Hud {
     const serveDot = (id: number) => (match.server === id && match.phase !== 'matchOver' ? '<i class="dot"></i>' : '');
     const multi = match.settings.games > 1;
     const d = this.drill;
-    this.goal.style.display = d ? 'block' : 'none';
+    this.goal.style.display = d && d.goal ? 'block' : 'none';
     if (d) {
       this.score.innerHTML = `<span>${d.name}</span><b>${Math.min(d.rep, d.reps)}/${d.reps}</b><span class="me">✔ ${d.ok}</span>`;
       this.goal.textContent = d.goal;

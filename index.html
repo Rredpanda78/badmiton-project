@@ -19,6 +19,12 @@
       <div id="banner"><span></span><div class="sub"></div></div>
       <div id="drillGoal"></div>
       <div id="netInfo"></div>
+      <div id="tutCard">
+        <div class="tut-head"><b id="tutTitle"></b><span id="tutProg"></span></div>
+        <div id="tutText"></div>
+        <div class="tut-btns"><button id="tutBtn"></button><button id="tutBtn2" class="ghost"></button></div>
+      </div>
+      <div id="tutPrompt"></div>
       <div id="hint">發球：按住蓄力 → <b>往上划</b> 發高遠球、<b>往下划</b> 發小球</div>
     </div>
     <div id="touch"></div>
@@ -26,78 +32,27 @@
     <div id="menu" class="overlay show">
       <div class="panel">
         <h1>羽球對決 <span>2.5D</span></h1>
-        <p class="tag">左手移動・右手蓄力划動出拍</p>
+        <p class="tag">右手划動擊球・左手撲救（設定可改手動跑位）</p>
         <div class="section-title">球員</div>
         <div id="charCards" class="cards"></div>
         <div class="section-title">球拍</div>
         <div id="racketCards" class="cards rackets"></div>
         <div id="kitSummary" class="kit-summary"></div>
-        <div class="row">
-          <label>跑位</label>
-          <div class="seg" data-key="autoMove"><button data-v="false">手動</button><button data-v="true">自動（簡單）</button></div>
-        </div>
-        <div class="row">
-          <label>撲救</label>
-          <div class="seg" data-key="autoDive"><button data-v="false">自己划</button><button data-v="true">電腦自動撲</button></div>
-        </div>
-        <div class="row">
-          <label>擊球</label>
-          <div class="seg" data-key="scheme"><button data-v="charge">蓄力划動</button><button data-v="tap">點擊滑放</button></div>
-        </div>
-        <div class="row">
-          <label>場地</label>
-          <div class="seg wrap" data-key="venue">
-            <button data-v="sakura">櫻花園</button><button data-v="night">夜櫻</button><button data-v="bamboo">竹林</button><button data-v="indoor">室內</button>
-            <button data-v="market">市場</button><button data-v="paddy">稻田</button><button data-v="beach">海灘</button>
-          </div>
-        </div>
-        <div class="row">
-          <label>難度</label>
-          <div class="seg" data-key="difficulty">
-            <button data-v="easy">簡單</button><button data-v="normal">普通</button><button data-v="hard">困難</button>
-          </div>
-        </div>
-        <div class="row">
-          <label>每局</label>
-          <div class="seg" data-key="points"><button data-v="11">11 分</button><button data-v="21">21 分</button></div>
-        </div>
-        <div class="row">
-          <label>局數</label>
-          <div class="seg" data-key="games"><button data-v="1">一局</button><button data-v="3">三戰兩勝</button></div>
-        </div>
-        <div class="row">
-          <label>落點提示</label>
-          <div class="seg" data-key="landingHint"><button data-v="true">開</button><button data-v="false">關</button></div>
-        </div>
-        <div class="row">
-          <label>震動</label>
-          <div class="seg" data-key="vibration"><button data-v="true">開</button><button data-v="false">關</button></div>
-        </div>
-        <div class="row">
-          <label>音效</label>
-          <div class="seg" data-key="sound"><button data-v="true">開</button><button data-v="false">關</button></div>
-        </div>
-        <div class="row">
-          <label>音樂</label>
-          <div class="seg" data-key="music"><button data-v="true">開</button><button data-v="false">關</button></div>
-        </div>
-        <div class="row">
-          <label>裁判報分</label>
-          <div class="seg" data-key="umpire"><button data-v="true">開</button><button data-v="false">關</button></div>
-        </div>
         <button id="startBtn" class="primary">開始比賽（對 AI）</button>
+        <button id="tutorialBtn">新手教學</button>
         <button id="tourBtn">場館巡迴賽</button>
         <button id="drillsBtn">訓練關卡</button>
         <button id="onlineBtn">線上對戰（好友房）</button>
+        <button id="settingsBtn">⚙ 設定</button>
         <details class="howto">
           <summary>操作說明</summary>
           <h3>手機（直向、橫向都可以）</h3>
           <ul>
-            <li><b>左手</b>：螢幕左半邊按住拖曳 → 移動</li>
-            <li><b>右手</b>：螢幕右半邊按住 → 蓄力；往某方向<b>划動</b> → 出拍</li>
-            <li>按住後不划、直接放開 → 取消（可以當假動作）</li>
-            <li><b>魚躍撲救</b>：移動搖桿<b>連按兩下</b>（圈變橘色）再往某方向划 → 撲出去，自動把球挑回；撲完要趴一下才爬得起來</li>
-            <li><b>自動跑位</b>：右邊是擊球區；左邊的橘色「撲」圈往方向划 = 魚躍撲救（設定「撲救」可改成電腦自動撲）</li>
+            <li>第一次玩建議先跑一次<b>新手教學</b></li>
+            <li><b>預設自動跑位</b>：電腦幫你跑位，右手只管擊球</li>
+            <li><b>右手</b>（蓄力划動）：按住 → 蓄力；往某方向<b>划動</b> → 出拍；按住不划直接放開 = 取消（假動作）</li>
+            <li><b>左手</b>：橘色「撲」圈往球的方向划 = <b>魚躍撲救</b>，撲到會自動救回網前；撲完要趴一下才爬得起來</li>
+            <li><b>手動跑位</b>（設定裡切換）：左邊變成移動搖桿；移動搖桿<b>連按兩下</b>（圈變橘色）再划 = 魚躍</li>
           </ul>
           <h3>擊球方式二：點擊滑放（不用蓄力）</h3>
           <ul>
@@ -136,6 +91,70 @@
             <li>手把：左搖桿移動、RT 蓄力、右搖桿撥出去出拍</li>
           </ul>
         </details>
+      </div>
+    </div>
+
+    <div id="settings" class="overlay">
+      <div class="panel">
+        <h2>設定</h2>
+        <div class="section-title">操作</div>
+        <div class="row">
+          <label>跑位</label>
+          <div class="seg" data-key="autoMove"><button data-v="true">自動（推薦）</button><button data-v="false">手動</button></div>
+        </div>
+        <div class="row">
+          <label>撲救</label>
+          <div class="seg" data-key="autoDive"><button data-v="false">自己划</button><button data-v="true">電腦自動</button></div>
+        </div>
+        <p class="hint-line">自動跑位：左邊「撲」圈往球的方向划；手動跑位：移動搖桿連按兩下再划。撲出去會自動把球救回網前。</p>
+        <div class="row">
+          <label>擊球</label>
+          <div class="seg" data-key="scheme"><button data-v="charge">蓄力划動</button><button data-v="tap">點擊滑放</button></div>
+        </div>
+        <div class="section-title">比賽</div>
+        <div class="row">
+          <label>場地</label>
+          <div class="seg wrap" data-key="venue">
+            <button data-v="sakura">櫻花園</button><button data-v="night">夜櫻</button><button data-v="bamboo">竹林</button><button data-v="indoor">室內</button>
+            <button data-v="market">市場</button><button data-v="paddy">稻田</button><button data-v="beach">海灘</button>
+          </div>
+        </div>
+        <div class="row">
+          <label>難度</label>
+          <div class="seg" data-key="difficulty">
+            <button data-v="easy">簡單</button><button data-v="normal">普通</button><button data-v="hard">困難</button>
+          </div>
+        </div>
+        <div class="row">
+          <label>每局</label>
+          <div class="seg" data-key="points"><button data-v="11">11 分</button><button data-v="21">21 分</button></div>
+        </div>
+        <div class="row">
+          <label>局數</label>
+          <div class="seg" data-key="games"><button data-v="1">一局</button><button data-v="3">三戰兩勝</button></div>
+        </div>
+        <div class="section-title">畫面與聲音</div>
+        <div class="row">
+          <label>落點提示</label>
+          <div class="seg" data-key="landingHint"><button data-v="true">開</button><button data-v="false">關</button></div>
+        </div>
+        <div class="row">
+          <label>震動</label>
+          <div class="seg" data-key="vibration"><button data-v="true">開</button><button data-v="false">關</button></div>
+        </div>
+        <div class="row">
+          <label>音效</label>
+          <div class="seg" data-key="sound"><button data-v="true">開</button><button data-v="false">關</button></div>
+        </div>
+        <div class="row">
+          <label>音樂</label>
+          <div class="seg" data-key="music"><button data-v="true">開</button><button data-v="false">關</button></div>
+        </div>
+        <div class="row">
+          <label>裁判報分</label>
+          <div class="seg" data-key="umpire"><button data-v="true">開</button><button data-v="false">關</button></div>
+        </div>
+        <button id="settingsDoneBtn" class="primary">完成</button>
       </div>
     </div>
 

@@ -905,3 +905,119 @@ h2 {
   color: rgba(255, 255, 255, 0.55);
   pointer-events: none;
 }
+
+.hint-line {
+  margin: -2px 0 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+/* 新手教學 */
+#tutCard {
+  display: none;
+  position: absolute;
+  top: calc(max(10px, env(safe-area-inset-top)) + 58px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(92vw, 460px);
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(10, 16, 24, 0.86);
+  border: 1px solid rgba(255, 213, 74, 0.35);
+  pointer-events: auto;
+  font-size: 14px;
+  line-height: 1.55;
+}
+.tut-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 4px;
+}
+.tut-head b {
+  font-size: 17px;
+  color: #ffd54a;
+}
+.tut-head span {
+  font-size: 12px;
+  color: var(--muted);
+}
+#tutText b {
+  color: #fff;
+}
+.tut-retry {
+  color: #ff9a8a;
+  font-weight: 700;
+}
+.tut-btns {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.tut-btns button {
+  flex: 1;
+  margin: 0;
+  padding: 10px;
+  border-radius: 10px;
+  border: 0;
+  background: #ffd54a;
+  color: #1a1a1a;
+  font-weight: 700;
+  font-size: 15px;
+}
+.tut-btns button.ghost {
+  background: rgba(255, 255, 255, 0.12);
+  color: inherit;
+}
+#tutPrompt {
+  display: none;
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  transform: translate(-50%, -50%);
+  padding: 12px 18px;
+  border-radius: 14px;
+  background: rgba(10, 16, 24, 0.82);
+  border: 2px solid #ffd54a;
+  font-size: 22px;
+  font-weight: 800;
+  color: #ffd54a;
+  white-space: nowrap;
+  max-width: 94vw;
+  text-align: center;
+  pointer-events: none;
+  animation: tutPulse 0.9s ease-in-out infinite;
+}
+#tutPrompt.show {
+  display: block;
+}
+@keyframes tutPulse {
+  0%,
+  100% {
+    transform: translate(-50%, -50%) scale(1);
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.06);
+  }
+}
+.tut-ring {
+  display: none;
+  position: absolute;
+  border-radius: 50%;
+  border: 3px solid #ffd54a;
+  box-shadow: 0 0 18px rgba(255, 213, 74, 0.7);
+  pointer-events: none;
+  animation: hlPulse 0.9s ease-in-out infinite;
+}
+@keyframes hlPulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.12);
+    opacity: 0.55;
+  }
+}
