@@ -208,10 +208,21 @@ export const DEFAULT_SETTINGS: MatchSettings = {
 };
 
 /**
- * 鏡頭：y = 高度、z = 離球場中心的距離、lookZ = 看向的位置。
- * y/z 越小越平（越接近水平視角）。視角大小會自動算到剛好塞滿球場。
+ * 鏡頭（src/render/scene.ts）：轉播視角，自己永遠在畫面下方；視角大小會自動算到剛好塞滿球場。
+ * 直向（手機）、橫向各一組：
+ * - y = 高度、z = 離球場中心的距離、lookZ = 看向的位置（y/z 越小越平、越接近水平視角）
+ * - follow = 跟著自己左右移動的比例（0 = 不跟）
+ * - drift = 跟著「這一球的中心」左右漂移的比例：球在飛時中心偏向落點與接球的人，不然是兩人的中點
+ * - zoomIn / zoomOut = 推近／拉遠的比例（視角縮小／放大的百分比）：兩人都在前場網前對峙時推近，挑球、高遠球飛高時拉遠
  */
 export const CAMERA = {
-  portrait: { y: 10.8, z: 13.2, lookZ: -0.4, follow: 0.08 },
-  landscape: { y: 8.2, z: 14.6, lookZ: 0.2, follow: 0.22 },
+  portrait: { y: 10.3, z: 13.4, lookZ: -0.4, follow: 0.08, drift: 0.3, zoomIn: 0.03, zoomOut: 0.035 },
+  landscape: { y: 7.8, z: 15.0, lookZ: 0.2, follow: 0.22, drift: 0.45, zoomIn: 0.04, zoomOut: 0.04 },
+  driftMax: 0.6, // 左右漂移上限（m，含跟著自己的那部分）
+  driftHz: 0.5, // 漂移彈簧的頻率（臨界阻尼：不會過衝，約 1 秒到位）
+  zoomHz: 0.3, // 推近／拉遠的彈簧頻率（更慢，絕不跳）
+  frontCourt: 3.0, // 兩人都離網不到這麼遠（m）= 網前對峙 → 推近
+  highShot: 4.0, // 這一球的最高點超過這麼高（m）= 挑球／高遠球 → 拉遠
+  // 擊中瞬間（殺球、跳殺、撲球；只有離線）：鏡頭先定住 holdFrames 幀再動（配合 main.ts 的擊中停頓），撲球另外給一下很小的震動
+  impact: { holdFrames: 2, netKillShake: 0.022 },
 };

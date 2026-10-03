@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { CAMERA, COURT, GAME, type Quality, type Venue } from '../config';
 import { ballTaker } from '../ai/doubles';
-import { flickNow, timeUntilInReach, type Match, type MatchEvent, type PlayerId } from '../sim/match';
+import { flickNow, timeUntilInReach, type Match, type MatchEvent, type PlayerId, type PlayerState } from '../sim/match';
 import { v3, type Vec3 } from '../sim/physics';
 import { predictContact, type ContactHint } from './anim/contact';
 import { makeCourt } from './court';
@@ -70,7 +70,14 @@ export class GameRenderer {
   private shakeDur = 0.25;
   private shakeT = 1;
   private shakePh = [0, 0, 0, 0];
+  // 有意圖的鏡頭：左右漂移（臨界阻尼彈簧）、推近／拉遠（-1 拉遠 … +1 推近，同樣用彈簧）、擊中瞬間定住幾幀
   private camX = 0;
+  private camVX = 0;
+  private zoom = 0;
+  private zoomV = 0;
+  private impactHold = 0;
+  private apexSerial = -1; // 這一球最高點的快取（prediction 不會變，一球算一次）
+  private apex = 0;
   private hemi: THREE.HemisphereLight;
   private sun: THREE.DirectionalLight; // 主光：會投影（太陽／月亮／天花板燈），方向、顏色依場地
   private fill: THREE.DirectionalLight; // 補光：從鏡頭這側打過來、不投影（主光在對面，球員朝鏡頭的那面才不會黑成一片）
@@ -289,6 +296,7 @@ export class GameRenderer {
     this.shakeAmp = 0;
     this.shakeT = 1;
     this.fovPunch = 0;
+    this.impactHold = 0;
     this.camera.fov = this.baseFov;
     this.marker.visible = this.reachRing.visible = this.serveBoxLine.visible = this.youMark.visible = false;
   }
@@ -410,6 +418,63 @@ export class GameRenderer {
     return hi;
   }
 
+  /**
+   * 鏡頭的意圖（每幀）：
+   * - 左右：目標 = 自己 × follow ＋ 這一球的中心 × drift，限制在 ±driftMax；臨界阻尼彈簧過去（不會過衝、不會跳）。
+   *   球在飛時中心偏向「落點／接球的人」（落點 0.6、接球者 0.4，再跟兩人中點混），球沒在飛就是所有人的中點。
+   * - 推近／拉遠：兩人都在前場（網前對峙）→ +1 推近；這一球最高點超過 highShot（挑球、高遠球）→ -1 拉遠；其他回到 0。一樣用彈簧。
+   * - 擊中瞬間（impact）定住 holdFrames 幀：這幾幀鏡頭完全不動（跟 main.ts 的擊中停頓一起）。
+   */
+  private steerCamera(match: Match, me: PlayerState, dt: number): void {
+    if (this.impactHold > 0) {
+      if (dt > 0) this.impactHold--;
+      return;
+    }
+    const players = match.players;
+    const sh = match.shuttle;
+    let centre = 0;
+    for (const p of players) centre += p.pos.x;
+    centre /= players.length;
+    const flying = sh.mode === 'flight' || sh.mode === 'netfall';
+    const pred = sh.prediction;
+    let target = centre;
+    if (flying && pred?.landing) {
+      const L = pred.landing;
+      let recvX = centre;
+      let best = Infinity;
+      for (const p of players) {
+        if (match.hitByTeam(p.team)) continue;
+        const d = Math.hypot(p.pos.x - L.x, p.pos.z - L.z);
+        if (d < best) {
+          best = d;
+          recvX = p.pos.x;
+        }
+      }
+      target = centre + (0.6 * L.x + 0.4 * recvX - centre) * 0.65;
+    }
+    const tx = Math.max(-CAMERA.driftMax, Math.min(CAMERA.driftMax, me.pos.x * this.pose.follow + target * this.pose.drift));
+    // 推近／拉遠
+    let zt = 0;
+    if (match.phase === 'rally' && players.every((p) => Math.abs(p.pos.z) < CAMERA.frontCourt)) zt = 1;
+    if (flying && pred) {
+      if (match.hitSerial !== this.apexSerial) {
+        this.apexSerial = match.hitSerial;
+        let apex = 0;
+        for (const q of pred.points) if (q.p.y > apex) apex = q.p.y;
+        this.apex = apex;
+      }
+      if (this.apex > CAMERA.highShot) zt = -1;
+    }
+    // 臨界阻尼彈簧（半隱式歐拉）：x'' = w²(target − x) − 2w·x'
+    const h = Math.min(dt, 0.05);
+    const w = 2 * Math.PI * CAMERA.driftHz;
+    this.camVX += (w * w * (tx - this.camX) - 2 * w * this.camVX) * h;
+    this.camX += this.camVX * h;
+    const wz = 2 * Math.PI * CAMERA.zoomHz;
+    this.zoomV += (wz * wz * (zt - this.zoom) - 2 * wz * this.zoomV) * h;
+    this.zoom += this.zoomV * h;
+  }
+
   private placeCamera(camX: number, sx: number, sy: number): void {
     const vs = this.viewSide;
     this.camera.position.set(camX + sx, this.pose.y + sy, vs * this.pose.z);
@@ -506,6 +571,11 @@ export class GameRenderer {
         const smash = !e.serve && ((e.family === 'down' && e.speedKmh > 120) || e.jump);
         if (!smash) {
           this.fx.endFlight();
+          // 網前撲球：沒有殺球特效，但鏡頭一樣定一下、很小的一下震動
+          if (e.name === '撲球' || e.name === '跳撲') {
+            this.impact(match, live);
+            if (live) this.shake(CAMERA.impact.netKillShake, 0.14);
+          }
           break;
         }
         const chance = e.name === '機會殺球';
@@ -513,6 +583,7 @@ export class GameRenderer {
         const electric = chance ? !!match.players[e.player]?.airborne : e.jump;
         const near = e.pos.z * this.viewSide > 0;
         this.fx.smash({ pos: e.pos, vel: e.vel, kmh: e.speedKmh, perfect: e.grade === '完美', electric, chance, near, live });
+        this.impact(match, live);
         break;
       }
       case 'land':
@@ -522,6 +593,12 @@ export class GameRenderer {
         this.fx.net(e.pos);
         break;
     }
+  }
+
+  /** 擊中瞬間鏡頭定住幾幀（只有離線、真的在打的比賽：線上的模擬不能停，鏡頭也不跟著頓；回放、主選單示範也不用） */
+  private impact(match: Match, live: boolean): void {
+    if (!live || this.cine || match.remote !== null || match.remoteMask !== null) return;
+    this.impactHold = CAMERA.impact.holdFrames;
   }
 
   /** 鏡頭震動 amp 公尺、dur 秒（比現在還在震的小就忽略） */
@@ -547,8 +624,8 @@ export class GameRenderer {
     if (this.sunVs !== this.viewSide) this.placeSun();
 
     const cine = this.cine;
-    // 鏡頭：在自己這側後上方，稍微跟著自己左右移動（回放：照回放算好的電影鏡頭）
-    if (!cine) this.camX += (me.pos.x * this.pose.follow - this.camX) * Math.min(1, dt * 3);
+    // 鏡頭：在自己這側後上方，跟著自己與這一球的中心左右漂移、網前對峙推近、高球拉遠（回放：照回放算好的電影鏡頭）
+    if (!cine) this.steerCamera(match, me, dt);
     const sdt = cine ? this.cineDt : dt;
     this.shakeT += sdt;
     const env = Math.max(0, 1 - this.shakeT / this.shakeDur);
@@ -566,9 +643,11 @@ export class GameRenderer {
       this.camera.updateProjectionMatrix();
     } else {
       this.placeCamera(this.camX, sx, sy);
-      if (this.fovPunch > 0 || this.camera.fov !== this.baseFov) {
-        this.fovPunch = Math.max(0, this.fovPunch - dt * 25);
-        this.camera.fov = this.baseFov - this.fovPunch;
+      this.fovPunch = Math.max(0, this.fovPunch - dt * 25);
+      const z = this.zoom;
+      const fov = this.baseFov * (1 - (z > 0 ? z * this.pose.zoomIn : z * this.pose.zoomOut)) - this.fovPunch;
+      if (Math.abs(this.camera.fov - fov) > 1e-4) {
+        this.camera.fov = fov;
         this.camera.updateProjectionMatrix();
       }
     }
