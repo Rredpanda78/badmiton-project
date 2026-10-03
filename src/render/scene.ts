@@ -8,6 +8,7 @@ import { makeCourt } from './court';
 import { buildVenue, type Environment } from './environment';
 import { FxSystem } from './fx';
 import { PlayerModel, playerStyle } from './playerModel';
+import type { CamPose } from './replay';
 import { makeShuttleMesh } from './shuttle';
 
 /** 球員外觀：球衣顏色＋（可選）角色造型與球拍顏色 */
@@ -55,6 +56,9 @@ export class GameRenderer {
   private pose = CAMERA.landscape;
   private reserve = 0;
   private tmp = new THREE.Vector3();
+  /** 得分回放的電影鏡頭（null = 一般比賽鏡頭）；回放時落點提示、擊球範圍圈、發球區、雙打箭頭都不畫 */
+  private cine: CamPose | null = null;
+  private cineDt = 0; // 回放時鏡頭震動用真實時間衰減（動畫的 dt 是慢動作）
   viewSide: 1 | -1 = 1; // 1 = 自己在畫面下方（z>0）
 
   constructor(container: HTMLElement) {
@@ -190,7 +194,58 @@ export class GameRenderer {
     this.camera.aspect = w / hf;
     if (this.reserve > 0) this.camera.setViewOffset(w, hf, 0, h - hc, w, h);
     else this.camera.clearViewOffset();
+    if (this.cine) this.fullFrame(); // 回放中轉向：電影鏡頭照樣用整個畫面
     this.camera.updateProjectionMatrix();
+  }
+
+  /** 電影鏡頭：整個畫面（不保留搖桿區）、正常寬高比 */
+  private fullFrame(): void {
+    this.camera.clearViewOffset();
+    this.camera.aspect = window.innerWidth / Math.max(1, window.innerHeight);
+  }
+
+  /**
+   * 進入得分回放：之後 update() 收到的是回放的檢視用比賽、鏡頭照 setCinematic 擺。
+   * 特效、球員動作（步法、揮拍、拖尾）全部重來，不沿用比賽中的狀態。
+   */
+  beginReplay(view: Match): void {
+    this.cine = { pos: v3(), look: v3(0, 0, -1), fov: this.baseFov };
+    this.resetLive();
+    this.resetTrail(view.shuttle.pos); // 拖尾從回放的起點開始（不要從比賽的落點拉一條線過來）
+    this.fullFrame();
+    this.camera.updateProjectionMatrix();
+  }
+
+  /** 這一幀的電影鏡頭；realDt = 真實時間（鏡頭震動衰減用） */
+  setCinematic(pose: CamPose, realDt: number): void {
+    if (!this.cine) return;
+    this.cine.pos = pose.pos;
+    this.cine.look = pose.look;
+    this.cine.fov = pose.fov;
+    this.cineDt = realDt;
+  }
+
+  /** 離開回放：回到一般鏡頭（視角、搖桿區重新算），回放留下的特效、動作、拖尾清掉，接回比賽目前的狀態 */
+  endReplay(live: Match): void {
+    this.cine = null;
+    this.resetLive();
+    this.resetTrail(live.shuttle.pos);
+    this.shuttle.position.set(live.shuttle.pos.x, live.shuttle.pos.y, live.shuttle.pos.z);
+    this.resize();
+  }
+
+  get inReplay(): boolean {
+    return !!this.cine;
+  }
+
+  private resetLive(): void {
+    this.fx.clear();
+    for (const m of this.models) m.snap();
+    this.shakeAmp = 0;
+    this.shakeT = 1;
+    this.fovPunch = 0;
+    this.camera.fov = this.baseFov;
+    this.marker.visible = this.reachRing.visible = this.serveBoxLine.visible = this.youMark.visible = false;
   }
 
   /** 畫面下方保留給搖桿的比例（UI 用） */
@@ -353,24 +408,33 @@ export class GameRenderer {
     }
     this.models.forEach((m, i) => (m.root.visible = i < match.players.length));
 
-    // 鏡頭：在自己這側後上方，稍微跟著自己左右移動
-    this.camX += (me.pos.x * this.pose.follow - this.camX) * Math.min(1, dt * 3);
-    this.shakeT += dt;
+    const cine = this.cine;
+    // 鏡頭：在自己這側後上方，稍微跟著自己左右移動（回放：照回放算好的電影鏡頭）
+    if (!cine) this.camX += (me.pos.x * this.pose.follow - this.camX) * Math.min(1, dt * 3);
+    const sdt = cine ? this.cineDt : dt;
+    this.shakeT += sdt;
     const env = Math.max(0, 1 - this.shakeT / this.shakeDur);
-    const amp = this.shakeAmp * env * env;
+    const amp = this.shakeAmp * env * env * (cine ? 0.6 : 1);
     const st = this.shakeT;
     const ph = this.shakePh;
-    this.placeCamera(
-      this.camX,
-      amp * (Math.sin(st * 57 + ph[0]) * 0.65 + Math.sin(st * 103 + ph[1]) * 0.35),
-      amp * (Math.sin(st * 49 + ph[2]) * 0.65 + Math.sin(st * 89 + ph[3]) * 0.35),
-    );
-    if (this.target.visible) (this.target.material as THREE.MeshBasicMaterial).opacity = 0.32 + Math.sin(match.time * 4) * 0.08;
-    if (this.fovPunch > 0 || this.camera.fov !== this.baseFov) {
-      this.fovPunch = Math.max(0, this.fovPunch - dt * 25);
-      this.camera.fov = this.baseFov - this.fovPunch;
+    const sx = amp * (Math.sin(st * 57 + ph[0]) * 0.65 + Math.sin(st * 103 + ph[1]) * 0.35);
+    const sy = amp * (Math.sin(st * 49 + ph[2]) * 0.65 + Math.sin(st * 89 + ph[3]) * 0.35);
+    if (cine) {
+      this.camera.position.set(cine.pos.x + sx, cine.pos.y + sy, cine.pos.z);
+      this.camera.lookAt(cine.look.x, cine.look.y, cine.look.z);
+      this.camera.updateMatrixWorld();
+      this.fovPunch = Math.max(0, this.fovPunch - sdt * 25);
+      this.camera.fov = cine.fov - this.fovPunch;
       this.camera.updateProjectionMatrix();
+    } else {
+      this.placeCamera(this.camX, sx, sy);
+      if (this.fovPunch > 0 || this.camera.fov !== this.baseFov) {
+        this.fovPunch = Math.max(0, this.fovPunch - dt * 25);
+        this.camera.fov = this.baseFov - this.fovPunch;
+        this.camera.updateProjectionMatrix();
+      }
     }
+    if (this.target.visible) (this.target.material as THREE.MeshBasicMaterial).opacity = 0.32 + Math.sin(match.time * 4) * 0.08;
 
     // 步法動畫：預估每位球員多久後、在哪裡擊球（唯讀）；發球階段：1 = 發球的人、2 = 接發球的人（雙打的夥伴 = 0）
     // 雙打：只有分到這一球的人做擊球步法，另一人照常移動
@@ -382,8 +446,8 @@ export class GameRenderer {
       this.models[i].update(p, dt, match.shuttle.pos, hint, serve);
     });
     // 雙打：標出自己
-    this.youMark.visible = match.doubles;
-    if (match.doubles) {
+    this.youMark.visible = match.doubles && !cine;
+    if (this.youMark.visible) {
       const bob = Math.sin(performance.now() / 260) * 0.06;
       this.youMark.position.set(me.pos.x, 0, me.pos.z);
       this.youMark.getObjectByName('arrow')!.position.y = 2.3 + me.pos.y + bob;
@@ -432,7 +496,7 @@ export class GameRenderer {
     const pred = sh.prediction;
     const incoming = flying && sh.lastHitter !== null && !match.hitByTeam(me.team);
     const mineJustHit = flying && sh.lastHitter === humanId && match.time - sh.launchTime < 0.45;
-    if (showHint && (incoming || mineJustHit) && pred?.landing) {
+    if (showHint && !cine && (incoming || mineJustHit) && pred?.landing) {
       const L = pred.landing;
       this.marker.visible = true;
       this.marker.position.set(L.x, 0.012, L.z);
@@ -445,9 +509,9 @@ export class GameRenderer {
     // 擊球範圍圈：球打過來時顯示；羽球即將進入範圍（現在划剛好）時變綠
     const rr = this.reachRing.material as THREE.MeshBasicMaterial;
     // 雙打：分給隊友的球不顯示（除非球真的會飛進自己的範圍）
-    const tIn = incoming && match.phase === 'rally' ? timeUntilInReach(match, humanId) : null;
+    const tIn = incoming && match.phase === 'rally' && !cine ? timeUntilInReach(match, humanId) : null;
     const mineToTake = !match.doubles || taker === humanId || tIn !== null;
-    if (incoming && match.phase === 'rally' && mineToTake) {
+    if (incoming && match.phase === 'rally' && mineToTake && !cine) {
       const now = tIn !== null && flickNow(match, humanId, 0.05);
       this.reachRing.visible = true;
       this.reachRing.position.set(me.pos.x, 0.011, me.pos.z);
@@ -457,7 +521,7 @@ export class GameRenderer {
     } else this.reachRing.visible = false;
 
     // 發球時自己能站的區域
-    const box = match.serveBox(humanId);
+    const box = cine ? null : match.serveBox(humanId);
     this.serveBoxLine.visible = !!box;
     if (box) {
       const y = 0.013;

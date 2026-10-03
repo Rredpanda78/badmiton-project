@@ -92,6 +92,7 @@
 - **新手教學**（`src/modes/tutorial.ts`）：固定流程教每個搖桿與方向，球快到時暫停等玩家照提示操作，做錯重來；依目前的操作方式與跑位產生步驟。`npx tsx scripts/tutorial-test.ts` 無畫面跑完全部流程
 - **平衡**：`npx tsx scripts/balance-test.ts` 跑 AI 對打勝率；目前每個球員×球拍組合對標準組合約 49–53.5%
 - **動作**：程序化步法（`src/render/playerModel.ts`、`src/render/anim/`）：腳踩地不滑、併步、交叉步、弓箭步、分腿墊步、準備姿勢、轉身看球、跳殺剪刀腳
+- **得分回放**（`src/render/replay.ts`，設定「得分回放」可關）：主動得分（落地得分、發球得分；掛網、出界、發球失誤不播）時，得分後約 0.8 秒播約 3 秒的精彩回放：擊球瞬間慢動作、鏡頭從擊球員右後方跟著球出去，再切到落點旁貼地特寫，擊球聲、殺球特效、落地爆炸跟著重播；上下黑邊、「精彩回放」標籤、球種＋球速，點一下或按任何鍵跳過。比賽每個 tick 把畫面要的狀態錄進 5 秒的環形緩衝區，回放時畫面讀另一個「檢視用」的 Match，比賽本身暫停不動（模擬完全不受影響）。線上、教學、訓練不播。`npx tsx scripts/replay-test.ts` 無畫面驗證有回放／沒回放的比賽結果一模一樣
 
 ### 音效（`src/audio.ts`，全部即時合成，不用音檔）
 
@@ -141,6 +142,7 @@ npm run build      # 輸出到 dist/
 npx tsx scripts/sim-test.ts normal 80   # 無畫面測試：擊球求解器 + AI 對打統計
 npx tsx scripts/doubles-test.ts normal 8 21   # 雙打：四個 AI 對打，檢查發球輪轉、對角接發、每邊一拍、雙打線、分工、陣型、勝率
 npx tsx scripts/difficulty-test.ts            # 難度階梯：每一級對下一級的每分／單局勝率（--doubles 測雙打）
+npx tsx scripts/replay-test.ts normal 21      # 得分回放：有回放／沒回放的比賽一模一樣、只有主動得分才播、長度約 3 秒
 ```
 
 推到 `main` 會由 GitHub Actions 自動部署到 GitHub Pages。
