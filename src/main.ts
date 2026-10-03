@@ -5,7 +5,7 @@ import { DEFAULT_SETTINGS, GAME, PHYS, type Difficulty, type MatchSettings, type
 import { colorById, colorDist, hexCss, pickOppColor, shade, SHIRT_COLORS, tooClose } from './ui/colors';
 import { playerThumb, racketThumb } from './render/thumbs';
 import { LocalControls } from './input/controls';
-import { GameRenderer, type Look } from './render/scene';
+import { defaultQuality, GameRenderer, type Look } from './render/scene';
 import { idleInput, Match, type MatchEvent, type TeamId } from './sim/match';
 import { DRILLS, DrillRunner, loadBest, saveBest, type Drill } from './modes/drills';
 import { loadTour, saveTourWin, stopUnlocked, TOUR, type TourOpponent } from './modes/tour';
@@ -33,6 +33,7 @@ type Mode = 'menu' | 'play' | 'paused' | 'result';
 const settings = loadSettings();
 saveSettings(); // 舊存檔遷移後立刻存回
 const renderer = new GameRenderer($('app'));
+renderer.setQuality(settings.quality); // 畫質（即時影子）
 const controls = new LocalControls(renderer.renderer.domElement, $('touch'));
 const hud = new Hud($('hud'));
 
@@ -766,6 +767,7 @@ function onSettingChanged(key: string): void {
     applyVenue(settings.venue);
   }
   if (key === 'difficulty') $('diffHint').textContent = DIFF_HINT[settings.difficulty] ?? '';
+  if (key === 'quality') renderer.setQuality(settings.quality);
   applyAudioSettings();
 }
 
@@ -1013,13 +1015,15 @@ function loadSettings(): MatchSettings {
       s.autoMove = s.moveMode === 'auto';
       // v6：新增得分回放（預設開）
       if ((s.settingsVersion ?? 1) < 6 || typeof s.replay !== 'boolean') s.replay = true;
-      s.settingsVersion = 6;
+      // v7：新增畫質（即時影子）：第一次依裝置決定（桌機高、手機中）
+      if ((s.settingsVersion ?? 1) < 7 || !['high', 'medium', 'low'].includes(s.quality)) s.quality = defaultQuality();
+      s.settingsVersion = 7;
       return s;
     }
   } catch {
     /* 私密模式等情況讀不到就用預設 */
   }
-  return { ...DEFAULT_SETTINGS, settingsVersion: 6 };
+  return { ...DEFAULT_SETTINGS, quality: defaultQuality(), settingsVersion: 7 };
 }
 function saveSettings(): void {
   try {

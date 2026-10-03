@@ -16,8 +16,102 @@ const JUDGE: [number, number] = [COURT.doublesHalfWidth + 0.7, 0.35]; // 發球�
  */
 export function makeCourt(maxAniso: number): THREE.Object3D {
   const group = new THREE.Group();
-  group.add(makeMat(maxAniso), makeLines(), makeShadows(), makeNet(), makeFixtures());
+  group.add(makeMat(maxAniso), makeLines(), makeShadows(), makeNet(), makeFixtures(), makeGuyLines());
   return group;
+}
+
+// ---------- 網柱的拉繩：柱頂往外拉到地上的錨點（兩條線，一個 draw call；觸網時會跟著微微晃）----------
+function makeGuyLines(): THREE.LineSegments {
+  const W = COURT.doublesHalfWidth;
+  const top = netTopAt(W) + 0.03;
+  const pts: number[] = [];
+  for (const x of [-W, W]) pts.push(x, top, 0, x + Math.sign(x) * 0.62, 0.02, 0);
+  const geo = new THREE.BufferGeometry();
+  const attr = new THREE.Float32BufferAttribute(pts, 3);
+  attr.setUsage(THREE.DynamicDrawUsage);
+  geo.setAttribute('position', attr);
+  const mesh = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0xd8dde3, transparent: true, opacity: 0.75 }));
+  mesh.name = 'guyLines';
+  mesh.frustumCulled = false;
+  return mesh;
+}
+
+/**
+ * 觸網：羽球打到網子或布邊時，網子上緣以擊中點為中心前後擺動（越往下越不動，兩側越遠越小），約 0.4 秒內衰減；
+ * 網柱的拉繩也跟著微微晃。只改既有 buffer 的頂點位置（網面＋布邊約 500 個頂點），沒有新的 draw call。
+ */
+export class NetWobble {
+  private net: THREE.Mesh | null;
+  private guy: THREE.LineSegments | null;
+  private base: Float32Array = new Float32Array(0); // 網子原本的頂點
+  private weight: Float32Array = new Float32Array(0); // 每個頂點擺多少（0 = 底部 … 1 = 上緣）
+  private guyBase: Float32Array = new Float32Array(0);
+  private t = 1; // 從擊中起算的秒數（> DUR = 靜止）
+  private x0 = 0;
+  private amp = 0;
+  private static readonly DUR = 0.45;
+
+  constructor(court: THREE.Object3D) {
+    this.net = (court.getObjectByName('net') as THREE.Mesh | undefined) ?? null;
+    this.guy = (court.getObjectByName('guyLines') as THREE.LineSegments | undefined) ?? null;
+    if (this.net) {
+      const p = this.net.geometry.attributes.position as THREE.BufferAttribute;
+      p.setUsage(THREE.DynamicDrawUsage);
+      this.base = new Float32Array(p.array as Float32Array);
+      this.weight = new Float32Array(p.count);
+      const depth = 0.76;
+      for (let i = 0; i < p.count; i++) {
+        const x = this.base[i * 3];
+        const y = this.base[i * 3 + 1];
+        const w = Math.max(0, Math.min(1, (y - (netTopAt(x) - depth)) / depth));
+        this.weight[i] = w * w;
+      }
+    }
+    if (this.guy) this.guyBase = new Float32Array((this.guy.geometry.attributes.position as THREE.BufferAttribute).array as Float32Array);
+  }
+
+  /** 羽球打到網子：x = 擊中點（沿網子）、amp = 擺幅（m） */
+  hit(x: number, amp = 0.045): void {
+    this.x0 = x;
+    this.amp = this.t < NetWobble.DUR ? Math.max(amp, this.amp) : amp;
+    this.t = 0;
+  }
+
+  update(dt: number): void {
+    if (this.t >= NetWobble.DUR) return;
+    const net = this.net;
+    if (!net) return;
+    this.t += dt;
+    const p = net.geometry.attributes.position as THREE.BufferAttribute;
+    const arr = p.array as Float32Array;
+    const done = this.t >= NetWobble.DUR;
+    // 5.5 Hz 的擺動、0.14 秒的時間常數衰減；擊中點附近最大、沿網子每 0.8 m 衰減 e 倍
+    const osc = done ? 0 : this.amp * Math.sin(2 * Math.PI * 5.5 * this.t) * Math.exp(-this.t / 0.14);
+    const dip = done ? 0 : this.amp * 0.35 * Math.min(1, this.t / 0.05) * Math.exp(-this.t / 0.25);
+    for (let i = 0; i < p.count; i++) {
+      const w = this.weight[i];
+      const k = i * 3;
+      if (w === 0) {
+        arr[k + 2] = this.base[k + 2];
+        continue;
+      }
+      const g = w * Math.exp(-Math.abs(this.base[k] - this.x0) / 0.8);
+      arr[k + 1] = this.base[k + 1] - dip * g;
+      arr[k + 2] = this.base[k + 2] + osc * g;
+    }
+    p.needsUpdate = true;
+    if (this.guy) {
+      const gp = this.guy.geometry.attributes.position as THREE.BufferAttribute;
+      const ga = gp.array as Float32Array;
+      ga.set(this.guyBase);
+      // 兩條拉繩的頂端（第 0、2 個頂點）跟著柱頂的拉力微微前後晃
+      for (const vi of [0, 2]) {
+        const g = Math.exp(-Math.abs(this.guyBase[vi * 3] - this.x0) / 2.5);
+        ga[vi * 3 + 2] = this.guyBase[vi * 3 + 2] + osc * 0.35 * g;
+      }
+      gp.needsUpdate = true;
+    }
+  }
 }
 
 // ---------- 白線 ----------
@@ -90,6 +184,7 @@ function makeLines(): THREE.Mesh {
   const mesh = new THREE.Mesh(geo, mat);
   mesh.position.y = 0.004;
   mesh.name = 'courtLines';
+  mesh.receiveShadow = true; // 白線也要接球員的影子（不然影子裡的線會亮得像發光）
   return mesh;
 }
 
@@ -158,7 +253,7 @@ function makeMat(maxAniso: number): THREE.Mesh {
     g.fillRect(toX(sx) + 1.5, 0, 2, canvas.height);
   }
 
-  // 網子的淡影（主光從 +x、+z 上方照下來）
+  // 網子的淡影（主光從左前上方 −x、−z 照下來，影子落在近側 +z）
   {
     const z0 = toY(0.05);
     const z1 = toY(0.95);
@@ -187,10 +282,12 @@ function makeMat(maxAniso: number): THREE.Mesh {
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = maxAniso;
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(MAT_W, MAT_L), new THREE.MeshLambertMaterial({ map: tex }));
+  // Phong：PVC 地墊有一點點光澤（低 shininess = 很寬很淡的反光帶，主光在對面時中場略亮）；只有這一片，成本可忽略
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(MAT_W, MAT_L), new THREE.MeshPhongMaterial({ map: tex, specular: 0x2a2a2a, shininess: 14 }));
   mesh.rotation.x = -Math.PI / 2;
   mesh.position.y = 0.002;
   mesh.name = 'courtMat';
+  mesh.receiveShadow = true; // 球員、球拍、羽球的即時影子落在這裡
   return mesh;
 }
 

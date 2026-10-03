@@ -16,14 +16,7 @@
       "url": "http://localhost:4173"
     },
     {
-      "name": "badminton-4p-dev",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--", "--port", "5175", "--strictPort"],
-      "port": 5175,
-      "url": "http://localhost:5175"
-    },
-    {
-      "name": "badminton-4p-rooms",
+      "name": "badminton-rooms",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "server", "run", "dev"],
       "port": 8787,

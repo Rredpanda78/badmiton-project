@@ -1,15 +1,16 @@
 import * as THREE from 'three';
-import { CAMERA, COURT, GAME, type Venue } from '../config';
+import { CAMERA, COURT, GAME, type Quality, type Venue } from '../config';
 import { ballTaker } from '../ai/doubles';
-import { flickNow, timeUntilInReach, type Match, type MatchEvent, type PlayerId } from '../sim/match';
+import { flickNow, timeUntilInReach, type Match, type MatchEvent, type PlayerId, type PlayerState } from '../sim/match';
 import { v3, type Vec3 } from '../sim/physics';
 import { predictContact, type ContactHint } from './anim/contact';
-import { makeCourt } from './court';
+import { makeCourt, NetWobble } from './court';
 import { buildVenue, type Environment } from './environment';
 import { FxSystem } from './fx';
 import { PlayerModel, playerStyle } from './playerModel';
 import type { CamPose } from './replay';
 import { makeShuttleMesh } from './shuttle';
+import { ShuttleTrail, TRAIL_DRIVE, TRAIL_DROP, TRAIL_LIFT, TRAIL_SERVE } from './shuttleTrail';
 
 /** 球員外觀：球衣顏色＋（可選）角色造型與球拍顏色 */
 export interface Look {
@@ -21,7 +22,36 @@ export interface Look {
 }
 
 const SHUTTLE_SCALE = 2.4; // 真實羽球太小，放大一點比較看得清楚
-const TRAIL_LEN = 22;
+// 羽球姿態：擊中後 TUMBLE 秒內從「軟木頭朝拍面」翻成「軟木頭朝前進方向」，之後以 LAG 秒的時間常數跟著速度方向，並繞自己的軸慢慢轉
+const TUMBLE = 0.13;
+const ALIGN_LAG = 0.06;
+const SPIN_RATE = 3.5; // rad/s（每 m/s 球速再加 0.12）
+const _up = new THREE.Vector3(0, 1, 0);
+const _xAxis = new THREE.Vector3(1, 0, 0);
+const _qa = new THREE.Quaternion();
+const _qb = new THREE.Quaternion();
+
+// ---------- 即時影子 ----------
+/** 畫質 → 影子貼圖邊長（0 = 不開即時影子，只用腳下的圓形假影） */
+const SHADOW_SIZE: Record<Quality, number> = { high: 2048, medium: 1024, low: 0 };
+/** 畫質 → 影子邊緣柔化半徑（貼圖像素；three 的 PCF 是 5 點取樣的圓盤）：中的像素大一倍，半徑小一點、世界尺寸差不多 */
+const SHADOW_RADIUS: Record<Quality, number> = { high: 4, medium: 2.5, low: 0 };
+/** 影子相機要框住的範圍：球場（13.4 × 6.1 m）四周各多 1.2 m，高到跳殺時的拍頭 */
+const SHADOW_BOX = { x: COURT.doublesHalfWidth + 1.2, y: 3.4, z: COURT.halfLength + 1.2 };
+const SUN_DIST = 30; // 平行光擺多遠（只影響影子相機的位置，方向才重要）
+/** 主光預設方向（往光源）：左前上方，仰角約 57°，影子落在球員右邊、偏向鏡頭這側（看得到、能把人踩在地上） */
+const DEFAULT_SUN_DIR: [number, number, number] = [-0.5, 1, -0.4];
+const DEFAULT_FILL: [number, number] = [0xdfe8ff, 0.7]; // 補光顏色、強度
+/** 腳下的圓形假影：沒有即時影子時的不透明度（playerModel 的原值）、有即時影子時留一點點當接地的暗處 */
+const BLOB_FULL = 0.32;
+const BLOB_UNDER_REAL = 0.1;
+const _box = new THREE.Vector3();
+
+/** 依裝置挑預設畫質：手機（粗指標或短邊不到 700 px）中、其他高 */
+export function defaultQuality(): Quality {
+  const phone = matchMedia('(pointer: coarse)').matches || Math.min(screen.width, screen.height) < 700;
+  return phone ? 'medium' : 'high';
+}
 
 export class GameRenderer {
   readonly renderer: THREE.WebGLRenderer;
@@ -31,9 +61,16 @@ export class GameRenderer {
   private hints: ContactHint[] = [0, 1, 2, 3].map(() => ({ t: 0, x: 0, y: 0, z: 0, d: 0 }));
   private youMark: THREE.Group; // 雙打：自己頭上的小箭頭＋腳下的圈（四個人才認得出自己）
   private shuttle = new THREE.Group();
-  private shuttleShadow: THREE.Mesh;
-  private trail: THREE.Line;
-  private trailPts: THREE.Vector3[] = [];
+  private shuttleRing: THREE.Mesh; // 落點圈：球越低越小越清楚
+  private shuttleDisc: THREE.Mesh; // 圈中間的軟影
+  private trail = new ShuttleTrail();
+  private netWobble: NetWobble;
+  // 羽球姿態（見 TUMBLE / ALIGN_LAG）
+  private shQ = new THREE.Quaternion(); // 目前朝向（不含自轉）
+  private shFrom = new THREE.Quaternion(); // 擊中那一刻的朝向（翻轉的起點）
+  private shTumble = 1; // 翻轉進度（秒；≥ TUMBLE = 翻完）
+  private shSpin = 0;
+  private shSerialQ = -1;
   private marker: THREE.Mesh;
   private reachRing: THREE.Mesh;
   private shOffset = new THREE.Vector3(); // 線上：對方擊球時的位置修正（慢慢歸零）
@@ -48,9 +85,21 @@ export class GameRenderer {
   private shakeDur = 0.25;
   private shakeT = 1;
   private shakePh = [0, 0, 0, 0];
+  // 有意圖的鏡頭：左右漂移（臨界阻尼彈簧）、推近／拉遠（-1 拉遠 … +1 推近，同樣用彈簧）、擊中瞬間定住幾幀
   private camX = 0;
+  private camVX = 0;
+  private zoom = 0;
+  private zoomV = 0;
+  private impactHold = 0;
+  private apexSerial = -1; // 這一球最高點的快取（prediction 不會變，一球算一次）
+  private apex = 0;
   private hemi: THREE.HemisphereLight;
-  private sun: THREE.DirectionalLight;
+  private sun: THREE.DirectionalLight; // 主光：會投影（太陽／月亮／天花板燈），方向、顏色依場地
+  private fill: THREE.DirectionalLight; // 補光：從鏡頭這側打過來、不投影（主光在對面，球員朝鏡頭的那面才不會黑成一片）
+  private sunDir = new THREE.Vector3(...DEFAULT_SUN_DIR).normalize();
+  private sunVs: 1 | -1 = 1; // 擺主光時的 viewSide（線上換邊要重擺，影子才一樣朝向鏡頭）
+  private quality: Quality = 'high';
+  private shadowsOn = true;
   private env: Environment | null = null;
   private venue: Venue | null = null;
   private pose = CAMERA.landscape;
@@ -66,6 +115,10 @@ export class GameRenderer {
   constructor(container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // 即時影子：只有球員、球拍、羽球會投影，只有球場地墊和旁邊的地面會接影子（setQuality 決定貼圖大小／關掉）
+    // three r186 已拿掉 PCFSoft，PCF 本身就是 5 點圓盤取樣、柔化半徑用 shadow.radius 調
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     container.appendChild(this.renderer.domElement);
     this.scene.background = new THREE.Color(0x111a26);
     this.scene.fog = new THREE.Fog(0x111a26, 26, 48);
@@ -73,17 +126,29 @@ export class GameRenderer {
     this.hemi = new THREE.HemisphereLight(0xe6eeff, 0x2a3442, 1.6);
     this.scene.add(this.hemi);
     this.sun = new THREE.DirectionalLight(0xffffff, 1.6);
-    this.sun.position.set(4, 12, 6);
-    this.scene.add(this.sun);
+    this.sun.castShadow = true;
+    this.sun.shadow.mapSize.set(SHADOW_SIZE.high, SHADOW_SIZE.high);
+    this.sun.shadow.radius = SHADOW_RADIUS.high;
+    this.sun.shadow.bias = -0.0004; // 地墊是平的、正對著光：一點負偏移去掉條紋狀的影子痤瘡
+    this.sun.shadow.normalBias = 0.02; // 沿法線往外推一點（約 2 個貼圖像素），球員腳邊不會浮一條亮縫
+    this.scene.add(this.sun, this.sun.target);
+    this.fill = new THREE.DirectionalLight(DEFAULT_FILL[0], DEFAULT_FILL[1]);
+    this.scene.add(this.fill);
 
-    this.scene.add(makeCourt(this.renderer.capabilities.getMaxAnisotropy()));
+    const court = makeCourt(this.renderer.capabilities.getMaxAnisotropy());
+    this.scene.add(court);
+    this.netWobble = new NetWobble(court);
     this.setVenue('indoor');
 
     this.models = [new PlayerModel(0x2f7fe0, 0x1b2a44), new PlayerModel(0xe0483a, 0x3a1b1b)];
-    for (const m of this.models) this.scene.add(m.root);
+    for (const m of this.models) {
+      this.scene.add(m.root);
+      this.applyShadowFlags(m);
+    }
 
-    // 羽球：軟木頭在原點、羽毛往 +Y 展開
+    // 羽球：軟木頭在原點、羽毛往 +Y 展開（本體投影，外框不用）
     const shuttleMesh = makeShuttleMesh(SHUTTLE_SCALE);
+    (shuttleMesh.children[0] as THREE.Mesh).castShadow = true;
     this.shuttle.add(shuttleMesh);
     this.scene.add(this.shuttle);
 
@@ -96,18 +161,20 @@ export class GameRenderer {
     // 特效平常是隱藏的，shader 會等第一次殺球才編譯（手機上會卡一下）：先編好
     this.renderer.compile(this.fx.group, this.camera, this.scene);
 
-    this.shuttleShadow = new THREE.Mesh(
-      new THREE.CircleGeometry(0.075, 16),
+    // 羽球正下方的落點圈＋軟影（半徑 1 的幾何，每幀依高度縮放）：高的時候是一個大而淡的圈，落下來時縮小、變清楚，落點一眼看得出來
+    this.shuttleRing = new THREE.Mesh(
+      new THREE.RingGeometry(0.74, 1, 40),
       new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.5, depthWrite: false }),
     );
-    this.shuttleShadow.rotation.x = -Math.PI / 2;
-    this.scene.add(this.shuttleShadow);
+    this.shuttleRing.rotation.x = -Math.PI / 2;
+    this.shuttleDisc = new THREE.Mesh(
+      new THREE.CircleGeometry(0.72, 24),
+      new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.3, depthWrite: false }),
+    );
+    this.shuttleDisc.rotation.x = -Math.PI / 2;
+    this.scene.add(this.shuttleRing, this.shuttleDisc);
 
-    for (let i = 0; i < TRAIL_LEN; i++) this.trailPts.push(new THREE.Vector3());
-    const tg = new THREE.BufferGeometry().setFromPoints(this.trailPts);
-    this.trail = new THREE.Line(tg, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35 }));
-    this.trail.frustumCulled = false;
-    this.scene.add(this.trail);
+    this.scene.add(this.trail.mesh);
 
     this.marker = new THREE.Mesh(
       new THREE.RingGeometry(0.16, 0.24, 28),
@@ -167,8 +234,12 @@ export class GameRenderer {
    * 依螢幕方向擺鏡頭，並自動算視角讓整個球場剛好塞滿畫面。
    * 手機直向時，畫面下方保留 reserve 比例給兩個拇指搖桿，球場只畫在上面那塊。
    */
-  /** 效能保險：解析度降一級（2 → 1.5 → 1.2 → 1）；已經最低就回傳 false */
+  /** 效能保險：先降影子（高 → 中 → 關），再降解析度（2 → 1.5 → 1.2 → 1）；已經最低就回傳 false */
   lowerQuality(): boolean {
+    if (this.quality !== 'low') {
+      this.setQuality(this.quality === 'high' ? 'medium' : 'low');
+      return true;
+    }
     const pr = this.renderer.getPixelRatio();
     const next = pr > 1.5 ? 1.5 : pr > 1.2 ? 1.2 : pr > 1 ? 1 : 0;
     if (!next) return false;
@@ -246,6 +317,7 @@ export class GameRenderer {
     this.shakeAmp = 0;
     this.shakeT = 1;
     this.fovPunch = 0;
+    this.impactHold = 0;
     this.camera.fov = this.baseFov;
     this.marker.visible = this.reachRing.visible = this.serveBoxLine.visible = this.youMark.visible = false;
   }
@@ -253,6 +325,88 @@ export class GameRenderer {
   /** 畫面下方保留給搖桿的比例（UI 用） */
   get bottomReserve(): number {
     return this.reserve;
+  }
+
+  /**
+   * 畫質（設定「畫質」與自動降級共用）：high／medium = 即時影子 2048／1024 貼圖，low = 不開即時影子、腳下只有圓形假影。
+   * 換貼圖大小要把舊的 render target 丟掉讓 three 重建；開關主光的投影會讓所有受光材質換 shader（這裡先編好，不在下一幀卡）。
+   */
+  setQuality(q: Quality): void {
+    if (q === this.quality) return;
+    this.quality = q;
+    const size = SHADOW_SIZE[q];
+    const sh = this.sun.shadow;
+    if (size > 0 && sh.mapSize.x !== size) {
+      sh.mapSize.set(size, size);
+      sh.map?.dispose();
+      sh.map = null;
+      sh.radius = SHADOW_RADIUS[q];
+      sh.normalBias = size >= 2048 ? 0.02 : 0.035; // 貼圖像素變大，偏移也要跟著大
+    }
+    this.sun.castShadow = size > 0;
+    this.shadowsOn = size > 0;
+    for (const m of this.models) this.applyShadowFlags(m);
+    this.renderer.compile(this.scene, this.camera);
+  }
+
+  get currentQuality(): Quality {
+    return this.quality;
+  }
+
+  /**
+   * 球員模型的投影旗標：身體、衣服、頭髮、球拍都投影；腳下的假影、蓄力光圈、跳殺標記、揮拍拖尾
+   * （都是不寫深度的半透明 MeshBasic）不投影。有即時影子時假影只留一點點當接地的暗處。
+   * （playerModel.ts 不改：這裡走訪它建好的 mesh）
+   */
+  private applyShadowFlags(m: PlayerModel): void {
+    const on = this.shadowsOn;
+    m.root.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      const mat = mesh.material as THREE.MeshBasicMaterial;
+      if (mat.isMeshBasicMaterial && mat.transparent && !mat.depthWrite) {
+        if (mesh.geometry.type === 'CircleGeometry') mat.opacity = on ? BLOB_UNDER_REAL : BLOB_FULL; // 腳下的圓影
+        return;
+      }
+      mesh.castShadow = on;
+    });
+  }
+
+  /**
+   * 擺主光、補光，並把影子相機框到剛好蓋住球場＋邊緣＋跳起來的高度（在光的座標系裡取 8 個角的包圍盒）。
+   * 線上換邊（viewSide = -1）時整個鏡像，影子一樣落在偏向鏡頭的那側。
+   */
+  private placeSun(): void {
+    const vs = (this.sunVs = this.viewSide);
+    const d = this.sunDir;
+    this.sun.position.set(d.x * SUN_DIST, d.y * SUN_DIST, d.z * vs * SUN_DIST);
+    this.fill.position.set(3, 6, 9 * vs);
+    const cam = this.sun.shadow.camera;
+    cam.position.copy(this.sun.position);
+    cam.lookAt(0, 0, 0);
+    cam.updateMatrixWorld();
+    const inv = cam.matrixWorld.clone().invert();
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (const sx of [-1, 1]) {
+      for (const sy of [0, 1]) {
+        for (const sz of [-1, 1]) {
+          _box.set(sx * SHADOW_BOX.x, sy * SHADOW_BOX.y, sz * SHADOW_BOX.z).applyMatrix4(inv);
+          x0 = Math.min(x0, _box.x);
+          x1 = Math.max(x1, _box.x);
+          y0 = Math.min(y0, _box.y);
+          y1 = Math.max(y1, _box.y);
+          z0 = Math.min(z0, _box.z);
+          z1 = Math.max(z1, _box.z);
+        }
+      }
+    }
+    cam.left = x0;
+    cam.right = x1;
+    cam.bottom = y0;
+    cam.top = y1;
+    cam.near = -z1 - 0.5;
+    cam.far = -z0 + 0.5;
+    cam.updateProjectionMatrix();
   }
 
   private fitFov(aspect: number): number {
@@ -283,6 +437,64 @@ export class GameRenderer {
       else lo = mid;
     }
     return hi;
+  }
+
+  /**
+   * 鏡頭的意圖（每幀）：
+   * - 左右：目標 = 自己 × follow ＋ 這一球的中心 × drift，限制在 ±driftMax；臨界阻尼彈簧過去（不會過衝、不會跳）。
+   *   球在飛時中心偏向「落點／接球的人」（落點 0.6、接球者 0.4，再跟兩人中點混），球沒在飛就是所有人的中點。
+   * - 推近／拉遠：兩人都在前場（網前對峙）→ +1 推近；這一球最高點超過 highShot（挑球、高遠球）→ -1 拉遠；其他回到 0。一樣用彈簧。
+   * - 擊中瞬間（impact）定住 holdFrames 幀：這幾幀鏡頭完全不動（跟 main.ts 的擊中停頓一起）。
+   */
+  private steerCamera(match: Match, me: PlayerState, dt: number): void {
+    if (this.impactHold > 0) {
+      if (dt > 0) this.impactHold--;
+      return;
+    }
+    const players = match.players;
+    const sh = match.shuttle;
+    let centre = 0;
+    for (const p of players) centre += p.pos.x;
+    centre /= players.length;
+    const flying = sh.mode === 'flight' || sh.mode === 'netfall';
+    const pred = sh.prediction;
+    let target = centre;
+    if (flying && pred?.landing) {
+      const L = pred.landing;
+      let recvX = centre;
+      let best = Infinity;
+      for (const p of players) {
+        if (match.hitByTeam(p.team)) continue;
+        const d = Math.hypot(p.pos.x - L.x, p.pos.z - L.z);
+        if (d < best) {
+          best = d;
+          recvX = p.pos.x;
+        }
+      }
+      target = centre + (0.6 * L.x + 0.4 * recvX - centre) * 0.65;
+    }
+    const anchorX = this.spectator ? sh.pos.x : me.pos.x; // 觀戰沒有「自己」：以球為主
+    const tx = Math.max(-CAMERA.driftMax, Math.min(CAMERA.driftMax, anchorX * this.pose.follow + target * this.pose.drift));
+    // 推近／拉遠
+    let zt = 0;
+    if (match.phase === 'rally' && players.every((p) => Math.abs(p.pos.z) < CAMERA.frontCourt)) zt = 1;
+    if (flying && pred) {
+      if (match.hitSerial !== this.apexSerial) {
+        this.apexSerial = match.hitSerial;
+        let apex = 0;
+        for (const q of pred.points) if (q.p.y > apex) apex = q.p.y;
+        this.apex = apex;
+      }
+      if (this.apex > CAMERA.highShot) zt = -1;
+    }
+    // 臨界阻尼彈簧（半隱式歐拉）：x'' = w²(target − x) − 2w·x'
+    const h = Math.min(dt, 0.05);
+    const w = 2 * Math.PI * CAMERA.driftHz;
+    this.camVX += (w * w * (tx - this.camX) - 2 * w * this.camVX) * h;
+    this.camX += this.camVX * h;
+    const wz = 2 * Math.PI * CAMERA.zoomHz;
+    this.zoomV += (wz * wz * (zt - this.zoom) - 2 * wz * this.zoomV) * h;
+    this.zoom += this.zoomV * h;
   }
 
   private placeCamera(camX: number, sx: number, sy: number): void {
@@ -324,6 +536,12 @@ export class GameRenderer {
     this.hemi.color.set(env.sky);
     this.hemi.groundColor.set(env.ground);
     this.sun.color.set(env.sun);
+    this.sun.intensity = env.sunPower ?? 1.6;
+    this.sunDir.set(...(env.sunDir ?? DEFAULT_SUN_DIR)).normalize();
+    const [fc, fi] = env.fill ?? DEFAULT_FILL;
+    this.fill.color.set(fc);
+    this.fill.intensity = fi;
+    this.placeSun();
   }
 
   /** 換球員外觀（球衣顏色）；looks[i] = i 號球員（單打 2 個、雙打 4 個） */
@@ -333,12 +551,15 @@ export class GameRenderer {
       m.dispose();
     }
     this.models = looks.map((l) => new PlayerModel(l.shirt, l.shorts, l.id ? playerStyle(l.id, l.racketColor, l.racket) : undefined));
-    for (const m of this.models) this.scene.add(m.root);
+    for (const m of this.models) {
+      this.scene.add(m.root);
+      this.applyShadowFlags(m);
+    }
     this.fx.clear(); // 新的一場：上一場的焦痕、拖尾清掉
   }
 
   resetTrail(p: Vec3): void {
-    for (const t of this.trailPts) t.set(p.x, p.y, p.z);
+    this.trail.reset(p);
   }
 
   /** 擊球特效（一般球）：品質越好越大越金；殺球的特效在 fxEvent（render/fx.ts） */
@@ -369,9 +590,15 @@ export class GameRenderer {
   fxEvent(e: MatchEvent, match: Match, live = true): void {
     switch (e.type) {
       case 'hit': {
+        this.trail.setStyle(e.serve ? TRAIL_SERVE : e.family === 'up' ? TRAIL_LIFT : e.family === 'down' ? TRAIL_DROP : TRAIL_DRIVE);
         const smash = !e.serve && ((e.family === 'down' && e.speedKmh > 120) || e.jump);
         if (!smash) {
           this.fx.endFlight();
+          // 網前撲球：沒有殺球特效，但鏡頭一樣定一下、很小的一下震動
+          if (e.name === '撲球' || e.name === '跳撲') {
+            this.impact(match, live);
+            if (live) this.shake(CAMERA.impact.netKillShake, 0.14);
+          }
           break;
         }
         const chance = e.name === '機會殺球';
@@ -379,6 +606,7 @@ export class GameRenderer {
         const electric = chance ? !!match.players[e.player]?.airborne : e.jump;
         const near = e.pos.z * this.viewSide > 0;
         this.fx.smash({ pos: e.pos, vel: e.vel, kmh: e.speedKmh, perfect: e.grade === '完美', electric, chance, near, live });
+        this.impact(match, live);
         break;
       }
       case 'land':
@@ -386,8 +614,15 @@ export class GameRenderer {
         break;
       case 'net':
         this.fx.net(e.pos);
+        this.netWobble.hit(e.pos.x, 0.03 + 0.05 * Math.min(1, match.shuttle.pace));
         break;
     }
+  }
+
+  /** 擊中瞬間鏡頭定住幾幀（只有離線、真的在打的比賽：線上的模擬不能停，鏡頭也不跟著頓；回放、主選單示範也不用） */
+  private impact(match: Match, live: boolean): void {
+    if (!live || this.cine || match.remote !== null || match.remoteMask !== null) return;
+    this.impactHold = CAMERA.impact.holdFrames;
   }
 
   /** 鏡頭震動 amp 公尺、dur 秒（比現在還在震的小就忽略） */
@@ -407,13 +642,14 @@ export class GameRenderer {
       const m = new PlayerModel(0x8a96a8, 0x2a2f38);
       this.models.push(m);
       this.scene.add(m.root);
+      this.applyShadowFlags(m);
     }
     this.models.forEach((m, i) => (m.root.visible = i < match.players.length));
+    if (this.sunVs !== this.viewSide) this.placeSun();
 
     const cine = this.cine;
-    // 鏡頭：在自己這側後上方，稍微跟著自己左右移動（回放：照回放算好的電影鏡頭；觀戰：稍微跟著球）
-    const followX = this.spectator ? match.shuttle.pos.x * this.pose.follow : me.pos.x * this.pose.follow;
-    if (!cine) this.camX += (followX - this.camX) * Math.min(1, dt * (this.spectator ? 1.5 : 3));
+    // 鏡頭：在自己這側後上方，跟著自己與這一球的中心左右漂移、網前對峙推近、高球拉遠（回放：照回放算好的電影鏡頭；觀戰：跟著球而不是某個球員）
+    if (!cine) this.steerCamera(match, me, dt);
     const sdt = cine ? this.cineDt : dt;
     this.shakeT += sdt;
     const env = Math.max(0, 1 - this.shakeT / this.shakeDur);
@@ -431,9 +667,11 @@ export class GameRenderer {
       this.camera.updateProjectionMatrix();
     } else {
       this.placeCamera(this.camX, sx, sy);
-      if (this.fovPunch > 0 || this.camera.fov !== this.baseFov) {
-        this.fovPunch = Math.max(0, this.fovPunch - dt * 25);
-        this.camera.fov = this.baseFov - this.fovPunch;
+      this.fovPunch = Math.max(0, this.fovPunch - dt * 25);
+      const z = this.zoom;
+      const fov = this.baseFov * (1 - (z > 0 ? z * this.pose.zoomIn : z * this.pose.zoomOut)) - this.fovPunch;
+      if (Math.abs(this.camera.fov - fov) > 1e-4) {
+        this.camera.fov = fov;
         this.camera.updateProjectionMatrix();
       }
     }
@@ -471,31 +709,59 @@ export class GameRenderer {
     this.shOffset.multiplyScalar(Math.exp(-dt / 0.05));
     this.shuttle.position.set(sh.pos.x + this.shOffset.x, sh.pos.y + this.shOffset.y, sh.pos.z + this.shOffset.z);
     const sp = Math.hypot(sh.vel.x, sh.vel.y, sh.vel.z);
+    const flying = sh.mode === 'flight' || sh.mode === 'netfall';
     if (sh.mode === 'held') {
+      this.shQ.identity();
       this.shuttle.quaternion.identity();
+      this.shTumble = 1;
     } else if (sh.mode === 'down') {
       // 落地後側躺
-      this.shuttle.quaternion.setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2.4);
+      this.shuttle.quaternion.setFromAxisAngle(_xAxis, Math.PI / 2.4);
       this.shuttle.position.y = 0.02;
+      this.shTumble = 1;
     } else if (sp > 0.3) {
-      // 軟木頭朝前進方向
+      // 目標：軟木頭朝前進方向
       this.tmp.set(-sh.vel.x, -sh.vel.y, -sh.vel.z).normalize();
-      this.shuttle.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), this.tmp);
+      _qa.setFromUnitVectors(_up, this.tmp);
+      if (match.hitSerial !== this.shSerialQ) {
+        // 剛被打到：軟木頭還朝著拍面（來球的方向），從這裡翻過去
+        this.shSerialQ = match.hitSerial;
+        this.shFrom.copy(this.shQ);
+        this.shTumble = 0;
+      }
+      if (this.shTumble < TUMBLE) {
+        this.shTumble += dt;
+        const u = Math.min(1, this.shTumble / TUMBLE);
+        this.shQ.slerpQuaternions(this.shFrom, _qa, u * u * (3 - 2 * u));
+      } else {
+        // 跟著速度方向，稍微慢半拍（高點轉向時看得出來）
+        this.shQ.slerp(_qa, 1 - Math.exp(-dt / ALIGN_LAG));
+      }
+      this.shSpin += dt * (SPIN_RATE + 0.12 * sp);
+      _qb.setFromAxisAngle(_up, this.shSpin);
+      this.shuttle.quaternion.copy(this.shQ).multiply(_qb);
     }
 
-    this.shuttleShadow.position.set(sh.pos.x, 0.008, sh.pos.z);
-    const sc = 1 + Math.min(1.5, sh.pos.y * 0.25);
-    this.shuttleShadow.scale.set(sc, sc, sc);
-    (this.shuttleShadow.material as THREE.MeshBasicMaterial).opacity = 0.55 / sc;
+    // 落點圈＋軟影：高的時候圈大而淡，落下來縮小、變清楚；落地後只剩小小的軟影
+    {
+      const y = Math.max(0, sh.pos.y);
+      const r = 0.07 + 0.11 * Math.min(y, 6);
+      const drop = 1 - Math.min(1, y / 3.5);
+      this.shuttleRing.position.set(sh.pos.x, 0.009, sh.pos.z);
+      this.shuttleDisc.position.set(sh.pos.x, 0.008, sh.pos.z);
+      this.shuttleRing.scale.setScalar(r);
+      this.shuttleDisc.scale.setScalar(r);
+      const down = sh.mode === 'down';
+      this.shuttleRing.visible = !down && !cine;
+      (this.shuttleRing.material as THREE.MeshBasicMaterial).opacity = 0.22 + 0.45 * drop;
+      (this.shuttleDisc.material as THREE.MeshBasicMaterial).opacity = down ? 0.45 : 0.08 + 0.32 * (1 - Math.min(1, y / 2.5));
+    }
 
-    // 拖尾
-    const flying = sh.mode === 'flight' || sh.mode === 'netfall';
-    this.trail.visible = flying && !this.fx.smashing; // 殺球有自己的能量拖尾
-    if (flying) {
-      for (let i = TRAIL_LEN - 1; i > 0; i--) this.trailPts[i].copy(this.trailPts[i - 1]);
-      this.trailPts[0].set(sh.pos.x, sh.pos.y, sh.pos.z);
-      this.trail.geometry.setFromPoints(this.trailPts);
-    } else this.resetTrail(sh.pos);
+    // 拖尾（殺球有自己的能量拖尾，那時藏起來）
+    if (flying && !this.fx.smashing) this.trail.push(sh.pos, sp, this.camera, Math.min(1.6, Math.max(0.9, this.camera.position.distanceTo(this.shuttle.position) / 13)));
+    else if (flying) this.trail.hide();
+    else this.resetTrail(sh.pos);
+    this.netWobble.update(dt);
 
     // 落點提示：對方打來的球（黃／紅）；自己剛打出去的球短暫顯示白色虛影（觀戰：每一球都是黃／紅）
     const pred = sh.prediction;

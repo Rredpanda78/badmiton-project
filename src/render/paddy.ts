@@ -108,6 +108,8 @@ export function paddy(): Environment {
     sky: 0xfff0d4,
     ground: 0x5d6b3a,
     sun: 0xffdcaa,
+    sunDir: [-0.7, 1, -0.3], // 傍晚偏低的太陽（仰角約 53°、偏左）：影子拉長、偏暖
+    fill: [0xffe7c8, 0.65],
     update(dt) {
       wind.update(dt);
       egrets.update(wind.time.value);
