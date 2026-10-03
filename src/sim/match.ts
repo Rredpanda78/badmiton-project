@@ -68,6 +68,7 @@ export interface PlayerState {
   dive: { t: number; dx: number; dz: number; v0: number } | null; // 魚躍中（dx,dz = 世界座標方向）
   downT: number; // 魚躍後趴在地上的剩餘時間
   reachMul: number; // 擊球範圍倍率（手動跑位的玩家較大）
+  chase: { x: number; z: number; t: number } | null; // 對手這一拍擊出時自己站的位置與時間（算被調動多少）
 }
 
 export type Phase = 'serve' | 'rally' | 'point' | 'matchOver' | 'drill' | 'await'; // drill = 練習模式等待發球機；await = 線上：自己打出去的球落地，等對方判定
@@ -97,6 +98,8 @@ export type MatchEvent =
       attack: number; // 這球有多好殺（給接球方的殺球加成）
       timing?: number; // 出拍時機：正 = 太早放開、負 = 太晚（秒，跟理想時機差多少；跳殺、魚躍不算）
       timingFlat?: number; // 算「完美」的寬度（秒）
+      pressure?: number; // 被調動多少（0..1，球質因此變差）
+      heat?: number; // 來球多快（0..1，接殺球的難度）
       ct?: number; // 4 人線上：沿著來球飛了多久才擊中（tick 時間，裁決誰先打到用）
       dist?: number; // 4 人線上：擊中時球員到球的水平距離（同時打到時比這個）
     }
@@ -264,6 +267,7 @@ export class Match {
       dive: null,
       downT: 0,
       reachMul: 1,
+      chase: null,
     });
     this.players = settings.doubles && !settings.practice ? [mk(0, 1), mk(1, -1), mk(2, 1), mk(3, -1)] : [mk(0, 1), mk(1, -1)];
     this.shuttle = { pos: v3(), vel: v3(), mode: 'held', lastHitter: null, isServe: false, serveBoxSign: 1, prediction: null, stepDt: PHYS.dt, launchTime: 0, wobble: false, attack: 0, pace: 0, holdT: 0, dilate: 1, ft: 0 };
@@ -550,12 +554,21 @@ export class Match {
       p.vel.z = 0;
     } else if (!p.airborne) {
       const mul = p.landRecover > 0 ? GAME.jump.landMoveMul : p.swing ? GAME.swingMoveMul : p.charging ? GAME.chargeMoveMul : 1;
-      const top = GAME.moveSpeed * p.kit.move * mul;
-      const tvx = p.side * mx * top;
-      const tvz = -p.side * my * top;
-      const maxDv = GAME.moveAccel * p.kit.accel * dt;
-      p.vel.x += clamp(tvx - p.vel.x, -maxDv, maxDv);
-      p.vel.z += clamp(tvz - p.vel.z, -maxDv, maxDv);
+      let tvx = p.side * mx;
+      let tvz = -p.side * my;
+      const top = GAME.moveSpeed * p.kit.move * mul * dirMul(p, tvx, tvz);
+      tvx *= top;
+      tvz *= top;
+      // 起步要加速；減速、轉向（往反方向推）用煞車，比起步快
+      const acc = GAME.moveAccel * p.kit.accel * dt;
+      const brk = GAME.moveBrake * p.kit.accel * dt;
+      const axis = (v: number, t: number) => {
+        const d = t - v;
+        const lim = v !== 0 && Math.sign(d) !== Math.sign(v) ? brk : acc;
+        return v + clamp(d, -lim, lim);
+      };
+      p.vel.x = axis(p.vel.x, tvx);
+      p.vel.z = axis(p.vel.z, tvz);
     }
     p.pos.x += p.vel.x * dt;
     p.pos.z += p.vel.z * dt;
@@ -794,6 +807,8 @@ export class Match {
       const T = sh.prediction.landTime;
       sh.dilate = T > 0.05 ? T / (T + 2 * this.netLag) : 1;
     }
+    // 接球方從現在的位置開始追這一球
+    for (const o of this.players) o.chase = o.team !== p.team ? { x: o.pos.x, z: o.pos.z, t: this.time } : null;
     this.rallyHits++;
     this.hitSerial++;
   }
@@ -875,16 +890,25 @@ export class Match {
   private hit(p: PlayerState, dist: number): void {
     const swing = p.swing!;
     const sh = this.shuttle;
+    const contact = copy3(sh.pos);
+    const incoming = Math.hypot(sh.vel.x, sh.vel.y, sh.vel.z);
+    // 接快球（殺球、中場殺、撲壓）：來球越快，完美時機越窄、回出去的球越差 —— 時機抓得再好也很難反抽出好球
+    const H = GAME.heat;
+    const heat = swing.diveAuto || p.airborne ? 0 : clamp(((incoming * sh.stepDt) / PHYS.dt - H.from) / H.span, 0, 1);
+    const sf = setFactor(p) * (1 - H.window * heat);
     // 在空中擊中：越接近跳躍最高點越好。划動直接起跳的那一下只看這個；先起跳再划的取兩者較好的
-    let qTime = timeQuality(swing.t, setFactor(p), idealContactFor(sh.pos.y - p.pos.y));
+    let qTime = timeQuality(swing.t, sf, idealContactFor(sh.pos.y - p.pos.y));
     if (p.airborne) {
       const apexQ = 1 - 0.35 * clamp(Math.abs(this.time - p.takeoffAt - jumpApexTime()) / 0.15, 0, 1);
       qTime = swing.triggeredJump ? apexQ : Math.max(qTime, apexQ);
     }
     // 魚躍：自動救回固定是一顆普通的球（至少會過網）
     let quality = swing.diveAuto ? GAME.dive.quality : qTime * posQuality(dist, this.reachOf(p)) * (swing.dive ? 0.85 : 1);
-    const contact = copy3(sh.pos);
-    const incoming = Math.hypot(sh.vel.x, sh.vel.y, sh.vel.z);
+    // 被調動：來不及站穩就出拍（大對角、到位的切球、後場反手位）
+    // （殺球、撲壓本身就沒時間跑：主要算在「接快球」與硬伸手的懲罰裡，這裡只算一點）
+    const pressure = swing.diveAuto ? 0 : this.pressureOf(p, contact) * (1 - 0.8 * sh.pace);
+    quality *= 1 - GAME.pressure.penalty * pressure;
+    if (heat > 0) quality *= 1 - H[swing.family] * heat;
     // 硬伸手去接快球（殺球）：離身體越遠、來球越快，球質越差；太勉強可能直接掛網 → 這種球要用魚躍
     let stretchFail = false;
     // 看球的路線離身體多遠（側向距離），不是擊球當下的距離：正面飛來的球在身前 0.9 m 接很正常
@@ -984,10 +1008,40 @@ export class Match {
       wobble: weak,
       attack: sh.attack,
       timing: p.airborne || swing.dive ? undefined : swing.t - idealContactFor(contact.y - p.pos.y),
-      timingFlat: 0.035 * setFactor(p),
+      timingFlat: 0.035 * sf,
+      pressure,
+      heat,
       ct,
       dist,
     });
+  }
+
+  /**
+   * 被調動多少（0..1）：看這一球整條路線，從對手擊球時自己站的位置出發，
+   * 「最好的那個擊球點」扣掉反應、跑過去（到舒服的擊球距離）的時間還剩多少餘裕 ——
+   * 量的是對手這球打得多到位、自己站位多差，不是自己選了多早去接；後場反手位另外加
+   */
+  private pressureOf(p: PlayerState, contact: Vec3): number {
+    const c = p.chase;
+    const pred = this.shuttle.prediction;
+    if (!c || !pred) return 0;
+    const P = GAME.pressure;
+    const t0 = this.shuttle.launchTime - c.t; // 一般 = 0（線上收到的球可能晚一點）
+    let margin = -Infinity;
+    for (let i = 0; i < pred.points.length; i += 2) {
+      const q = pred.points[i];
+      if (q.p.z * p.side < 0.3 || q.p.y < 0.3 || q.p.y > GAME.reachMaxY) continue;
+      const dx = q.p.x - c.x;
+      const dz = q.p.z - c.z;
+      const d = Math.hypot(dx, dz);
+      const k = d > P.comfy ? (d - P.comfy) / d : 0;
+      margin = Math.max(margin, t0 + q.t - P.reaction - (k > 0 ? runTime(p, dx * k, dz * k) : 0));
+    }
+    if (margin === -Infinity) return 0;
+    let pr = clamp((P.easy - margin) / P.span, 0, 1);
+    // 後場反手位（右手持拍：球在身體左邊）：拍面轉不過來、不好發力
+    if (!p.airborne && Math.abs(contact.z) > 4.6 && (contact.x - p.pos.x) * p.side < -0.15) pr += P.backhandRear;
+    return clamp(pr, 0, 1);
   }
 
   private onLand(): void {
@@ -1532,6 +1586,23 @@ function setFactor(p: PlayerState): number {
   const sp = Math.hypot(p.vel.x, p.vel.z);
   const set = 1 - Math.min(1, sp / (GAME.moveSpeed * 0.6));
   return 0.8 + 0.6 * set;
+}
+
+/** 往世界座標 (dx,dz) 方向跑的最高速倍率：往前衝 1、橫移 side、往後退（離網）back */
+function dirMul(p: PlayerState, dx: number, dz: number): number {
+  const m = Math.hypot(dx, dz);
+  if (m < 1e-6) return 1;
+  const away = (dz * p.side) / m; // +1 = 離網
+  return 1 - (1 - GAME.moveDirMul.back) * Math.max(0, away) - (1 - GAME.moveDirMul.side) * (1 - Math.abs(away));
+}
+
+/** 從站定往世界座標 (dx,dz) 跑過去最快要多久（起步加速 + 方向速度；擊球時不必煞停） */
+export function runTime(p: PlayerState, dx: number, dz: number): number {
+  const d = Math.hypot(dx, dz);
+  const top = GAME.moveSpeed * p.kit.move * dirMul(p, dx, dz);
+  const a = GAME.moveAccel * p.kit.accel;
+  const dAcc = (top * top) / (2 * a);
+  return d <= dAcc ? Math.sqrt((2 * d) / a) : top / a + (d - dAcc) / top;
 }
 
 function timeQuality(t: number, f = 1, ideal = GAME.idealContactT): number {

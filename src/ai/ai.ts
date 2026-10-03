@@ -1,5 +1,5 @@
 import { chargeFromTime, COURT, GAME, PHYS, timeForCharge, type Difficulty } from '../config';
-import { idealContactFor, idleInput, type Match, type PlayerId, type PlayerInput } from '../sim/match';
+import { idealContactFor, idleInput, runTime, type Match, type PlayerId, type PlayerInput } from '../sim/match';
 import type { Prediction } from '../sim/physics';
 import { chargeForDepth, depthFromCharge, reboundCharge, type Family, type Flick } from '../sim/shots';
 import { ballTaker, formationSpot, isLift } from './doubles';
@@ -316,7 +316,6 @@ export class AIController {
       if (margin >= 0 && margin < 0.3 && rng.chance((1 - p.outJudge) * 0.4)) return leavePlan();
     }
 
-    const speed = GAME.moveSpeed * this.stickMul * me.kit.move;
     type Cand = { score: number; i: number; tAbs: number; sx: number; sz: number };
     let best: Cand | null = null;
     let fallback: Cand | null = null;
@@ -331,7 +330,8 @@ export class AIController {
       const avail = tAbs - now - this.reaction;
       const cand = { score: 0, i, tAbs, sx, sz };
       fallback = cand;
-      if (travel / speed + 0.12 / me.kit.accel > avail && travel > 0.4) continue;
+      // 跑過去要多久：起步加速、往後退比較慢（跟 Match 的移動一樣）
+      if (runTime(me, sx - me.pos.x, sz - me.pos.z) / this.stickMul > avail && travel > 0.4) continue;
       let score = -0.15 * (tAbs - now);
       if (pt.y >= GAME.highZoneY) score += 1 * p.smashBias;
       if (pt.y < 0.5) score -= 0.6;

@@ -22,6 +22,7 @@ import { PROTOCOL, type NetMsg, type PeerMsg, type QuadCfg, type QuadHuman } fro
 import { isAi, isHuman, QuadLobby, seatTeam, TEAM_NAMES } from './net/quad';
 import { QuadSession } from './net/session4';
 import type { QuadSync } from './net/sync4';
+import { isWinner, ReplayPlayer, ReplayRecorder } from './render/replay';
 
 const HUMAN = 0 as const;
 const $ = (id: string) => document.getElementById(id)!;
@@ -79,6 +80,11 @@ let netInfoT = 0;
 /** 新手教學（暫停時玩家的那一下輸入先存著，下一個 tick 用） */
 let tutorial: TutorialRunner | null = null;
 let tutInput: PlayerInput | null = null;
+/** 得分回放：錄影（每個 tick）、等著播的（得分後 GAME.replay.delay 模擬秒開始）、正在播的、播完要做的事（最後一分的結果畫面） */
+const recorder = new ReplayRecorder();
+let replayPending: { m: Match; hit: NonNullable<ReplayRecorder['lastHit']>; land: NonNullable<ReplayRecorder['lastLand']> } | null = null;
+let replay: { p: ReplayPlayer; m: Match } | null = null;
+let afterReplay: (() => void) | null = null;
 
 /** 手機震動（iPhone 的 Safari 不支援，會自動略過） */
 function buzz(pattern: number | number[]): void {
@@ -109,6 +115,7 @@ const pick = <T,>(xs: T[]) => xs[Math.floor(Math.random() * xs.length)];
 /** 開一場對 AI 的比賽；doubles = 雙打（自己＋AI 夥伴 對 兩位 AI）。回傳這場的球員（開場介紹用） */
 function newMatch(demo: boolean, tourOpp?: TourOpponent, venue?: Venue, doubles = false): { partner: Character | null; opps: Character[] } {
   endTutorial();
+  cancelReplay();
   // 對手每場隨機換一位球員、一支球拍（不跟自己同一位）
   const me = demo ? pick(CHARACTERS) : characterById(settings.character);
   const opp = tourOpp ? characterById(tourOpp.character) : pick(CHARACTERS.filter((c) => c.id !== me.id));
@@ -351,6 +358,7 @@ function handleEvent(e: MatchEvent): void {
         sfx.point(e.winner === match.teamOf(HUMAN));
         onPointAudio(e.winner, e.reason);
       }
+      if (isWinner(e) && replayOn()) queueReplay(e.winner);
       break;
     case 'match':
       if (online) {
@@ -359,7 +367,7 @@ function handleEvent(e: MatchEvent): void {
       }
       if (live) {
         const ctx = tourCtx;
-        resultTimer = window.setTimeout(() => {
+        const showResult = () => {
           const win = e.winner === match.teamOf(HUMAN);
           // 比分、局數以隊伍為索引：0 = 自己這隊
           const sc = match.settings.games > 1 ? `局數 ${match.games[0]} : ${match.games[1]}` : `比分 ${match.score[0]} : ${match.score[1]}`;
@@ -386,7 +394,9 @@ function handleEvent(e: MatchEvent): void {
           }
           setMode('result');
           if (ctx && win) $('nextBtn').style.display = $('nextBtn').onclick ? 'block' : 'none';
-        }, 1600);
+        };
+        // 最後一分有得分回放：播完才出結果
+        resultTimer = window.setTimeout(() => (replay || replayPending ? (afterReplay = showResult) : showResult()), 1600);
       } else {
         window.setTimeout(() => mode === 'menu' && newMatch(true), 1500);
       }
@@ -405,6 +415,7 @@ function tick(now: number): void {
   // 不小於 0：console 的 game.advance() 會把 last 推到未來，之後的真實畫格不能算出負的 dt
   const dt = Math.max(0, Math.min(0.1, (now - last) / 1000));
   last = now;
+  if (replay) return replayTick(dt); // 得分回放中：比賽暫停，畫面播回放
   if (drill && mode === 'play' && hitStop <= 0) drill.tick(dt);
   if (tutorial && mode === 'play') {
     tutorial.tick(dt);
@@ -449,7 +460,9 @@ function tick(now: number): void {
       acc -= PHYS.dt;
       // 2 人房 AI 接手中：變成本機對 AI，不送任何東西
       const sync = online?.aiTakeover ? null : online?.sync;
-      for (const e of match.drainEvents()) {
+      const events = match.drainEvents();
+      if (replayOn()) recorder.record(match, events); // 得分回放的錄影（只讀比賽狀態）
+      for (const e of events) {
         sync?.onEvent(e);
         handleEvent(e);
       }
@@ -458,10 +471,15 @@ function tick(now: number): void {
         acc = 0;
         break;
       }
+      if (replayPending && replayDue()) {
+        acc = 0;
+        break;
+      }
     }
     if (hitStop > 0) acc = 0;
     onlinePointBoundary();
   }
+  if (replay) return replayTick(0); // 這一幀開始回放：直接畫回放的第一格（不要再用電影鏡頭畫一次比賽）
   const me = match.players[HUMAN];
   if (!demoPlayer) chargeZoneTicks(me.charging, me.charge, match.phase === 'serve' && match.server === HUMAN, match.doubles);
   renderer.update(match, mode === 'paused' || mode === 'result' ? 0 : dt, settings.landingHint && !demoPlayer, HUMAN);
@@ -490,10 +508,180 @@ function chargeZoneTicks(charging: boolean, charge: number, serving: boolean, do
   }
   lastZone = zone;
 }
+// 效能保險：低階手機持續掉幀（低於約 42 fps 累積 2.5 秒）就自動降一級解析度
+let lastFrame = 0;
+let slowMs = 0;
 function frame(now: number): void {
+  const gap = now - lastFrame;
+  lastFrame = now;
+  if (gap > 24 && gap < 200 && !document.hidden) slowMs += gap;
+  else if (gap < 20) slowMs = Math.max(0, slowMs - gap * 0.5);
+  if (slowMs > 2500) {
+    slowMs = 0;
+    renderer.lowerQuality();
+  }
   tick(now);
   requestAnimationFrame(frame);
 }
+
+// ---------- 得分回放（精彩回放） ----------
+/** 這場要不要錄／播回放：對 AI 的單打、雙打、巡迴賽；線上（兩支手機要同步）、教學、訓練、主選單示範不播 */
+function replayOn(): boolean {
+  return settings.replay && !demoPlayer && !online?.sync && !tutorial && !drill && !match.settings.practice;
+}
+
+/** 主動得分（羽球落在對方場內）：記下致勝的那一拍和落地，得分橫幅出現一下之後才開始播 */
+function queueReplay(winner: TeamId): void {
+  const hit = recorder.lastHit;
+  const land = recorder.lastLand;
+  if (recorder.recording !== match || !hit || !land || land.tick !== recorder.lastTick || !land.e.inBounds || hit.tick >= land.tick) return;
+  if (match.teamOf(hit.e.player) !== winner || hit.e.netFault) return;
+  replayPending = { m: match, hit, land };
+}
+
+/** 得分暫停中、時間到了就開始播；回傳 true = 開始了（比賽先停在這裡，播完才繼續） */
+function replayDue(): boolean {
+  const pend = replayPending!;
+  if (pend.m !== match || (match.phase !== 'point' && match.phase !== 'matchOver')) {
+    replayPending = null;
+    flushAfterReplay();
+    return false;
+  }
+  if (match.phaseT < GAME.replay.delay) return false;
+  replayPending = null;
+  const p = ReplayPlayer.create(recorder, match, pend.hit, pend.land);
+  if (!p) {
+    flushAfterReplay();
+    return false;
+  }
+  startReplay(p);
+  return true;
+}
+
+function startReplay(p: ReplayPlayer): void {
+  replay = { p, m: match };
+  p.aspect = innerWidth / Math.max(1, innerHeight);
+  hitStop = 0;
+  controls.enabled = false;
+  controls.reset();
+  renderer.beginReplay(p.view);
+  document.body.classList.add('replaying');
+  const e = p.shot;
+  const ours = match.teamOf(e.player) === match.teamOf(HUMAN);
+  $('replayShot').textContent = `${e.name} ${e.speedKmh} km/h`;
+  $('replayWho').textContent = e.player === HUMAN ? '你' : ours ? '隊友' : hud.oppName;
+  $('replay').classList.toggle('opp', !ours);
+  $('replay').classList.add('show');
+  $('replayProg').style.width = '0%';
+  dipFade();
+  sfx.replay();
+}
+
+/** 回放中的一幀：比賽不推進，畫面讀回放的檢視用比賽、鏡頭照回放算的擺（暫停畫面時停在原地） */
+function replayTick(dt: number): void {
+  const r = replay!;
+  if (r.m !== match) return cancelReplay();
+  const run = mode === 'play';
+  r.p.aspect = innerWidth / Math.max(1, innerHeight);
+  const { events, animDt } = run ? r.p.update(dt) : { events: [], animDt: 0 };
+  for (const e of events) replayEvent(e, r.p);
+  renderer.setCinematic(r.p.cam, run ? dt : 0);
+  renderer.update(r.p.view, animDt, false, HUMAN);
+  hud.update(match, renderer, run ? dt : 0, HUMAN); // 記分板藏著，得分橫幅照樣倒數
+  $('replayProg').style.width = `${(r.p.progress * 100).toFixed(1)}%`;
+  updateNetInfo(dt);
+  renderer.render();
+  if (r.p.done) stopReplay();
+}
+
+/** 回放裡的事件：只重播聲音和特效（不震動、不跳字、不算分） */
+function replayEvent(e: MatchEvent, p: ReplayPlayer): void {
+  const view = p.view;
+  switch (e.type) {
+    case 'hit': {
+      const smash = (e.family === 'down' && e.speedKmh > 120) || e.jump;
+      const q = e.serve ? 0.85 : e.quality;
+      sfx.hit(q, e.speedKmh, e.jump);
+      if (e === p.shot) sfx.slowHit(smash ? Math.min(1, e.speedKmh / 220) : 0.15); // 致勝那一拍：慢動作的低沉一聲
+      renderer.burst(e.pos, q, smash, e.jump);
+      break;
+    }
+    case 'whiff':
+      sfx.whiff();
+      break;
+    case 'jump':
+      sfx.jump();
+      break;
+    case 'jumpLand':
+    case 'diveLand':
+      sfx.thud();
+      renderer.dust(view.players[e.player].pos);
+      break;
+    case 'dive':
+      sfx.whoosh();
+      break;
+    case 'net':
+      sfx.net();
+      break;
+    case 'land':
+      sfx.land();
+      break;
+  }
+  renderer.fxEvent(e, view, true);
+}
+
+/** 回放結束（播完或跳過）：畫面接回比賽，比賽從暫停的地方繼續（狀態完全沒動過） */
+function stopReplay(): void {
+  if (!replay) return;
+  replay = null;
+  renderer.endReplay(match);
+  document.body.classList.remove('replaying');
+  $('replay').classList.remove('show');
+  dipFade();
+  controls.enabled = mode === 'play';
+  controls.reset();
+  acc = 0;
+  flushAfterReplay();
+}
+
+/** 換一場、離開比賽：回放、等著播的、播完要做的事全部取消 */
+function cancelReplay(): void {
+  afterReplay = null;
+  replayPending = null;
+  stopReplay();
+  recorder.reset();
+}
+
+function flushAfterReplay(): void {
+  const f = afterReplay;
+  afterReplay = null;
+  f?.();
+}
+
+/** 從黑畫面淡入：遮住進出回放時鏡頭的跳切 */
+function dipFade(): void {
+  const el = $('replayFade');
+  el.classList.remove('go');
+  void el.offsetWidth; // 重新開始動畫
+  el.classList.add('go');
+}
+
+// 回放中點一下（或按任何鍵）就跳過；按鍵不往下傳（不會順便暫停、出拍）
+$('replay').addEventListener('pointerdown', (e) => {
+  if (!replay || mode !== 'play') return;
+  e.preventDefault();
+  stopReplay();
+});
+window.addEventListener(
+  'keydown',
+  (e) => {
+    if (!replay || mode !== 'play') return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    stopReplay();
+  },
+  true,
+);
 
 // ---------- 選單 ----------
 const DIFF_LABEL: Record<Difficulty, string> = { easy: '簡單', normal: '普通', hard: '困難', extreme: '超難', hell: '地獄' };
@@ -799,13 +987,15 @@ function loadSettings(): MatchSettings {
       if ((s.settingsVersion ?? 1) < 5) s.moveMode = s.autoMove === false ? 'manual' : 'auto';
       if (!['auto', 'assist', 'manual'].includes(s.moveMode)) s.moveMode = 'auto';
       s.autoMove = s.moveMode === 'auto';
-      s.settingsVersion = 5;
+      // v6：新增得分回放（預設開）
+      if ((s.settingsVersion ?? 1) < 6 || typeof s.replay !== 'boolean') s.replay = true;
+      s.settingsVersion = 6;
       return s;
     }
   } catch {
     /* 私密模式等情況讀不到就用預設 */
   }
-  return { ...DEFAULT_SETTINGS, settingsVersion: 5 };
+  return { ...DEFAULT_SETTINGS, settingsVersion: 6 };
 }
 function saveSettings(): void {
   try {
@@ -835,6 +1025,11 @@ requestAnimationFrame(frame);
   get bots() {
     return bots;
   },
+  get replay() {
+    return replay?.p ?? null;
+  },
+  recorder,
+  skipReplay: () => stopReplay(),
   settings,
   renderer,
   controls,
@@ -861,6 +1056,7 @@ function buildDrillList(): void {
 
 function startDrill(d: Drill): void {
   endTutorial();
+  cancelReplay();
   unlockAudio();
   if (controls.isTouch || matchMedia('(pointer: coarse)').matches) document.documentElement.requestFullscreen?.().catch(() => {});
   const me = characterById(settings.character);
@@ -1182,6 +1378,7 @@ function joinRoom(code: string, creator = false, rejoin: RejoinRecord | null = n
 function startOnlineMatch(start: StartInfo, peer: Hello, host: boolean, rejoin = false): void {
   if (!online) return;
   endTutorial();
+  cancelReplay();
   unlockAudio();
   if (controls.isTouch || matchMedia('(pointer: coarse)').matches) document.documentElement.requestFullscreen?.().catch(() => {});
   const me = characterById(settings.character);
@@ -1892,6 +2089,7 @@ function startTutorial(): void {
   if (controls.isTouch || matchMedia('(pointer: coarse)').matches) document.documentElement.requestFullscreen?.().catch(() => {});
   leaveOnline();
   endTutorial();
+  cancelReplay();
   const me = characterById(settings.character);
   match = new Match({ ...settings, practice: true, aiCharacter: 'allround', aiRacket: 'balance' }, (Date.now() ^ (Math.random() * 1e9)) >>> 0);
   bots = [];

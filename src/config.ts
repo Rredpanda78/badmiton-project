@@ -49,7 +49,15 @@ export const GAME = {
 
   // 移動
   moveSpeed: 6.4,
-  moveAccel: 42,
+  moveAccel: 24, // 起步加速度（有慣性：從站定到全速約 0.27 秒）
+  moveBrake: 40, // 煞車／轉向比起步快（跨步煞停），但還是要時間
+  moveDirMul: { back: 0.86, side: 0.95 }, // 往後退（離網）、橫移的最高速倍率（往前衝 = 1）
+  // 被調動：對手擊球後要跑多遠、時間夠不夠。餘裕 = 經過時間 − 反應 − 最快跑到擊球點的時間；
+  // 餘裕 < easy 開始扣球質，少 span 秒扣到最多 penalty（大對角、到位的切球讓對手來不及站穩）
+  pressure: { reaction: 0.18, comfy: 0.7, easy: 0.25, span: 0.35, penalty: 0.3, backhandRear: 0.15 },
+  // 接快球：擊球當下來球（換算成球速倍率後）比 from m/s 快越多越難回好球，span 後到最大；
+  // 依回球種類扣：side = 反抽、up = 挑、down = 擋網；完美時機的寬度也跟著變窄 window
+  heat: { from: 10.5, span: 6, side: 0.45, up: 0.25, down: 0.2, window: 0.35 },
   chargeMoveMul: 0.65,
   swingMoveMul: 0.5,
 
@@ -100,6 +108,11 @@ export const GAME = {
 
   serveContactY: 0.95,
   pointPause: 1.8,
+
+  // 得分回放（主動得分才播，src/render/replay.ts）：得分後 delay 模擬秒開始（比賽在回放期間暫停，播完才繼續），
+  // 從致勝那一拍前 pre 模擬秒播到落地後 post 模擬秒；擊球瞬間 slow 倍（相對正常遊戲速度）慢動作，
+  // 羽球飛行的速度自動調整讓整段約 target 秒（真實時間），飛行倍率限制在 flightMin～flightMax
+  replay: { delay: 0.5, pre: 0.42, post: 0.2, slow: 0.26, target: 3.0, flightMin: 0.5, flightMax: 2.4 },
 };
 
 /**
@@ -138,6 +151,7 @@ export interface MatchSettings {
   music: boolean; // 背景音樂
   musicTrack: MusicTrack; // 背景音樂選曲
   umpire: boolean; // 裁判報分語音
+  replay: boolean; // 得分回放：主動得分時播約 3 秒的慢動作特寫（線上、教學、訓練不播）
   character: string; // 自己的球員
   racket: string; // 自己的球拍
   /** 跑位：auto = 自動（可以預判起步）、assist = 輔助（自己推、電腦幫忙對準＋自動回位）、manual = 手動 */
@@ -173,6 +187,7 @@ export const DEFAULT_SETTINGS: MatchSettings = {
   music: true,
   musicTrack: 'auto',
   umpire: true,
+  replay: true,
   character: 'allround',
   racket: 'balance',
   moveMode: 'auto',
