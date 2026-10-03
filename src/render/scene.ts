@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { CAMERA, COURT, GAME, type Venue } from '../config';
 import { timeUntilInReach, type Match } from '../sim/match';
 import { v3, type Vec3 } from '../sim/physics';
+import { predictContact, type ContactHint } from './anim/contact';
 import { makeCourt } from './court';
 import { buildVenue, type Environment } from './environment';
 import { PlayerModel, playerStyle } from './playerModel';
@@ -23,6 +24,10 @@ export class GameRenderer {
   readonly scene = new THREE.Scene();
   readonly camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
   private models: [PlayerModel, PlayerModel];
+  private hints: [ContactHint, ContactHint] = [
+    { t: 0, x: 0, y: 0, z: 0, d: 0 },
+    { t: 0, x: 0, y: 0, z: 0, d: 0 },
+  ];
   private shuttle = new THREE.Group();
   private shuttleShadow: THREE.Mesh;
   private trail: THREE.Line;
@@ -280,7 +285,8 @@ export class GameRenderer {
       this.camera.updateProjectionMatrix();
     }
 
-    match.players.forEach((p, i) => this.models[i].update(p, dt, match.shuttle.pos));
+    // 步法動畫：預估每位球員多久後、在哪裡擊球（唯讀）
+    match.players.forEach((p, i) => this.models[i].update(p, dt, match.shuttle.pos, predictContact(match, p.id, this.hints[i])));
     this.env?.update(dt);
 
     // 羽球

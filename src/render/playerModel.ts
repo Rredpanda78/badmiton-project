@@ -3,6 +3,7 @@ import { GAME } from '../config';
 import type { PlayerState, Swing } from '../sim/match';
 import type { Family } from '../sim/shots';
 import { chargeZones } from '../sim/shots';
+import type { ContactHint } from './anim/contact';
 import { clamp, damp, easeIn, easeOut, lerp, smooth01, solveTwoBone } from './anim/ik';
 import {
   ARM_READY,
@@ -69,15 +70,36 @@ const ARM_LEN = 1.06; // 肩膀到拍面中心的距離
 const THIGH = 0.41;
 const SHIN = 0.41;
 const ANKLE = 0.075; // 腳踝離地高度
+const BALL = 0.13; // 前腳掌（墊腳尖的支點）在腳踝前方多遠
+const HEEL = 0.08; // 腳跟在腳踝後方多遠
 const LEG = THIGH + SHIN;
 const HIP_W = 0.1; // 髖關節左右間距的一半
 const STAND_H = 0.86; // 站直時髖關節高度
 const READY_H = 0.75; // 準備姿勢（膝蓋微蹲）
 const RUN_H = 0.79;
 const LUNGE_H = 0.52;
-const LUNGE_F = 0.56; // 弓步：前腳（右）在身體前方多遠
-const LUNGE_B = 0.5; // 後腳（左）在身體後方多遠（後腳打直）
 const AIR_H = 0.84;
+
+// ---- 擊球同步步法（時間 = 模擬秒，距離 = 模型單位 ≈ 公尺）----
+// 前場／側邊：最後一步一定是右腳大跨（弓步），腳跟先著地、剛好在擊球前踩穩；後腳留在後面用腳尖拖
+// 後場頭頂：擊球前右腳退到身後側身，擊球後剪刀交換（右腳往前、左腳往後）
+const LUNGE_DUR = 0.17; // 弓步那一步的時間
+const LUNGE_LEAD = 0.035; // 右腳跟比擊球早這麼久著地
+const LUNGE_MIN = 0.34; // 右腳落點沿弓步方向至少離身體這麼遠
+const LUNGE_MAX = 0.74; // 最遠
+const LUNGE_STEP = 0.3; // 這一步至少跨這麼遠（從右腳原本的位置量）
+const LUNGE_REACH = 0.5; // 低點擊球：擊球點在右腳前方多遠（拍子＋手臂往前伸）
+const LUNGE_REACH_HI = 0.3; // 高點（網前撲球）
+const SPAN_MIN = 0.58; // 弓步兩腳前後距離：太近 → 右腳跨更遠
+const SPAN_MAX = 0.95; // 太遠 → 後腳往前拖
+const LUNGE_HOLD = 0.17; // 擊球後撐住弓步多久才蹬回
+const LUNGE_OFF_MAX = 0.36; // 弓步時骨盆最多離 root 多遠（重心移到兩腳之間）
+const FRONT_DN = 3.2; // 擊球點離網這麼近 = 前場
+const OVER_Y = 1.75; // 擊球點這麼高 = 頭頂球（與 classify 一致）
+const SIDE_X = 0.45; // 擊球點在身體側邊這麼遠（或低於 LOW_Y）→ 跨步去接
+const LOW_Y = 1.05;
+const PRE_T = 0.6; // 擊球前這麼久開始準備（後場側身右腳退後、前場重心先放後面）
+const RUN_PUSH = 0.45; // 跑步時後腳離地前腳跟先抬起（前腳掌蹬地）的角度
 const WAIST = 0.1; // 腰（上身旋轉軸）在髖關節上方
 const UPPER_ARM = 0.29;
 const FOREARM = 0.27;
@@ -103,6 +125,11 @@ class Foot {
   forced = false; // 指定落點（弓步），不跟著身體重新瞄準
   gap = -1; // 這一步是否限制兩腳不交叉（起步時決定）
   runK = 0; // 這一步的「跑步感」：腳跟先離地、腳跟先著地
+  strike = false; // 弓步：腳尖翹起、腳跟先著地，著地後腳掌再放平
+  dragging = false; // 後腳用腳尖在地上拖（不抬腳）
+  h0 = 0; // 換步起點的離地高度（跨到一半改成弓步時，高度要接得上）
+  heel = 0; // 著地後腳尖還翹著的角度（慢慢放平）
+  toe = 0; // 踩住時腳跟抬起的角度（負 = 墊腳尖）
   h = 0; // 離地高度
   yaw = 0;
   yawFrom = 0;
@@ -174,8 +201,10 @@ function shirtTexture(shirt: number, accent: number, num?: number): THREE.Canvas
 
 /**
  * 程序式動畫的低多邊形球員：
- * - 腳會「踩住」地面（世界座標固定），依速度決定步幅與步頻，膝蓋用兩節骨 IK
- * - 依移動方向切換步法：往前跑＋最後一步弓步、側併步、後退側身併步／交叉步、對手擊球時分腿跳（split step）
+ * - 腳會「踩住」地面（世界座標固定，轉腳以前腳掌為軸），依速度決定步幅與步頻，膝蓋用兩節骨 IK
+ * - 依移動方向切換步法：往前跑（後腳墊腳尖蹬地）、側併步、後退側身併步／交叉步、對手擊球時分腿跳（split step）
+ * - 最後一步跟擊球同步（用 predictContact 預估的擊球時間／位置）：前場正反手、側邊防守 → 左腳先踩、右腳大跨弓步，
+ *   腳跟剛好在擊球前著地、後腳留在後面墊腳尖拖，打完撐一下再蹬回；後場頭頂球 → 先側身右腳退後，擊球瞬間剪刀交換
  * - 髖部與上身會轉向羽球或移動方向，加減速時前傾／後仰，步伐帶上下起伏
  * - 揮拍依擊球點分成頭頂／正反手平抽／下手，有轉體與隨揮；空中跳殺做剪刀腳；落地屈膝緩衝
  */
@@ -245,12 +274,32 @@ export class PlayerModel {
   private lunging = false;
   private lungeT = 0;
   private lungeCool = 0;
-  private lungeX = 0;
+  private lungeX = 0; // 弓步方向（root 座標單位向量）
   private lungeZ = -1;
-  private lungeYaw = 0;
+  private lungeAng = 0; // 弓步方向的角度（0 = 往前、正 = 往左）
+  private lungeYaw = 0; // 骨盆朝向
+  private lungeFootYaw = 0; // 右腳腳尖朝向
+  private lungeRX = 0; // 右腳落點（世界）
+  private lungeRZ = 0;
+  private lungeLX = 0; // 右腳落點相對身體（root 座標，跨步途中落點跟著身體走）
+  private lungeLZ = 0;
+  private rearWX = 0; // 後腳該在的位置（世界）
+  private rearWZ = 0;
+  private lungeDepth = 1; // 蹲多低（0..1）
+  private lungeSwing: Swing | null = null; // 弓步期間的那一拍（拍子收完才蹬回）
   private lungeHold = false;
   private lungeBack = false; // 正在從弓步往回蹬
+  private recoverT = 0; // 剛放掉弓步：右腳先蹬回
   private L = 0;
+  // 擊球預估（步法時機）
+  private contactAt = -1; // 預計擊球的時刻（this.clock）
+  private hc = new THREE.Vector3(); // 預計擊球點（root 座標）
+  private dX = 0; // lungeDir() 的結果
+  private dZ = -1;
+  private dA = 0;
+  private prepOver = 0; // 後場頭頂球準備（右腳退後、側身）
+  private prepFront = 0; // 前場弓步前：重心先放後腳
+  private scissorSwing: Swing | null = null; // 已經做過地面剪刀交換的那一拍
   // 揮拍
   private curSwing: Swing | null = null;
   private swingHit = false;
@@ -567,8 +616,9 @@ export class PlayerModel {
   /**
    * @param dt 真實時間（秒）。動畫內部換成模擬時間，跟遊戲的慢動作倍率同步。
    * @param shuttle 羽球世界座標（可省略）：有的話會看球、轉身面向球、對手擊球時做分腿跳
+   * @param hint 預估的擊球（predictContact，可省略）：有的話最後一步會跟擊球同步（前場／側邊右腳弓步、後場剪刀腳）
    */
-  update(p: PlayerState, dt: number, shuttle?: { x: number; y: number; z: number }): void {
+  update(p: PlayerState, dt: number, shuttle?: { x: number; y: number; z: number }, hint?: ContactHint | null): void {
     const ta = Math.max(0, dt) * GAME.simSpeed;
     const side = p.side;
     const H = this.h; // 世界公尺 → 模型內部單位：除以 H
@@ -586,7 +636,8 @@ export class PlayerModel {
     this.jumpMark.position.y = ground + 0.008;
     this.updateFx(p, dt);
 
-    if (!this.inited || side !== this.lastSide || Math.hypot(p.pos.x - this.lastX, p.pos.z - this.lastZ) > 0.9) this.reset(p);
+    // 一幀移動超過 0.5 m（跑步最快一幀約 0.07 m）= 發球前重新站位的瞬移 → 直接擺好
+    if (!this.inited || side !== this.lastSide || Math.hypot(p.pos.x - this.lastX, p.pos.z - this.lastZ) > 0.5) this.reset(p);
     this.lastX = p.pos.x;
     this.lastZ = p.pos.z;
     this.lastSide = side;
@@ -703,42 +754,89 @@ export class PlayerModel {
     const P = SWING_POSES[poseType];
     const under = poseType === FH_UNDER || poseType === BH_UNDER;
 
+    // ---------- 擊球預估：決定最後一步的步法 ----------
+    // plan 1 = 前場（正反手網前）或側邊（防守、遠球）：右腳弓步、腳跟剛好在擊球前著地
+    // plan 2 = 後場頭頂球：擊球前右腳退到身後側身，擊球後剪刀交換
+    const air = p.airborne || p.jumpArmed; // 跳殺有自己的空中剪刀腳
+    let hT = Infinity; // 還有多久擊球（模擬秒）
+    let plan = 0;
+    let front = false;
+    if (hint && !air) {
+      const hc = this.hc.set((hint.x - p.pos.x) * side * iH, (hint.y - p.pos.y) * iH, (hint.z - p.pos.z) * side * iH);
+      hT = hint.t;
+      this.contactAt = this.clock + hT;
+      front = Math.abs(hint.z) < FRONT_DN;
+      // 羽球根本到不了身邊（追不到）就不擺步法
+      if (hint.d <= GAME.reach + 0.4 && hT < PRE_T + 0.3) {
+        if (hc.y >= OVER_Y && !front) plan = 2;
+        else if (front || Math.abs(hc.x) > SIDE_X || hc.y < LOW_Y) plan = 1;
+      }
+      if (plan === 1) this.lungeDir(hc.x, hc.z, front, vx, vz, speed);
+    }
+    this.prepOver = damp(this.prepOver, plan === 2 && !(s && s.contacted) ? smooth01((PRE_T - hT) / 0.3) : 0, 7, ta);
+    this.prepFront = damp(this.prepFront, plan === 1 && !this.lunging && hT > LUNGE_DUR + LUNGE_LEAD && hT < PRE_T && speed < 1.8 ? 1 : 0, 6, ta);
+
     // ---------- 弓步 ----------
     this.lungeCool -= ta;
+    this.recoverT -= ta;
     if (speed >= this.peak) {
       this.peak = speed;
       this.peakX = this.dirX;
       this.peakZ = this.dirZ;
     } else this.peak = Math.max(speed, this.peak - ta * 5);
-    if (!this.lunging && !p.airborne && this.lungeCool <= 0) {
-      if (this.peak > 3.4 && speed < Math.min(3, this.peak - 1.5)) {
-        // 往前（或側向）衝刺後急停 → 最後一步跨成弓步
-        if (-this.peakZ > -0.3 && (Math.abs(p.pos.z) < 3.8 || p.charging || s)) this.startLunge(p, this.peakX, this.peakZ);
-        this.peak = speed;
-      } else if (s && !s.whiffed && s.t < 0.12 && (this.swingType === FH_UNDER || this.swingType === BH_UNDER)) {
-        // 低點擊球且球在身前偏遠 → 跨步去接
-        const ref = s.contacted ? this.cpL : shNear ? this.shL : null;
-        if (ref) {
-          const h = Math.hypot(ref.x, ref.z);
-          if (h > 0.55 && ref.z < 0.1 && vx * ref.x + vz * ref.z > -h) this.startLunge(p, ref.x / h, ref.z / h);
+    // 已出拍（馬上就要擊球）但弓步已經放掉 → 重新跨
+    const swingSoon = s !== null && !s.contacted && !s.whiffed;
+    if (plan === 1 && !air && ((!this.lunging && this.lungeCool <= 0) || (swingSoon && this.lunging && !this.lungeHold))) {
+      // 跟擊球同步：右腳跟在擊球前 LUNGE_LEAD 著地（來不及就跨快一點）
+      if (hT <= LUNGE_DUR + LUNGE_LEAD) this.startLunge(p, Math.max(0.08, hT - LUNGE_LEAD), hint!.x, hint!.z, front, this.hc.y, s);
+    } else if (!this.lunging && !air && this.lungeCool <= 0) {
+      if (!hint) {
+        // 備案（沒有擊球預估）：往前／側向衝刺後急停 → 最後一步跨成弓步；低點擊球且球在身前偏遠 → 跨步去接
+        if (this.peak > 3.4 && speed < Math.min(3, this.peak - 1.5)) {
+          if (-this.peakZ > -0.3 && (Math.abs(p.pos.z) < 3.8 || p.charging || s)) this.lungeToward(p, this.peakX, this.peakZ, s);
+          this.peak = speed;
+        } else if (s && !s.whiffed && s.t < 0.12 && (this.swingType === FH_UNDER || this.swingType === BH_UNDER)) {
+          const ref = s.contacted ? this.cpL : shNear ? this.shL : null;
+          if (ref) {
+            const h = Math.hypot(ref.x, ref.z);
+            if (h > 0.55 && ref.z < 0.1 && vx * ref.x + vz * ref.z > -h) this.lungeToward(p, ref.x / h, ref.z / h, s);
+          }
         }
       }
     }
     if (this.lunging) {
       this.lungeT += ta;
-      let hold = this.lungeT < 0.3 || (s !== null && this.lungeT < 0.6);
+      if (s && !this.lungeSwing) this.lungeSwing = s;
+      const ls = this.lungeSwing;
+      // 撐住弓步：有出拍 → 擊球後再撐 LUNGE_HOLD（揮空 → 揮完）；還沒出拍 → 等到預計擊球後一下。放掉後就不再撐
+      let hold =
+        this.lungeHold &&
+        (ls
+          ? ls === s && (ls.contacted ? ls.t < ls.contactT + LUNGE_HOLD : ls.t < ls.window + 0.05)
+          : this.clock < this.contactAt + 0.2 && this.lungeT < 1);
       const along = vx * this.lungeX + vz * this.lungeZ;
-      this.lungeBack = speed > 1.2 && along < -0.3 * speed;
-      if (this.lungeBack) hold = false; // 已經往回蹬
-      if (speed > 3.2 && along > 0.7 * speed) hold = false; // 其實沒停，繼續跑
+      const hit = ls !== null && ls.contacted;
+      // 已經往回蹬：擊球後撐一下（隨揮）才放；出拍了還沒打到、或球還在來（預估要接）就先撐住；不接了才放
+      const settled = ls ? (hit && ls.t > ls.contactT + 0.09) || ls.whiffed || ls !== s : plan !== 1 || this.clock > this.contactAt + 0.05;
+      this.lungeBack = speed > 1.2 && along < -0.3 * speed && settled;
+      if (this.lungeBack) hold = false;
+      // 其實沒停，繼續跑：身體越過前腳（擊球前骨盆可以多撐一小段）
+      const rootPast = ((p.pos.x - this.lungeRX) * this.lungeX + (p.pos.z - this.lungeRZ) * this.lungeZ) * side * iH;
+      if (speed > 3.2 && along > 0.7 * speed && this.feet[1].planted && (hit || rootPast > 0.15)) hold = false;
+      // 打完了而且身體已經往別處走遠：不再撐（骨盆不要被拖在後面）
+      if (hit && Math.hypot(p.pos.x - this.lungeRX, p.pos.z - this.lungeRZ) * iH > LUNGE_MAX + 0.2) hold = false;
       if (p.airborne) hold = false;
-      if (!hold && this.lungeHold) this.feet[1].forced = false; // 跨到一半就收回：改成跟著身體
+      if (!hold && this.lungeHold) {
+        this.feet[1].forced = false; // 跨到一半就收回：改成跟著身體
+        this.recoverT = 0.3; // 蹬回：右腳先收
+      }
       this.lungeHold = hold;
       this.L = damp(this.L, hold ? 1 : 0, hold ? 16 : 6, ta);
       if (!hold && this.L < 0.05) {
         this.lunging = false;
         this.lungeCool = 0.2;
         this.L = 0;
+        this.lungeSwing = null;
       }
     }
     const L = this.L;
@@ -754,10 +852,12 @@ export class PlayerModel {
     let psiT = shOK ? clamp(Math.atan2(-this.shL.x, Math.max(0.3, -this.shL.z)) * 0.5, -0.35, 0.35) : 0;
     psiT = lerp(psiT, psiMove, moveK);
     if (L > 0) psiT = lerp(psiT, this.lungeYaw, L);
+    psiT = lerp(psiT, -0.85, this.prepOver * (1 - wPose)); // 後場頭頂球：先側身（右肩往後）
     psiT = lerp(psiT, poseAt(P.yaw, kp), wPose);
     this.psi = damp(this.psi, psiT, s ? 22 : 9, ta);
-    const yawP = this.psi * lerp(0.8, 0.45, wPose);
-    const twist = this.psi - yawP;
+    let yawP = this.psi * lerp(0.8, 0.45, wPose);
+    if (L > 0) yawP = lerp(yawP, this.lungeYaw, 0.7 * L); // 弓步：骨盆跟著腿的方向，上身照揮拍轉
+    const twist = clamp(this.psi - yawP, -1.2, 1.2);
     const cy = Math.cos(yawP);
     const sy = Math.sin(yawP);
 
@@ -770,9 +870,29 @@ export class PlayerModel {
     const zL = lerp(lerp(0.03, 0, moveK), -0.08, cross);
     const zR = lerp(lerp(-0.07, 0, moveK), 0.06, cross);
     const splay = lerp(0.22, 0.08, moveK);
-    // 頭頂球側身：右腳往後
-    const wOver = poseType === OVERHEAD && !p.airborne ? wPose * (kp < 1 ? 1 : Math.max(0, 2 - kp) * 0.6) : 0;
-    const lyaw = Math.atan2(-this.lungeX, -this.lungeZ);
+    // 頭頂球側身：右腳往後（後場頭頂球在擊球前就先退好）
+    const wOver = Math.max(poseType === OVERHEAD && !p.airborne ? wPose * (kp < 1 ? 1 : Math.max(0, 2 - kp) * 0.6) : 0, this.prepOver);
+    // 弓步：右腳 = 落點（世界固定）；後腳原地踩住，除非兩腳前後太近／太遠、左右偏太多才拖過去
+    let lrX = 0;
+    let lrZ = 0;
+    let rearX = 0;
+    let rearZ = 0;
+    if (L > 0) {
+      lrX = (this.lungeRX - p.pos.x) * side * iH;
+      lrZ = (this.lungeRZ - p.pos.z) * side * iH;
+      const fl = this.feet[0];
+      const qx = ((fl.planted ? fl.wx : fl.toX) - p.pos.x) * side * iH - lrX;
+      const qz = ((fl.planted ? fl.wz : fl.toZ) - p.pos.z) * side * iH - lrZ;
+      const dX = this.lungeX;
+      const dZ = this.lungeZ;
+      const al = clamp(qx * dX + qz * dZ, -SPAN_MAX, -SPAN_MIN); // 沿弓步方向（負 = 在前腳後面）
+      const la = clamp(-qx * dZ + qz * dX, -0.42, -0.04); // 往右為正：後腳在前腳左後方
+      rearX = lrX + dX * al - dZ * la;
+      rearZ = lrZ + dZ * al + dX * la;
+      this.rearWX = p.pos.x + side * rearX * H;
+      this.rearWZ = p.pos.z + side * rearZ * H;
+    }
+    const rearYaw = clamp(this.lungeAng * 0.5 + 0.6, -0.4, 1.2); // 後腳腳尖朝外
     for (let i = 0; i < 2; i++) {
       const f = this.feet[i];
       const pz = f.sign > 0 ? zR : zL;
@@ -780,19 +900,19 @@ export class PlayerModel {
       let hx = px * cy + pz * sy;
       let hz = -px * sy + pz * cy;
       if (f.sign > 0) {
-        hx += 0.03 * wOver;
-        hz += 0.16 * wOver;
-      } else hz -= 0.08 * wOver;
+        hx += 0.05 * wOver;
+        hz += 0.2 * wOver;
+      } else {
+        hz -= 0.1 * wOver;
+        // 前場弓步前：左腳先往後放（重心在後腳，等右腳跨出去）
+        hx -= this.dX * 0.16 * this.prepFront;
+        hz -= this.dZ * 0.16 * this.prepFront;
+      }
       let hyaw = yawP - f.sign * splay;
       if (L > 0) {
-        const lx = this.lungeX;
-        const lz = this.lungeZ;
-        // 弓步：右腳在前（沿移動方向），左腳在後
-        const tx = f.sign > 0 ? lx * LUNGE_F - lz * 0.08 : -lx * LUNGE_B + lz * 0.1;
-        const tz = f.sign > 0 ? lz * LUNGE_F + lx * 0.08 : -lz * LUNGE_B - lx * 0.1;
-        hx = lerp(hx, tx, L);
-        hz = lerp(hz, tz, L);
-        hyaw = lerp(hyaw, f.sign > 0 ? lyaw : lyaw + 1, L);
+        hx = lerp(hx, f.sign > 0 ? lrX : rearX, L);
+        hz = lerp(hz, f.sign > 0 ? lrZ : rearZ, L);
+        hyaw = lerp(hyaw, f.sign > 0 ? this.lungeFootYaw : rearYaw, L);
       }
       f.homeX = p.pos.x + side * hx * H;
       f.homeZ = p.pos.z + side * hz * H;
@@ -802,7 +922,7 @@ export class PlayerModel {
     // ---------- 步伐參數 ----------
     const lat = Math.abs(this.dirX * cy - this.dirZ * sy); // 移動方向與骨盆左右軸的夾角 → 併步程度
     let dur = lerp(clamp(0.27 - 0.022 * speed, 0.13, 0.27), clamp(0.19 - 0.01 * speed, 0.13, 0.19), lat);
-    let lift = lerp(0.05 + 0.017 * speed, 0.045, lat);
+    let lift = lerp(0.05 + 0.022 * speed, 0.045, lat); // 往前跑：腳抬得比較高（後踢）
     if (moveK < 0.3) {
       dur = lerp(0.16, dur, moveK / 0.3);
       lift = lerp(0.035, lift, moveK / 0.3);
@@ -824,12 +944,25 @@ export class PlayerModel {
           f.lift = Math.max(f.lift, lift);
           f.runK = Math.max(f.runK, runK);
         }
+        if (f.strike && this.lunging && this.lungeHold && f.u < 1) {
+          // 弓步要在擊球前踩穩：擊球比預估早就把這一步加快（只加快、不放慢）
+          const want = Math.max(0.04, s && s.contacted ? 0 : hT - LUNGE_LEAD * 0.5);
+          if (want < (1 - f.u) * f.dur) f.dur = want / (1 - f.u);
+          // 落點跟著身體走（身體沒照預期減速時，右腳還是落在身體前方同一個位置）
+          const rem = Math.min((1 - f.u) * f.dur, speed / 80);
+          f.toX = this.lungeRX = p.pos.x + p.vel.x * rem + side * this.lungeLX * H;
+          f.toZ = this.lungeRZ = p.pos.z + p.vel.z * rem + side * this.lungeLZ * H;
+        }
         f.u = Math.min(1, f.u + ta / f.dur);
         if (!f.forced) {
           // 跟著身體重新瞄準落點，但每幀移動有上限（避免落點突然跳）
           const ox = f.toX;
           const oz = f.toZ;
-          this.stepTarget(f, this.feet[1 - i], p, f.dur, f.u, f.gap, cy, sy);
+          if (f.sign < 0 && this.lunging && this.lungeHold && this.L > 0.3) {
+            // 弓步中還在空中的左腳（倒數第二步）：落在前腳後面該在的位置，不再往前衝
+            f.toX = this.rearWX;
+            f.toZ = this.rearWZ;
+          } else this.stepTarget(f, this.feet[1 - i], p, f.dur, f.u, f.gap, cy, sy);
           const dx = f.toX - ox;
           const dz = f.toZ - oz;
           const dl = Math.hypot(dx, dz);
@@ -842,26 +975,81 @@ export class PlayerModel {
         const e = smooth01(f.u);
         f.wx = lerp(f.fromX, f.toX, e);
         f.wz = lerp(f.fromZ, f.toZ, e);
-        f.h = f.lift * Math.sin(Math.PI * f.u);
         f.yaw = lerp(f.yawFrom, f.yawTo, e);
-        f.pitch = Math.sin(Math.PI * f.u) * lerp(-0.55, 0.35, f.u) * f.runK;
+        if (f.dragging) {
+          // 後腳拖步：腳尖不離地（墊著腳尖往前滑），終點跟著前腳更新
+          if (this.lunging && this.lungeHold) {
+            f.toX = this.rearWX;
+            f.toZ = this.rearWZ;
+            f.wx = lerp(f.fromX, f.toX, e);
+            f.wz = lerp(f.fromZ, f.toZ, e);
+          }
+          f.h = 0;
+          f.toe = damp(f.toe, -0.6, 10, ta);
+          f.pitch = f.toe;
+        } else {
+          // 跑步：腳跟先往後上踢、再往前伸（弧線最高點提前）
+          const ua = f.runK > 0 ? Math.pow(f.u, 1 - 0.3 * f.runK) : f.u;
+          f.h = f.lift * Math.sin(Math.PI * ua) + f.h0 * (1 - e);
+          // 起步時的墊腳尖角度接過來，慢慢換成這一步的擺動
+          const lift0 = f.toe * Math.max(0, 1 - f.u * 3);
+          if (f.strike) {
+            // 弓步：前半蹬地（腳尖向下），後半腳尖翹起、腳跟先著地
+            f.pitch = lift0 + (f.u < 0.2 ? -0.3 * (f.u / 0.2) : lerp(-0.3, 0.42, smooth01((f.u - 0.2) / 0.75)));
+          } else f.pitch = lift0 + Math.sin(Math.PI * f.u) * lerp(-0.55, 0.35, f.u) * f.runK;
+        }
         if (f.u >= 1) {
           f.planted = true;
           f.h = 0;
-          f.pitch = 0;
+          f.heel = f.strike ? f.pitch : 0; // 腳跟著地 → 腳掌再放平
+          f.toe = f.dragging ? f.toe : 0;
           f.forced = false;
+          f.strike = false;
+          f.dragging = false;
+          f.h0 = 0;
           this.crouchV -= 0.12 + 0.07 * speed; // 著地吸收
         }
       }
-      // 著地的腳：身體轉很多時腳掌才跟著轉（以前腳掌為軸）
+      // 著地的腳：身體轉很多時腳掌才跟著轉（以前腳掌為軸：腳跟繞著轉，前腳掌不在地上滑）
       for (let i = 0; i < 2; i++) {
         const f = this.feet[i];
         if (!f.planted) continue;
         const d = f.homeYaw - f.yaw;
         if (Math.abs(d) > 0.6) f.pivoting = true;
         if (f.pivoting) {
-          f.yaw = damp(f.yaw, f.homeYaw, 8, ta);
+          const ny = damp(f.yaw, f.homeYaw, 8, ta);
+          const k = BALL * side * H;
+          f.wx += k * (Math.sin(ny) - Math.sin(f.yaw));
+          f.wz += k * (Math.cos(ny) - Math.cos(f.yaw));
+          f.yaw = ny;
           if (Math.abs(d) < 0.15) f.pivoting = false;
+        }
+      }
+      // 腳掌角度：剛著地的弓步腳慢慢放平；弓步後腳、跑步時身後那隻腳墊腳尖
+      for (let i = 0; i < 2; i++) {
+        const f = this.feet[i];
+        if (!f.planted) continue;
+        let toeT = 0;
+        if (f.sign < 0 && L > 0) toeT = -0.62 * L * (0.5 + 0.5 * this.lungeDepth);
+        else if (runK > 0.2) {
+          const behind = -((f.local.x - this.offX) * this.dirX + (f.local.z - this.offZ) * this.dirZ);
+          toeT = -RUN_PUSH * runK * smooth01((behind - 0.12) / 0.3);
+        }
+        f.heel = damp(f.heel, 0, 11, ta);
+        f.toe = damp(f.toe, toeT, 12, ta);
+        f.pitch = f.heel + f.toe;
+      }
+      // 後場頭頂球（地面）：擊球瞬間剪刀交換 —— 右腳往前踢、左腳往後，兩腳短暫離地
+      if (s && s.contacted && s !== this.scissorSwing && this.swingType === OVERHEAD && !s.airborne && !this.lunging) {
+        this.scissorSwing = s;
+        const cpz = s.contactPoint ? Math.abs(s.contactPoint.z) : 0;
+        if (cpz >= FRONT_DN && fr.planted && fl.planted && fr.local.z > fl.local.z - 0.05) {
+          const t = 0.17;
+          const bx = p.pos.x + p.vel.x * t;
+          const bz = p.pos.z + p.vel.z * t;
+          this.beginStep(fr, bx + side * 0.15 * H, bz - side * 0.2 * H, t, 0.1, 0.1, true, 0.5);
+          this.beginStep(fl, bx - side * 0.2 * H, bz + side * 0.2 * H, t - 0.02, 0.06, 0.45, true, 0);
+          this.lastStep = fr;
         }
       }
       // 分腿跳：兩腳同時離地，落成較寬的站姿
@@ -882,29 +1070,42 @@ export class PlayerModel {
       {
         let thr = lerp(0.13, 0.085, moveK);
         if (s && !s.whiffed && !(s.contacted && s.t > s.contactT + 0.05)) thr = 0.42; // 揮拍時腳踩穩
-        const back = this.lunging && this.lungeBack;
+        const back = (this.lunging && this.lungeBack) || this.recoverT > 0;
         const overlap = back ? 0 : speed > 3 && !this.lungeHold ? 0.7 : 1;
+        const holding = this.lunging && this.lungeHold;
+        // 弓步快開始了：讓左腳先跨（倒數第二步），右腳留著當最後一步
+        const saveRight = plan === 1 && !this.lunging && hT < LUNGE_DUR + LUNGE_LEAD + 0.24;
         let best: Foot | null = null;
         let bestE = 0;
         for (let i = 0; i < 2; i++) {
           const f = this.feet[i];
           const o = this.feet[1 - i];
           if (!f.planted || (!o.planted && o.u < overlap)) continue;
-          // 弓步中前腳撐住；蹬回時先收前腳（右腳），後腳等一下
+          // 弓步中前腳撐住、後腳只在兩腳太近／太遠時拖一下；蹬回時先收前腳（右腳），後腳等一下
           let ft = thr;
-          if (this.lunging && this.lungeHold) ft = f.sign > 0 ? 0.28 : 0.3;
-          else if (back) ft = f.sign > 0 ? 0.12 : 0.6;
-          const e = Math.hypot(f.homeX - f.wx, f.homeZ - f.wz) - (f === this.lastStep ? 0.03 : 0);
+          let e = Math.hypot(f.homeX - f.wx, f.homeZ - f.wz) - (f === this.lastStep ? 0.03 : 0);
+          if (holding) {
+            // 右腳還在跨的時候左腳是蹬地的腳，不動；右腳踩穩後才把後腳拖到位
+            ft = f.sign > 0 ? 0.5 : fr.planted ? 0.07 : 0.6;
+            if (f.sign < 0 && this.L > 0.5) e = Math.hypot(this.rearWX - f.wx, this.rearWZ - f.wz);
+          } else if (back) ft = f.sign > 0 ? 0.12 : 0.6;
+          else if (saveRight && f.sign > 0) ft = Math.max(ft, 0.32);
           if (e > ft && e > bestE) {
             best = f;
             bestE = e;
           }
         }
         if (best) {
-          // 弓步時後腳是往後拖一小步（幾乎不抬腳）
-          const drag = this.lunging && this.lungeHold && best.sign < 0;
-          this.beginStep(best, 0, 0, drag ? 0.14 : dur, drag ? 0.02 : lift, best.homeYaw, false, drag ? 0 : runK);
-          this.stepTarget(best, best === fl ? fr : fl, p, dur, 0, gap, cy, sy);
+          if (holding && best.sign < 0 && bestE < 0.55) {
+            // 弓步時後腳用腳尖往前（或往後）拖，不抬腳
+            this.dragRear(best);
+          } else {
+            // 弓步前的倒數第二步（左腳）：要在右腳跨出去之前踩到地
+            let d = dur;
+            if (plan === 1 && !this.lunging && best.sign < 0 && hT > LUNGE_DUR + LUNGE_LEAD) d = Math.min(d, Math.max(0.08, hT - LUNGE_DUR - LUNGE_LEAD));
+            this.beginStep(best, 0, 0, d, lift, best.homeYaw, false, runK);
+            this.stepTarget(best, best === fl ? fr : fl, p, d, 0, gap, cy, sy);
+          }
         }
       }
       // 安全網：腳離髖部太遠（伸不到）就立刻跨
@@ -914,14 +1115,28 @@ export class PlayerModel {
         const lx = (f.wx - p.pos.x) * side * iH - (this.offX + f.sign * this.hipW * cy);
         const lz = (f.wz - p.pos.z) * side * iH - (this.offZ - f.sign * this.hipW * sy);
         // 快跑時後腳拖太遠就先蹬起（兩腳同時離地＝跑步的騰空期），不讓髖部被拉低
-        if (Math.hypot(lx, lz) > (this.lunging ? 0.88 : speed > 3 ? 0.56 : 0.8)) {
-          this.beginStep(f, 0, 0, Math.min(dur, 0.16), lift, f.homeYaw, false, runK);
-          this.stepTarget(f, this.feet[1 - i], p, Math.min(dur, 0.16), 0, -1, cy, sy);
+        if (Math.hypot(lx, lz) > (this.lunging ? 0.76 : speed > 3 ? 0.56 : 0.8)) {
+          if (f.sign < 0 && this.lunging && this.lungeHold) this.dragRear(f); // 弓步：後腳被身體帶著往前拖
+          else {
+            this.beginStep(f, 0, 0, Math.min(dur, 0.16), lift, f.homeYaw, false, runK);
+            this.stepTarget(f, this.feet[1 - i], p, Math.min(dur, 0.16), 0, -1, cy, sy);
+          }
         }
       }
       for (let i = 0; i < 2; i++) {
         const f = this.feet[i];
         f.local.set((f.wx - p.pos.x) * side * iH, ANKLE + f.h, (f.wz - p.pos.z) * side * iH);
+        // 腳掌有角度時，以著地的那一點為軸（墊腳尖 = 前腳掌、腳尖翹起 = 腳跟），腳踝跟著抬高／前後移
+        const pp = f.pitch;
+        if (pp !== 0) {
+          const pz = pp < 0 ? -BALL : HEEL;
+          const sp = Math.sin(pp);
+          const cp = Math.cos(pp);
+          const dzs = pz + ANKLE * sp - pz * cp; // 沿鞋子的前後軸（+ = 往腳跟）
+          f.local.x += dzs * Math.sin(f.yaw);
+          f.local.y += -ANKLE + ANKLE * cp + pz * sp;
+          f.local.z += dzs * Math.cos(f.yaw);
+        }
       }
     } else {
       // ---------- 空中：剪刀腳 ----------
@@ -979,21 +1194,39 @@ export class PlayerModel {
       offTZ = (dir.z / hl) * Math.min(0.3, over);
       if (dir.y > 0.5 * dist) offTY = Math.min(0.12, over * 0.5);
     }
-    offTX += this.lungeX * 0.15 * L; // 弓步：重心往前腳移
-    offTZ += this.lungeZ * 0.15 * L;
-    this.offX = damp(this.offX, offTX, 25, ta);
-    this.offZ = damp(this.offZ, offTZ, 25, ta);
+    if (L > 0) {
+      // 弓步：重心在兩腳之間、偏前腳（骨盆可以離 root 一小段）
+      const fl0 = this.feet[0];
+      const lx = ((fl0.planted ? fl0.wx : fl0.toX) - p.pos.x) * side * iH;
+      const lz = ((fl0.planted ? fl0.wz : fl0.toZ) - p.pos.z) * side * iH;
+      let gx = lrX * 0.6 + lx * 0.4;
+      let gz = lrZ * 0.6 + lz * 0.4;
+      const gl = Math.hypot(gx, gz);
+      if (gl > LUNGE_OFF_MAX) {
+        gx *= LUNGE_OFF_MAX / gl;
+        gz *= LUNGE_OFF_MAX / gl;
+      }
+      offTX = lerp(offTX, gx + offTX * 0.3, L);
+      offTZ = lerp(offTZ, gz + offTZ * 0.3, L);
+    }
+    // 前場弓步前：重心先放後面（等右腳跨出去）
+    offTX -= this.dX * 0.08 * this.prepFront;
+    offTZ -= this.dZ * 0.08 * this.prepFront;
+    // 骨盆水平位移：快但不瞬間（擊球那一下探身不會「抖」一格）
+    this.offX = damp(this.offX, offTX, 15, ta);
+    this.offZ = damp(this.offZ, offTZ, 15, ta);
     this.offY = damp(this.offY, offTY, 25, ta);
 
     // ---------- 髖部高度 ----------
-    let hT = lerp(lerp(READY_H, RUN_H, moveK), STAND_H, relaxK);
-    if (this.wide > 0) hT -= 0.03;
-    if (p.jumpArmed && !p.airborne) hT -= 0.07; // 跳殺待命：蹲低蓄勢
-    if (p.landRecover > 0) hT -= 0.13 * clamp(p.landRecover / GAME.jump.landRecover, 0, 1);
-    if (under) hT -= 0.05 * wPose;
-    hT = lerp(hT, LUNGE_H, L);
-    if (p.airborne) hT = AIR_H;
-    this.hipY = damp(this.hipY, hT, 10, ta);
+    let hipT = lerp(lerp(READY_H, RUN_H, moveK), STAND_H, relaxK);
+    if (this.wide > 0) hipT -= 0.03;
+    if (p.jumpArmed && !p.airborne) hipT -= 0.07; // 跳殺待命：蹲低蓄勢
+    if (p.landRecover > 0) hipT -= 0.13 * clamp(p.landRecover / GAME.jump.landRecover, 0, 1);
+    if (under) hipT -= 0.05 * wPose;
+    hipT -= 0.035 * this.prepFront; // 準備跨步：膝蓋再彎一點
+    hipT = lerp(hipT, lerp(0.66, LUNGE_H, this.lungeDepth), L); // 跨越遠蹲越低
+    if (p.airborne) hipT = AIR_H;
+    this.hipY = damp(this.hipY, hipT, 10, ta);
     // 彈簧（落地緩衝）
     for (let rem = ta; rem > 1e-6; rem -= 1 / 120) {
       const h = Math.min(rem, 1 / 120);
@@ -1018,7 +1251,7 @@ export class PlayerModel {
       y = Math.max(y, 0.48);
       // 上下都限速（往下較快）：遠處的腳一落地／離地，髖部不會瞬間沉下或彈起；短暫的落差由小腿伸長補
       if (y > this.yOut) y = Math.min(y, this.yOut + ta * 3);
-      else y = Math.max(y, this.yOut - ta * 5);
+      else y = Math.max(y, this.yOut - ta * 3.5);
     }
     this.yOut = y;
 
@@ -1031,7 +1264,8 @@ export class PlayerModel {
     const lr = leanR * cy + leanF * sy;
     this.pelvis.position.set(this.offX, y, this.offZ);
     this.pelvis.rotation.set(-lf * 0.45, yawP, -lr * 0.45);
-    const pitchC = 0.1 * (1 - relaxK) + 0.06 * moveK + 0.3 * L + poseAt(P.pitch, kp) * wPose;
+    // 弓步時上身大致挺直（前傾不要太多）
+    const pitchC = 0.1 * (1 - relaxK) + 0.06 * moveK + 0.14 * L * this.lungeDepth + poseAt(P.pitch, kp) * wPose * (1 - 0.35 * L);
     this.chest.position.y = WAIST + this.offY;
     this.chest.rotation.set(-(pitchC + lf * 0.55), twist, -lr * 0.55 + poseAt(P.roll, kp) * wPose);
     this.pelvis.updateMatrix();
@@ -1160,26 +1394,114 @@ export class PlayerModel {
     out.setFromUnitVectors(_pole.set(0, 1, 0), d.normalize());
   }
 
-  private startLunge(p: PlayerState, dx: number, dz: number): void {
+  /**
+   * 弓步方向（root 座標單位向量，寫進 dX/dZ/dA）：朝擊球點；前場往網的方向偏（斜前方跨），
+   * 移動中再偏向移動方向（跑過去順勢跨出）。正手往右前、反手往左前（右腳交叉跨到左邊），側邊防守可以接近正側面。
+   */
+  private lungeDir(cx: number, cz: number, front: boolean, vx: number, vz: number, speed: number): void {
+    let dx = cx;
+    let dz = cz - (front ? 0.5 : 0.12);
+    if (speed > 1.2) {
+      const k = (Math.min(1, speed / 3) * 0.6) / speed;
+      dx += vx * k;
+      dz += vz * k;
+    }
+    const a = clamp(Math.atan2(-dx, -dz), -1.95, 1.95);
+    this.dA = a;
+    this.dX = -Math.sin(a);
+    this.dZ = -Math.cos(a);
+  }
+
+  /** 沒有擊球預估時的弓步（備案）：假設擊球點在 (dx, dz) 方向 */
+  private lungeToward(p: PlayerState, dx: number, dz: number, s: Swing | null): void {
+    const k = 0.95 * this.h * p.side;
+    this.startLunge(p, 0.17, p.pos.x + dx * k, p.pos.z + dz * k, false, 0.9, s);
+  }
+
+  /**
+   * 右腳弓步（最後一步）：dur 秒後腳跟著地。(cwx, cwz) = 擊球點（世界）。
+   * 落點沿弓步方向：擊球點往回 LUNGE_REACH（手臂＋拍子往前伸），但至少比後腳前 SPAN_MIN、至少跨 LUNGE_STEP；
+   * 右腳正在跨步的話直接把這一步改成弓步（從半空接著走，不會瞬移）。
+   */
+  private startLunge(p: PlayerState, dur: number, cwx: number, cwz: number, front: boolean, cy: number, s: Swing | null): void {
+    const high = cy >= 1.45;
+    const side = p.side;
+    const H = this.h;
+    const iH = this.ih;
+    const vx = p.vel.x * side;
+    const vz = p.vel.z * side;
+    const speed = Math.hypot(vx, vz);
+    // 右腳著地時 root 的位置（模擬裡減速約 40 m/s²：最多再滑 v²/80）
+    const tau = Math.min(dur, speed / 80);
+    const rx = p.pos.x + p.vel.x * tau;
+    const rz = p.pos.z + p.vel.z * tau;
+    const cx = (cwx - rx) * side * iH;
+    const cz = (cwz - rz) * side * iH;
+    this.lungeDir(cx, cz, front, vx, vz, speed);
+    const dX = this.dX;
+    const dZ = this.dZ;
+    const fr = this.feet[1];
+    const fl = this.feet[0];
+    const along = (wx: number, wz: number) => ((wx - rx) * dX + (wz - rz) * dZ) * side * iH;
+    const rAl = along(fr.wx, fr.wz);
+    const lAl = fl.planted ? along(fl.wx, fl.wz) : along(fl.toX, fl.toZ);
+    const cAl = cx * dX + cz * dZ;
+    let F = Math.max(cAl - (high ? LUNGE_REACH_HI : LUNGE_REACH), lAl + SPAN_MIN, rAl + LUNGE_STEP);
+    F = clamp(Math.min(F, cAl + 0.05), LUNGE_MIN, LUNGE_MAX); // 不要跨過擊球點太多
+    // 跨越遠蹲越低；擊球點越高（平抽、網前撲球）蹲得越淺
+    this.lungeDepth = clamp((F - 0.2) / 0.45, 0.35, 1) * lerp(1, 0.5, clamp((cy - 0.7) / 0.9, 0, 1));
+    // 右腳落在弓步線右側一點（兩腳前後錯開，左右也留約一個髖寬，不要踩成一直線）
+    const tx = dX * F - dZ * 0.1;
+    const tz = dZ * F + dX * 0.1;
+    this.lungeLX = tx;
+    this.lungeLZ = tz;
+    this.lungeRX = rx + side * tx * H;
+    this.lungeRZ = rz + side * tz * H;
+    this.lungeX = dX;
+    this.lungeZ = dZ;
+    this.lungeAng = this.dA;
+    this.lungeYaw = clamp(this.dA * 0.75, -1.1, 1.1);
+    this.lungeFootYaw = this.dA - 0.12; // 腳尖朝跨步方向、略朝外
     this.lunging = true;
     this.lungeHold = true;
     this.lungeT = 0;
-    this.lungeX = dx;
-    this.lungeZ = dz;
-    this.lungeYaw = clamp(Math.atan2(-dx, -dz), -1.3, 1.3);
-    // 右腳（持拍腳）大跨一步、腳跟先著地
-    const f = this.feet[1];
-    const tx = dx * LUNGE_F - dz * 0.08;
-    const tz = dz * LUNGE_F + dx * 0.08;
-    // 落點以「預計停下來的位置」為準（模擬裡減速約 40 m/s²）
-    const stop = Math.hypot(p.vel.x, p.vel.z) / 80;
-    this.beginStep(f, 0, 0, 0.17, 0.08, Math.atan2(-dx, -dz), true, 0.6);
-    f.toX = p.pos.x + p.side * tx * this.h + p.vel.x * stop;
-    f.toZ = p.pos.z + p.side * tz * this.h + p.vel.z * stop;
+    this.lungeSwing = s;
+    this.rearWX = fl.wx;
+    this.rearWZ = fl.wz;
+    // 左腳是蹬地的那隻：剛抬起就放回去、快落地就讓它趕快踩下（不要兩腳一起騰空跳進弓步）
+    if (!fl.planted && !fl.forced) {
+      if (fl.u < 0.3) {
+        // 原地放下（從目前高度降下來，不瞬移）
+        fl.fromX = fl.toX = fl.wx;
+        fl.fromZ = fl.toZ = fl.wz;
+        fl.yawFrom = fl.yawTo = fl.yaw;
+        fl.lift = fl.h;
+        fl.h0 = 0;
+        fl.runK = 0;
+        fl.u = 0.5;
+        fl.dur = 0.1;
+        fl.forced = true;
+      } else fl.dur = Math.min(fl.dur, 0.06 / (1 - fl.u));
+    }
+    const h0 = fr.planted ? 0 : fr.h;
+    this.beginStep(fr, this.lungeRX, this.lungeRZ, dur, 0.05 + 0.05 * this.lungeDepth, this.lungeFootYaw, true, 0.3);
+    fr.h0 = h0;
+    fr.strike = true;
+  }
+
+  /** 弓步的後腳：墊著腳尖在地上拖到該在的位置（不抬腳） */
+  private dragRear(f: Foot): void {
+    this.beginStep(f, this.rearWX, this.rearWZ, 0.18, 0, f.homeYaw, true, 0);
+    f.dragging = true;
   }
 
   private beginStep(f: Foot, tx: number, tz: number, dur: number, lift: number, yawTo: number, forced: boolean, runK: number): void {
     f.planted = false;
+    f.strike = false;
+    f.dragging = false;
+    f.h0 = 0;
+    f.toe += f.heel; // 腳掌角度接續到這一步
+    f.heel = 0;
     f.u = 0;
     f.fromX = f.wx;
     f.fromZ = f.wz;
@@ -1241,8 +1563,9 @@ export class PlayerModel {
       const f = this.feet[i];
       f.planted = true;
       f.forced = false;
-      f.h = 0;
-      f.pitch = 0;
+      f.strike = f.dragging = false;
+      f.h = f.h0 = 0;
+      f.pitch = f.heel = f.toe = 0;
       f.u = 1;
     }
     this.crouchV -= 1.7;
@@ -1331,9 +1654,10 @@ export class PlayerModel {
       f.wz = f.homeZ = p.pos.z + side * hz * this.h;
       f.planted = !p.airborne;
       f.forced = false;
+      f.strike = f.dragging = false;
       f.u = 1;
-      f.h = 0;
-      f.pitch = 0;
+      f.h = f.h0 = 0;
+      f.pitch = f.heel = f.toe = 0;
       f.yaw = f.yawTo = f.homeYaw = -f.sign * 0.22;
       f.pivoting = false;
       f.local.set(hx, ANKLE, hz);
@@ -1342,6 +1666,11 @@ export class PlayerModel {
     this.hipY = this.yOut = READY_H;
     this.crouch = this.crouchV = 0;
     this.lunging = false;
+    this.lungeHold = false;
+    this.lungeSwing = null;
+    this.scissorSwing = null;
+    this.recoverT = 0;
+    this.prepOver = this.prepFront = 0;
     this.L = 0;
     this.peak = 0;
     this.offX = this.offZ = this.offY = 0;
