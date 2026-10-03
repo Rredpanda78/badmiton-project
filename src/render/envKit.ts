@@ -37,9 +37,11 @@ export function scatter(n: number, inner: Spot, outer: number, avoidNearSide = 1
   return out;
 }
 
+// 地面、木平台、小徑會接球員的即時影子（影子相機只框住球場四周，外面的像素不會去取樣，不花錢）
 export function groundPlane(color: number, size = 90): THREE.Mesh {
   const m = new THREE.Mesh(new THREE.PlaneGeometry(size, size), new THREE.MeshLambertMaterial({ color }));
   m.rotation.x = -Math.PI / 2;
+  m.receiveShadow = true;
   return m;
 }
 
@@ -47,6 +49,7 @@ export function groundPlane(color: number, size = 90): THREE.Mesh {
 export function platform(color = 0x8d6a48): THREE.Mesh {
   const m = new THREE.Mesh(new THREE.BoxGeometry(9.2, 0.12, 17.4), new THREE.MeshLambertMaterial({ color }));
   m.position.y = -0.068; // 頂面略低於球場墊，避免 z-fighting 蓋住球場
+  m.receiveShadow = true;
   return m;
 }
 
@@ -55,7 +58,59 @@ export function pathPlane(color: number): THREE.Mesh {
   const m = new THREE.Mesh(new THREE.PlaneGeometry(10.6, 18.6), new THREE.MeshLambertMaterial({ color }));
   m.rotation.x = -Math.PI / 2;
   m.position.y = 0.001;
+  m.receiveShadow = true;
   return m;
+}
+
+/**
+ * 燈光把地面「照亮」的光池：一張蓋住球場與周邊的平面，貼圖是幾盞燈疊起來的柔邊亮區。
+ * 混色 = 底色 × (1 + 貼圖色)：只把底下的東西提亮，不會像加法光暈那樣把暗處洗成一片霧。
+ * 一個 draw call；球員影子、落點提示等畫在它之後，不受影響。strength = 燈正下方提亮多少（0.46 ≈ 夜櫻的探照燈）。
+ */
+export function lightWash(pools: Blob[], color: number, strength = 0.46, sx = 12, sz = 21): THREE.Mesh {
+  const R = 24; // 每公尺像素
+  const c = document.createElement('canvas');
+  c.width = sx * R;
+  c.height = sz * R;
+  const g = c.getContext('2d')!;
+  g.fillStyle = '#000';
+  g.fillRect(0, 0, c.width, c.height);
+  g.globalCompositeOperation = 'lighter';
+  const toX = (x: number) => (x + sx / 2) * R;
+  const toY = (z: number) => (z + sz / 2) * R;
+  const v0 = Math.round(255 * strength);
+  const v1 = Math.round(255 * strength * 0.71);
+  for (const b of pools) {
+    const r = b.r * R;
+    const grad = g.createRadialGradient(toX(b.x), toY(b.z), 0, toX(b.x), toY(b.z), r);
+    grad.addColorStop(0, `rgb(${v0},${v0},${v0})`);
+    grad.addColorStop(0.45, `rgb(${v1},${v1},${v1})`);
+    grad.addColorStop(1, 'rgb(0,0,0)');
+    g.fillStyle = grad;
+    g.fillRect(toX(b.x) - r, toY(b.z) - r, r * 2, r * 2);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mat = new THREE.MeshBasicMaterial({
+    map: tex,
+    color,
+    transparent: true,
+    depthWrite: false,
+    fog: false,
+    blending: THREE.CustomBlending,
+    blendEquation: THREE.AddEquation,
+    blendSrc: THREE.DstColorFactor,
+    blendDst: THREE.OneFactor,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -2,
+  });
+  disposeWith(mat, tex);
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(sx, sz), mat);
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.position.y = 0.004;
+  mesh.renderOrder = -1;
+  return mesh;
 }
 
 // ---------- 幾何小工具 ----------
@@ -474,8 +529,8 @@ export function sakuraGrove(spots: Spot[], pinks: number[], trunkColor: number, 
       blobs.setColorAt(i * 6 + j, cols[Math.floor(rand() * cols.length)]);
     }
     canopy.push(new THREE.Vector3(pt.x, h + 0.8, pt.z));
-    // 影子稍微往光源反方向（太陽在 +x +z 上方）偏；不吃亂數，樹的排列跟以前一樣
-    shadows.push({ x: pt.x - h * 0.18, z: pt.z - h * 0.25, r: 2.1 + (i % 3) * 0.2 });
+    // 影子稍微往光源反方向偏（主光從左前上方來，跟球員的即時影子同一個方向：+x、+z）；不吃亂數，樹的排列跟以前一樣
+    shadows.push({ x: pt.x + h * 0.18, z: pt.z + h * 0.25, r: 2.1 + (i % 3) * 0.2 });
   });
   return { trunks, blobs, canopy, shadows };
 }

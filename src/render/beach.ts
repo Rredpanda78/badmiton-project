@@ -126,6 +126,9 @@ export function beach(): Environment {
     sky: 0xf4fbff,
     ground: 0xe9d6a8,
     sun: 0xfff4dc,
+    sunDir: [-0.35, 1, -0.3], // 正午的海邊：太陽高（仰角約 65°），影子短而濃
+    sunPower: 1.7,
+    fill: [0xeaf6ff, 0.8], // 沙灘、海面的反射光很亮
     update(dt) {
       wind.update(dt);
       const t = wind.time.value;

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CAMERA, COURT, GAME, type Venue } from '../config';
+import { CAMERA, COURT, GAME, type Quality, type Venue } from '../config';
 import { ballTaker } from '../ai/doubles';
 import { flickNow, timeUntilInReach, type Match, type MatchEvent, type PlayerId } from '../sim/match';
 import { v3, type Vec3 } from '../sim/physics';
@@ -22,6 +22,28 @@ export interface Look {
 
 const SHUTTLE_SCALE = 2.4; // 真實羽球太小，放大一點比較看得清楚
 const TRAIL_LEN = 22;
+
+// ---------- 即時影子 ----------
+/** 畫質 → 影子貼圖邊長（0 = 不開即時影子，只用腳下的圓形假影） */
+const SHADOW_SIZE: Record<Quality, number> = { high: 2048, medium: 1024, low: 0 };
+/** 畫質 → 影子邊緣柔化半徑（貼圖像素；three 的 PCF 是 5 點取樣的圓盤）：中的像素大一倍，半徑小一點、世界尺寸差不多 */
+const SHADOW_RADIUS: Record<Quality, number> = { high: 4, medium: 2.5, low: 0 };
+/** 影子相機要框住的範圍：球場（13.4 × 6.1 m）四周各多 1.2 m，高到跳殺時的拍頭 */
+const SHADOW_BOX = { x: COURT.doublesHalfWidth + 1.2, y: 3.4, z: COURT.halfLength + 1.2 };
+const SUN_DIST = 30; // 平行光擺多遠（只影響影子相機的位置，方向才重要）
+/** 主光預設方向（往光源）：左前上方，仰角約 57°，影子落在球員右邊、偏向鏡頭這側（看得到、能把人踩在地上） */
+const DEFAULT_SUN_DIR: [number, number, number] = [-0.5, 1, -0.4];
+const DEFAULT_FILL: [number, number] = [0xdfe8ff, 0.7]; // 補光顏色、強度
+/** 腳下的圓形假影：沒有即時影子時的不透明度（playerModel 的原值）、有即時影子時留一點點當接地的暗處 */
+const BLOB_FULL = 0.32;
+const BLOB_UNDER_REAL = 0.1;
+const _box = new THREE.Vector3();
+
+/** 依裝置挑預設畫質：手機（粗指標或短邊不到 700 px）中、其他高 */
+export function defaultQuality(): Quality {
+  const phone = matchMedia('(pointer: coarse)').matches || Math.min(screen.width, screen.height) < 700;
+  return phone ? 'medium' : 'high';
+}
 
 export class GameRenderer {
   readonly renderer: THREE.WebGLRenderer;
@@ -50,7 +72,12 @@ export class GameRenderer {
   private shakePh = [0, 0, 0, 0];
   private camX = 0;
   private hemi: THREE.HemisphereLight;
-  private sun: THREE.DirectionalLight;
+  private sun: THREE.DirectionalLight; // 主光：會投影（太陽／月亮／天花板燈），方向、顏色依場地
+  private fill: THREE.DirectionalLight; // 補光：從鏡頭這側打過來、不投影（主光在對面，球員朝鏡頭的那面才不會黑成一片）
+  private sunDir = new THREE.Vector3(...DEFAULT_SUN_DIR).normalize();
+  private sunVs: 1 | -1 = 1; // 擺主光時的 viewSide（線上換邊要重擺，影子才一樣朝向鏡頭）
+  private quality: Quality = 'high';
+  private shadowsOn = true;
   private env: Environment | null = null;
   private venue: Venue | null = null;
   private pose = CAMERA.landscape;
@@ -64,6 +91,10 @@ export class GameRenderer {
   constructor(container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // 即時影子：只有球員、球拍、羽球會投影，只有球場地墊和旁邊的地面會接影子（setQuality 決定貼圖大小／關掉）
+    // three r186 已拿掉 PCFSoft，PCF 本身就是 5 點圓盤取樣、柔化半徑用 shadow.radius 調
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     container.appendChild(this.renderer.domElement);
     this.scene.background = new THREE.Color(0x111a26);
     this.scene.fog = new THREE.Fog(0x111a26, 26, 48);
@@ -71,17 +102,27 @@ export class GameRenderer {
     this.hemi = new THREE.HemisphereLight(0xe6eeff, 0x2a3442, 1.6);
     this.scene.add(this.hemi);
     this.sun = new THREE.DirectionalLight(0xffffff, 1.6);
-    this.sun.position.set(4, 12, 6);
-    this.scene.add(this.sun);
+    this.sun.castShadow = true;
+    this.sun.shadow.mapSize.set(SHADOW_SIZE.high, SHADOW_SIZE.high);
+    this.sun.shadow.radius = SHADOW_RADIUS.high;
+    this.sun.shadow.bias = -0.0004; // 地墊是平的、正對著光：一點負偏移去掉條紋狀的影子痤瘡
+    this.sun.shadow.normalBias = 0.02; // 沿法線往外推一點（約 2 個貼圖像素），球員腳邊不會浮一條亮縫
+    this.scene.add(this.sun, this.sun.target);
+    this.fill = new THREE.DirectionalLight(DEFAULT_FILL[0], DEFAULT_FILL[1]);
+    this.scene.add(this.fill);
 
     this.scene.add(makeCourt(this.renderer.capabilities.getMaxAnisotropy()));
     this.setVenue('indoor');
 
     this.models = [new PlayerModel(0x2f7fe0, 0x1b2a44), new PlayerModel(0xe0483a, 0x3a1b1b)];
-    for (const m of this.models) this.scene.add(m.root);
+    for (const m of this.models) {
+      this.scene.add(m.root);
+      this.applyShadowFlags(m);
+    }
 
-    // 羽球：軟木頭在原點、羽毛往 +Y 展開
+    // 羽球：軟木頭在原點、羽毛往 +Y 展開（本體投影，外框不用）
     const shuttleMesh = makeShuttleMesh(SHUTTLE_SCALE);
+    (shuttleMesh.children[0] as THREE.Mesh).castShadow = true;
     this.shuttle.add(shuttleMesh);
     this.scene.add(this.shuttle);
 
@@ -165,8 +206,12 @@ export class GameRenderer {
    * 依螢幕方向擺鏡頭，並自動算視角讓整個球場剛好塞滿畫面。
    * 手機直向時，畫面下方保留 reserve 比例給兩個拇指搖桿，球場只畫在上面那塊。
    */
-  /** 效能保險：解析度降一級（2 → 1.5 → 1.2 → 1）；已經最低就回傳 false */
+  /** 效能保險：先降影子（高 → 中 → 關），再降解析度（2 → 1.5 → 1.2 → 1）；已經最低就回傳 false */
   lowerQuality(): boolean {
+    if (this.quality !== 'low') {
+      this.setQuality(this.quality === 'high' ? 'medium' : 'low');
+      return true;
+    }
     const pr = this.renderer.getPixelRatio();
     const next = pr > 1.5 ? 1.5 : pr > 1.2 ? 1.2 : pr > 1 ? 1 : 0;
     if (!next) return false;
@@ -253,6 +298,88 @@ export class GameRenderer {
     return this.reserve;
   }
 
+  /**
+   * 畫質（設定「畫質」與自動降級共用）：high／medium = 即時影子 2048／1024 貼圖，low = 不開即時影子、腳下只有圓形假影。
+   * 換貼圖大小要把舊的 render target 丟掉讓 three 重建；開關主光的投影會讓所有受光材質換 shader（這裡先編好，不在下一幀卡）。
+   */
+  setQuality(q: Quality): void {
+    if (q === this.quality) return;
+    this.quality = q;
+    const size = SHADOW_SIZE[q];
+    const sh = this.sun.shadow;
+    if (size > 0 && sh.mapSize.x !== size) {
+      sh.mapSize.set(size, size);
+      sh.map?.dispose();
+      sh.map = null;
+      sh.radius = SHADOW_RADIUS[q];
+      sh.normalBias = size >= 2048 ? 0.02 : 0.035; // 貼圖像素變大，偏移也要跟著大
+    }
+    this.sun.castShadow = size > 0;
+    this.shadowsOn = size > 0;
+    for (const m of this.models) this.applyShadowFlags(m);
+    this.renderer.compile(this.scene, this.camera);
+  }
+
+  get currentQuality(): Quality {
+    return this.quality;
+  }
+
+  /**
+   * 球員模型的投影旗標：身體、衣服、頭髮、球拍都投影；腳下的假影、蓄力光圈、跳殺標記、揮拍拖尾
+   * （都是不寫深度的半透明 MeshBasic）不投影。有即時影子時假影只留一點點當接地的暗處。
+   * （playerModel.ts 不改：這裡走訪它建好的 mesh）
+   */
+  private applyShadowFlags(m: PlayerModel): void {
+    const on = this.shadowsOn;
+    m.root.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      const mat = mesh.material as THREE.MeshBasicMaterial;
+      if (mat.isMeshBasicMaterial && mat.transparent && !mat.depthWrite) {
+        if (mesh.geometry.type === 'CircleGeometry') mat.opacity = on ? BLOB_UNDER_REAL : BLOB_FULL; // 腳下的圓影
+        return;
+      }
+      mesh.castShadow = on;
+    });
+  }
+
+  /**
+   * 擺主光、補光，並把影子相機框到剛好蓋住球場＋邊緣＋跳起來的高度（在光的座標系裡取 8 個角的包圍盒）。
+   * 線上換邊（viewSide = -1）時整個鏡像，影子一樣落在偏向鏡頭的那側。
+   */
+  private placeSun(): void {
+    const vs = (this.sunVs = this.viewSide);
+    const d = this.sunDir;
+    this.sun.position.set(d.x * SUN_DIST, d.y * SUN_DIST, d.z * vs * SUN_DIST);
+    this.fill.position.set(3, 6, 9 * vs);
+    const cam = this.sun.shadow.camera;
+    cam.position.copy(this.sun.position);
+    cam.lookAt(0, 0, 0);
+    cam.updateMatrixWorld();
+    const inv = cam.matrixWorld.clone().invert();
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (const sx of [-1, 1]) {
+      for (const sy of [0, 1]) {
+        for (const sz of [-1, 1]) {
+          _box.set(sx * SHADOW_BOX.x, sy * SHADOW_BOX.y, sz * SHADOW_BOX.z).applyMatrix4(inv);
+          x0 = Math.min(x0, _box.x);
+          x1 = Math.max(x1, _box.x);
+          y0 = Math.min(y0, _box.y);
+          y1 = Math.max(y1, _box.y);
+          z0 = Math.min(z0, _box.z);
+          z1 = Math.max(z1, _box.z);
+        }
+      }
+    }
+    cam.left = x0;
+    cam.right = x1;
+    cam.bottom = y0;
+    cam.top = y1;
+    cam.near = -z1 - 0.5;
+    cam.far = -z0 + 0.5;
+    cam.updateProjectionMatrix();
+  }
+
   private fitFov(aspect: number): number {
     const cam = this.camera;
     const vs = this.viewSide;
@@ -322,6 +449,12 @@ export class GameRenderer {
     this.hemi.color.set(env.sky);
     this.hemi.groundColor.set(env.ground);
     this.sun.color.set(env.sun);
+    this.sun.intensity = env.sunPower ?? 1.6;
+    this.sunDir.set(...(env.sunDir ?? DEFAULT_SUN_DIR)).normalize();
+    const [fc, fi] = env.fill ?? DEFAULT_FILL;
+    this.fill.color.set(fc);
+    this.fill.intensity = fi;
+    this.placeSun();
   }
 
   /** 換球員外觀（球衣顏色）；looks[i] = i 號球員（單打 2 個、雙打 4 個） */
@@ -331,7 +464,10 @@ export class GameRenderer {
       m.dispose();
     }
     this.models = looks.map((l) => new PlayerModel(l.shirt, l.shorts, l.id ? playerStyle(l.id, l.racketColor, l.racket) : undefined));
-    for (const m of this.models) this.scene.add(m.root);
+    for (const m of this.models) {
+      this.scene.add(m.root);
+      this.applyShadowFlags(m);
+    }
     this.fx.clear(); // 新的一場：上一場的焦痕、拖尾清掉
   }
 
@@ -405,8 +541,10 @@ export class GameRenderer {
       const m = new PlayerModel(0x8a96a8, 0x2a2f38);
       this.models.push(m);
       this.scene.add(m.root);
+      this.applyShadowFlags(m);
     }
     this.models.forEach((m, i) => (m.root.visible = i < match.players.length));
+    if (this.sunVs !== this.viewSide) this.placeSun();
 
     const cine = this.cine;
     // 鏡頭：在自己這側後上方，稍微跟著自己左右移動（回放：照回放算好的電影鏡頭）

@@ -184,6 +184,8 @@ export function market(): Environment {
     sky: 0xfff3df,
     ground: 0x8c7a66,
     sun: 0xffe6bf,
+    sunDir: [-0.45, 1, -0.55], // 遮陽棚縫裡的午後陽光：仰角約 55°
+    fill: [0xffe9cf, 0.7], // 棚子、地磚的暖色反射光
     update(dt) {
       wind.update(dt);
       deco.update();

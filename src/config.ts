@@ -138,6 +138,9 @@ export type Difficulty = 'easy' | 'normal' | 'hard' | 'extreme' | 'hell';
 
 export type MoveMode = 'auto' | 'assist' | 'manual';
 
+/** 畫質：high = 即時影子 2048 貼圖、medium = 1024、low = 不開即時影子（只有腳下的圓影，最省電） */
+export type Quality = 'high' | 'medium' | 'low';
+
 /** 背景音樂：auto = 依場地自動（每個場地自己的撥弦曲風）；其他 = 固定一首（src/audio.ts 的 MUSIC_TRACKS） */
 export type MusicTrack = 'auto' | 'sakura' | 'sports' | 'synth' | 'lofi' | 'bossa';
 
@@ -152,6 +155,7 @@ export interface MatchSettings {
   musicTrack: MusicTrack; // 背景音樂選曲
   umpire: boolean; // 裁判報分語音
   replay: boolean; // 得分回放：主動得分時播約 3 秒的慢動作特寫（線上、教學、訓練不播）
+  quality: Quality; // 畫質（即時影子）：第一次執行依裝置決定（桌機高、手機中），之後記住；持續掉幀會自動降一級（不改存檔）
   character: string; // 自己的球員
   racket: string; // 自己的球拍
   /** 跑位：auto = 自動（可以預判起步）、assist = 輔助（自己推、電腦幫忙對準＋自動回位）、manual = 手動 */
@@ -188,6 +192,7 @@ export const DEFAULT_SETTINGS: MatchSettings = {
   musicTrack: 'auto',
   umpire: true,
   replay: true,
+  quality: 'high',
   character: 'allround',
   racket: 'balance',
   moveMode: 'auto',

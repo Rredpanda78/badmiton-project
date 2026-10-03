@@ -27,6 +27,18 @@
       ],
       "port": 4173,
       "url": "http://localhost:4173"
+    },
+    {
+      "name": "badminton-render",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--port",
+        "5177",
+        "--strictPort"
+      ],
+      "port": 5177,
+      "url": "http://localhost:5177"
     }
   ]
 }

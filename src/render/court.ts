@@ -90,6 +90,7 @@ function makeLines(): THREE.Mesh {
   const mesh = new THREE.Mesh(geo, mat);
   mesh.position.y = 0.004;
   mesh.name = 'courtLines';
+  mesh.receiveShadow = true; // 白線也要接球員的影子（不然影子裡的線會亮得像發光）
   return mesh;
 }
 
@@ -158,7 +159,7 @@ function makeMat(maxAniso: number): THREE.Mesh {
     g.fillRect(toX(sx) + 1.5, 0, 2, canvas.height);
   }
 
-  // 網子的淡影（主光從 +x、+z 上方照下來）
+  // 網子的淡影（主光從左前上方 −x、−z 照下來，影子落在近側 +z）
   {
     const z0 = toY(0.05);
     const z1 = toY(0.95);
@@ -187,10 +188,12 @@ function makeMat(maxAniso: number): THREE.Mesh {
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = maxAniso;
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(MAT_W, MAT_L), new THREE.MeshLambertMaterial({ map: tex }));
+  // Phong：PVC 地墊有一點點光澤（低 shininess = 很寬很淡的反光帶，主光在對面時中場略亮）；只有這一片，成本可忽略
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(MAT_W, MAT_L), new THREE.MeshPhongMaterial({ map: tex, specular: 0x2a2a2a, shininess: 14 }));
   mesh.rotation.x = -Math.PI / 2;
   mesh.position.y = 0.002;
   mesh.name = 'courtMat';
+  mesh.receiveShadow = true; // 球員、球拍、羽球的即時影子落在這裡
   return mesh;
 }
 

@@ -10,6 +10,7 @@ import {
   gustParticles,
   hedgeRow,
   lightPools,
+  lightWash,
   merge,
   paint,
   pathPlane,
@@ -34,8 +35,10 @@ export function nightGarden(): Environment {
   const wind = new Wind(4);
   const group = new THREE.Group();
   group.add(groundPlane(0x223f30), platform(0x7a5a44), pathPlane(0x5f5c66));
-  // 球場上方的探照燈：暖白光把球場照亮（乘法混色：白線更白、綠地墊更亮，不是蓋一層霧）
-  group.add(floodlightWash());
+  // 球場上方的探照燈：兩排、每排 4 盞，暖白光把球場照亮（乘法混色：白線更白、綠地墊更亮，不是蓋一層霧）
+  const floods: Blob[] = [];
+  for (const x of [-2.3, 2.3]) for (const z of [-6.2, -2.1, 2.1, 6.2]) floods.push({ x, z, r: 4.6 });
+  group.add(lightWash(floods, 0xffdcae, 0.55));
 
   // 櫻花樹：花團帶一點自發光（夜裡被打光的感覺）
   const spots = scatter(28, { x: 5.6, z: 9.8 }, 22, -1);
@@ -101,7 +104,10 @@ export function nightGarden(): Environment {
     fog: [0x0d1738, 17, 46],
     sky: 0x4f5c9c, // 月光（環境光）偏藍
     ground: 0x262036,
-    sun: 0xffe6c2, // 主光 = 球場探照燈，暖白
+    sun: 0xd4dcff, // 主光（投影）= 月光，偏冷的藍白（太藍地墊會變灰，探照燈的光池再把它拉回暖綠）
+    sunDir: [-0.6, 1, -0.5], // 月亮在左前方、仰角約 52°：影子長一點
+    sunPower: 1.35,
+    fill: [0xffb36b, 0.85], // 補光 = 燈籠的暖色調
     update(dt) {
       wind.update(dt);
       strings.update(halo);
@@ -112,60 +118,6 @@ export function nightGarden(): Environment {
       gust.update(dt);
     },
   };
-}
-
-/**
- * 探照燈光池：一張蓋住球場與周邊的平面，貼圖是幾盞燈疊起來的柔邊亮區。
- * 混色 = 底色 × (1 + 貼圖色)：只把底下的東西「照亮」，不會像加法光暈那樣把暗處洗成一片霧。
- * 一個 draw call；球員影子、落點提示等畫在它之後，不受影響。
- */
-function floodlightWash(): THREE.Mesh {
-  const SX = 12;
-  const SZ = 21;
-  const R = 24; // 每公尺像素
-  const c = document.createElement('canvas');
-  c.width = SX * R;
-  c.height = SZ * R;
-  const g = c.getContext('2d')!;
-  g.fillStyle = '#000';
-  g.fillRect(0, 0, c.width, c.height);
-  g.globalCompositeOperation = 'lighter';
-  const toX = (x: number) => (x + SX / 2) * R;
-  const toY = (z: number) => (z + SZ / 2) * R;
-  // 兩排燈、每排 4 盞，照在球場兩側偏內
-  for (const x of [-2.3, 2.3]) {
-    for (const z of [-6.2, -2.1, 2.1, 6.2]) {
-      const r = 4.6 * R;
-      const grad = g.createRadialGradient(toX(x), toY(z), 0, toX(x), toY(z), r);
-      grad.addColorStop(0, 'rgb(118,118,118)');
-      grad.addColorStop(0.45, 'rgb(84,84,84)');
-      grad.addColorStop(1, 'rgb(0,0,0)');
-      g.fillStyle = grad;
-      g.fillRect(toX(x) - r, toY(z) - r, r * 2, r * 2);
-    }
-  }
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  const mat = new THREE.MeshBasicMaterial({
-    map: tex,
-    color: 0xffdcae,
-    transparent: true,
-    depthWrite: false,
-    fog: false,
-    blending: THREE.CustomBlending,
-    blendEquation: THREE.AddEquation,
-    blendSrc: THREE.DstColorFactor,
-    blendDst: THREE.OneFactor,
-    polygonOffset: true,
-    polygonOffsetFactor: -1,
-    polygonOffsetUnits: -2,
-  });
-  disposeWith(mat, tex);
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(SX, SZ), mat);
-  mesh.rotation.x = -Math.PI / 2;
-  mesh.position.y = 0.004;
-  mesh.renderOrder = -1;
-  return mesh;
 }
 
 interface GlowSpec {
