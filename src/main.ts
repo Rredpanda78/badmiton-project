@@ -257,11 +257,14 @@ function tick(now: number): void {
         mine.moveX = a.moveX;
         mine.moveY = a.moveY;
       }
-      if (!demoPlayer && mine.flick) {
+      const prevSwing = match.players[HUMAN].swing;
+      match.step([mine, opponent ? opponent.input() : idleInput()]);
+      // 真的開始揮拍才出聲（只點不滑但球還沒來 = 連按兩下的第一下，不算）
+      const sw = match.players[HUMAN].swing;
+      if (!demoPlayer && sw && sw !== prevSwing) {
         sfx.whoosh();
         buzz(8);
       }
-      match.step([mine, opponent ? opponent.input() : idleInput()]);
       if (!demoPlayer) shoeSqueaks();
       acc -= PHYS.dt;
       for (const e of match.drainEvents()) handleEvent(e);

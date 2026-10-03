@@ -187,6 +187,10 @@ export class LocalControls {
       if (this.scheme === 'tap' && Math.hypot(dx, dy) > SLIDE_PX) {
         // 點擊滑放：放開的那一刻出拍。點一下 = 下手、點兩下 = 上手
         this.pendingFlick = tapShot(dx, -dy, a.jump);
+      } else if (this.scheme === 'tap') {
+        // 只點不滑 = 平球（球快到身邊才出拍；球還遠就只是連按兩下的第一下）
+        this.pendingFlick = { x: 0, y: 0, cmd: { family: 'side', depth: 5.0, soft: true } };
+        if (performance.now() - a.downAt < TAP_MAX_MS) this.lastTap = { t: performance.now(), x: a.ox, y: a.oy };
       } else if (!a.flicked && performance.now() - a.downAt < TAP_MAX_MS) {
         // 沒划動、很快放開 = 點一下（可能是連按兩下的第一下）
         this.lastTap = { t: performance.now(), x: a.ox, y: a.oy };
@@ -227,7 +231,8 @@ export class LocalControls {
     const dx = e.clientX - s.ox;
     const dy = e.clientY - s.oy;
     if (Math.hypot(dx, dy) <= SLIDE_PX) {
-      // 沒拖曳：快速點一下 = 跳殺的第一下
+      // 沒拖曳 = 直線殺球（球快到身邊才出拍；球還遠就只是跳殺連按兩下的第一下）
+      this.pendingFlick = { x: 0, y: -1, cmd: { family: 'down', depth: 'smash', soft: true } };
       if (performance.now() - s.downAt < TAP_MAX_MS) this.lastSmashTap = performance.now();
       return;
     }
@@ -373,6 +378,10 @@ export class LocalControls {
     // 預設位置：直向時放在球場下方（離螢幕底部遠一點，避開系統手勢區），橫向時放左右下角
     const restY = bottomReserve > 0 ? Math.min(h * (1 - bottomReserve) + 80, h - 125) : h - 110;
     const restX = bottomReserve > 0 ? w * 0.22 : Math.max(90, w * 0.12);
+    // 右手圈與殺球搖桿：自動跑位時右手圈靠中間一點，殺球搖桿在它右上方；手動時殺球搖桿在右手圈正上方
+    const ringX = this.autoMove ? w * (bottomReserve > 0 ? 0.6 : 0.72) : w - restX;
+    const smashX = this.autoMove ? ringX + 74 : ringX;
+    const smashY = this.autoMove ? restY - 92 : restY - 112;
     const show = this.isTouch && !this.autoMove;
     const showRing = this.isTouch;
     this.baseEl.style.display = show ? 'block' : 'none';
@@ -402,7 +411,7 @@ export class LocalControls {
       this.ringEl.style.top = `${a.oy}px`;
       this.ringEl.classList.add('active');
     } else {
-      this.ringEl.style.left = `${w - restX}px`;
+      this.ringEl.style.left = `${ringX}px`;
       this.ringEl.style.top = `${restY}px`;
       this.ringEl.classList.remove('active');
     }
@@ -413,8 +422,8 @@ export class LocalControls {
     const tap = this.scheme === 'tap';
     this.smashEl.style.display = tap && this.enabled ? 'block' : 'none';
     if (tap) {
-      this.smashEl.style.left = `${w - restX}px`;
-      this.smashEl.style.top = `${restY - 112}px`;
+      this.smashEl.style.left = `${smashX}px`;
+      this.smashEl.style.top = `${smashY}px`;
     }
     // 殺球搖桿：小搖桿頭跟著手指，最多偏 30 px
     const sp = this.smashPad;
@@ -439,8 +448,8 @@ export class LocalControls {
       this.labelEl.classList.toggle('over', sp.jump);
       // 置中在殺球搖桿上方，但不能超出螢幕
       const half = this.labelEl.offsetWidth / 2 + 8;
-      this.labelEl.style.left = `${Math.max(half, Math.min(w - half, w - restX))}px`;
-      this.labelEl.style.top = `${restY - 170}px`;
+      this.labelEl.style.left = `${Math.max(half, Math.min(w - half, smashX))}px`;
+      this.labelEl.style.top = `${smashY - 58}px`;
     } else if (showLabel && a) {
       this.labelEl.textContent = a.jump ? '上手　↑高遠球　↓切球' : '下手　↑挑球　↓放小球';
       this.labelEl.classList.toggle('over', a.jump);

@@ -42,6 +42,7 @@ export const GAME = {
   swingDuration: 0.32,
   idealContactT: 0.07, // 划動後這麼久擊中最完美（拍子需要時間揮過來）
   flickBuffer: 0.08, // 揮拍／硬直結束前這段時間內划的會被保留
+  softTapLead: 0.32, // 點擊滑放「只點不滑」：羽球這麼久內會到身邊才出拍（否則當作連按兩下的第一下）
   whiffRecover: 0.15,
   highZoneY: 2.0, // 以上算「高點」（高遠/殺/切）
 

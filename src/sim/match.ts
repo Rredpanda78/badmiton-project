@@ -243,6 +243,8 @@ export class Match {
       p.bufferedFlick = input.flick;
       p.bufferT = GAME.flickBuffer;
     } else if (p.bufferT > 0) p.bufferT -= dt;
+    // 只點不滑：羽球快到身邊才算出拍，否則只是連按兩下的第一下（不揮拍）
+    if (p.bufferT > 0 && p.bufferedFlick?.cmd?.soft && !this.softTapLive(p)) p.bufferT = 0;
     const flick = p.bufferT > 0 ? p.bufferedFlick : null;
     if (flick && !p.swing && p.recover <= 0 && this.phase !== 'matchOver') {
       p.bufferT = 0;
@@ -811,6 +813,21 @@ export class Match {
     }
   }
 
+
+  /** 羽球是否在 softTapLead 秒內會飛到這位球員附近（比擊球範圍寬一點，邊跑邊點也算） */
+  private softTapLive(p: PlayerState): boolean {
+    const sh = this.shuttle;
+    if (this.phase !== 'rally' || sh.mode !== 'flight' || sh.lastHitter === p.id || !sh.prediction) return false;
+    const elapsed = this.time - sh.launchTime;
+    for (const pt of sh.prediction.points) {
+      if (pt.t < elapsed) continue;
+      if (pt.t - elapsed > GAME.softTapLead) break;
+      const q = pt.p;
+      if (q.z * p.side < 0.05 || q.y > GAME.reachMaxY + p.pos.y + 0.6) continue;
+      if (Math.hypot(q.x - p.pos.x, q.z - p.pos.z) <= GAME.reach + 0.7) return true;
+    }
+    return false;
+  }
 
   drainEvents(): MatchEvent[] {
     const e = this.events;
