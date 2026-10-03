@@ -58,7 +58,7 @@ export interface PlayerState {
   reachMul: number; // 擊球範圍倍率（手動跑位的玩家較大）
 }
 
-export type Phase = 'serve' | 'rally' | 'point' | 'matchOver' | 'drill'; // drill = 練習模式等待發球機
+export type Phase = 'serve' | 'rally' | 'point' | 'matchOver' | 'drill' | 'await'; // drill = 練習模式等待發球機；await = 線上：自己打出去的球落地，等對方判定
 
 export type WhiffReason = '太早' | '太晚' | '太遠' | '太高' | '太低';
 export type HitGrade = '完美' | '不錯' | '勉強';
@@ -79,6 +79,9 @@ export type MatchEvent =
       jump: boolean;
       serve: boolean;
       dive: boolean; // 魚躍救球
+      vel: Vec3; // 擊出的初速（線上傳給對方）
+      stepDt: number;
+      wobble: boolean; // 這球是晃動的機會球
     }
   | { type: 'whiff'; player: 0 | 1; reason: WhiffReason; airborne: boolean }
   | { type: 'jump'; player: 0 | 1 }
@@ -89,7 +92,7 @@ export type MatchEvent =
   | { type: 'land'; pos: Vec3; inBounds: boolean }
   | { type: 'drillLand'; hitter: 0 | 1; pos: Vec3; inBounds: boolean; net: boolean }
   | { type: 'chance'; player: 0 | 1 } // 打出晃動的機會球
-  | { type: 'point'; winner: 0 | 1; reason: string }
+  | { type: 'point'; winner: 0 | 1; reason: string; byRemote?: boolean }
   | { type: 'game'; winner: 0 | 1 }
   | { type: 'match'; winner: 0 | 1 }
   | { type: 'serveStart'; server: 0 | 1 };
@@ -121,6 +124,38 @@ const airTimeLeft = (p: PlayerState) => {
 };
 const JUMP_CHARGE_CAP = chargeForDepth(COURT.halfLength - 0.4);
 
+
+/** 線上：對方傳來的狀態（已換成本機座標） */
+export interface RemoteState {
+  pos: Vec3; // y = 腳離地高度
+  vel: Vec3; // y = 跳躍垂直速度
+  airborne: boolean;
+  charging: boolean;
+  charge: number;
+  jumpArmed: boolean;
+  dive: { t: number; dx: number; dz: number } | null;
+  downT: number;
+  swing: { family: Family; t: number; airborne: boolean } | null;
+}
+
+/** 線上：對方的一次擊球（已換成本機座標） */
+export interface RemoteHit {
+  contact: Vec3;
+  vel: Vec3;
+  stepDt: number;
+  family: Family;
+  name: string;
+  speedKmh: number;
+  charge: number;
+  quality: number;
+  grade: HitGrade;
+  serve: boolean;
+  jump: boolean;
+  dive: boolean;
+  wobble: boolean;
+  netFault: boolean;
+  powerShort: boolean;
+}
 export class Match {
   readonly rng: Rng;
   players: [PlayerState, PlayerState];
@@ -136,6 +171,9 @@ export class Match {
   lastPoint: { winner: 0 | 1; reason: string } | null = null;
   events: MatchEvent[] = [];
   private gameJustEnded = false;
+  /** 線上對戰：遠端玩家的 id（移動、擊球都由網路訊息決定）；離線 = null */
+  remote: 0 | 1 | null = null;
+  private remoteState: { rs: RemoteState; at: number } | null = null;
 
   constructor(readonly settings: MatchSettings, seed = Date.now()) {
     this.rng = new Rng(seed);
@@ -181,6 +219,7 @@ export class Match {
     const s = this.players[this.server];
     const r = this.players[this.receiver];
     const court = this.serveCourtSign();
+    this.remoteState = null; // 線上：舊位置作廢，等對方送新的發球站位
     s.pos = v3(s.side * court * 0.7, 0, s.side * (COURT.shortService + 1.2));
     r.pos = v3(r.side * court * 0.9, 0, r.side * (COURT.shortService + 1.7));
     for (const p of this.players) {
@@ -242,10 +281,13 @@ export class Match {
       case 'matchOver':
         this.updateShuttleLoose();
         break;
+      case 'await':
+        break;
     }
   }
 
   private updatePlayer(p: PlayerState, input: PlayerInput, dt: number): void {
+    if (p.id === this.remote) return this.updateRemote(p, dt);
     if (p.recover > 0) p.recover -= dt;
     if (p.landRecover > 0) p.landRecover -= dt;
     if (p.downT > 0) p.downT -= dt;
@@ -612,6 +654,9 @@ export class Match {
       jump: false,
       serve: true,
       dive: false,
+      vel: copy3(shot.vel),
+      stepDt: shot.stepDt,
+      wobble: false,
     });
     this.phase = 'rally';
     this.phaseT = 0;
@@ -658,7 +703,7 @@ export class Match {
     if (sh.mode === 'flight') {
       for (const p of this.players) {
         const s = p.swing;
-        if (p.id === sh.lastHitter || !s || s.contacted || s.whiffed || s.isServe) continue;
+        if (p.id === sh.lastHitter || p.id === this.remote || !s || s.contacted || s.whiffed || s.isServe) continue;
         if (s.t > s.window) continue;
         const d = this.inReach(p, sh.pos);
         if (d === null) continue;
@@ -677,6 +722,12 @@ export class Match {
       }
     }
 
+    this.advanceShuttle();
+  }
+
+  /** 羽球往前飛一個 tick：過網判定（掛網）、落地 */
+  private advanceShuttle(): void {
+    const sh = this.shuttle;
     const pz = sh.pos.z;
     const py = sh.pos.y;
     stepShuttle(sh.pos, sh.vel, sh.stepDt);
@@ -742,6 +793,9 @@ export class Match {
       jump: shot.name === '跳殺' || shot.name === '跳撲' || chanceSmash,
       serve: false,
       dive: swing.dive,
+      vel: copy3(shot.vel),
+      stepDt,
+      wobble: weak,
     });
   }
 
@@ -780,6 +834,12 @@ export class Match {
       }
     }
     this.events.push({ type: 'land', pos: copy3(sh.pos), inBounds });
+    if (this.remote !== null && hitter !== this.remote) {
+      // 線上：自己打出去的球由對方（接球方）判定，等對方的結果（避免兩邊各判一次）
+      this.phase = 'await';
+      this.phaseT = 0;
+      return;
+    }
     if (this.settings.practice) {
       // 練習：不計分，交給關卡判定
       this.events.push({ type: 'drillLand', hitter, pos: copy3(sh.pos), inBounds, net: wasNet || landSide === hitterSide });
@@ -790,11 +850,11 @@ export class Match {
     this.awardPoint(winner, reason);
   }
 
-  private awardPoint(winner: 0 | 1, reason: string): void {
+  private awardPoint(winner: 0 | 1, reason: string, byRemote = false): void {
     this.score[winner]++;
     this.server = winner;
     this.lastPoint = { winner, reason };
-    this.events.push({ type: 'point', winner, reason });
+    this.events.push({ type: 'point', winner, reason, byRemote });
     this.phase = 'point';
     this.phaseT = 0;
     for (const p of this.players) {
@@ -907,6 +967,9 @@ export class Match {
       jump: false,
       serve: false,
       dive: false,
+      vel: copy3(shot.vel),
+      stepDt: shot.stepDt,
+      wobble: false,
     });
     this.phase = 'rally';
     this.phaseT = 0;
@@ -937,6 +1000,127 @@ export class Match {
       if (Math.hypot(q.x - p.pos.x, q.z - p.pos.z) <= this.reachOf(p) + 0.7) return true;
     }
     return false;
+  }
+
+  // ---------- 線上對戰 ----------
+
+  /** 對方最新的狀態（收到時的 match.time 一起存） */
+  setRemoteState(rs: RemoteState): void {
+    this.remoteState = { rs, at: this.time };
+  }
+
+  /** 遠端玩家：位置用網路狀態外插、每 tick 拉近一點；不會自己擊球（擊球只來自 applyRemoteHit） */
+  private updateRemote(p: PlayerState, dt: number): void {
+    if (p.swing) {
+      p.swing.t += dt;
+      if (p.swing.t >= Math.max(GAME.swingDuration, p.swing.window + 0.1)) p.swing = null;
+    }
+    if (!this.remoteState) return;
+    const { rs, at } = this.remoteState;
+    const age = Math.min(0.2, this.time - at);
+    const tx = rs.pos.x + rs.vel.x * age;
+    const tz = rs.pos.z + rs.vel.z * age;
+    if (Math.hypot(tx - p.pos.x, tz - p.pos.z) > 1.5) {
+      p.pos.x = tx; // 差太多（換發球位置）直接過去
+      p.pos.z = tz;
+    } else {
+      p.pos.x += (tx - p.pos.x) * 0.2;
+      p.pos.z += (tz - p.pos.z) * 0.2;
+    }
+    p.vel.x = rs.vel.x;
+    p.vel.z = rs.vel.z;
+    p.airborne = rs.airborne;
+    p.vy = rs.airborne ? rs.vel.y - GAME.jump.gravity * age : 0;
+    p.pos.y = rs.airborne ? Math.max(0, rs.pos.y + rs.vel.y * age - 0.5 * GAME.jump.gravity * age * age) : 0;
+    p.charging = rs.charging;
+    p.charge = rs.charge;
+    p.jumpArmed = rs.jumpArmed;
+    p.dive = rs.dive ? { ...rs.dive, t: rs.dive.t + age, v0: 0 } : null;
+    p.downT = Math.max(0, rs.downT - age);
+    if (rs.swing && !p.swing && rs.swing.t + age < GAME.swingDuration) p.swing = this.syntheticSwing(p, rs.swing.family, rs.swing.t + age, rs.swing.airborne);
+  }
+
+  private syntheticSwing(p: PlayerState, family: Family, t: number, airborne: boolean): Swing {
+    return {
+      t,
+      window: GAME.swingWindow,
+      charge: 0,
+      preset: true,
+      family,
+      aimX: 0,
+      contacted: false,
+      contactPoint: null,
+      contactT: t,
+      isServe: false,
+      whiffed: false,
+      from: copy3(p.pos),
+      airborne,
+      triggeredJump: false,
+      dive: false,
+      diveAuto: false,
+    };
+  }
+
+  /**
+   * 對方擊球：從擊球點用同樣的初速發出去（軌跡是確定的，兩邊算出來一樣），
+   * 再往前補 lat 秒（訊息在路上的時間），讓兩邊的羽球位置對齊。
+   */
+  applyRemoteHit(h: RemoteHit, lat: number): void {
+    if (this.remote === null || this.phase === 'matchOver') return;
+    const p = this.players[this.remote];
+    if (h.serve && this.phase === 'point') this.afterPoint(); // 對方比較快：先把發球準備好
+    const sh = this.shuttle;
+    sh.pos = copy3(h.contact);
+    this.launch(p, h.vel, h.stepDt, h.serve);
+    sh.wobble = h.wobble;
+    const prev = p.swing;
+    const s = this.syntheticSwing(p, h.family, prev && !prev.contacted ? prev.t : GAME.idealContactT, p.airborne);
+    s.contacted = true;
+    s.contactPoint = copy3(h.contact);
+    s.isServe = h.serve;
+    s.dive = h.dive;
+    p.swing = s;
+    if (this.phase !== 'rally') {
+      this.phase = 'rally';
+      this.phaseT = 0;
+    }
+    if (h.wobble) this.events.push({ type: 'chance', player: p.id === 0 ? 1 : 0 });
+    this.events.push({
+      type: 'hit',
+      player: p.id,
+      name: h.name,
+      speedKmh: h.speedKmh,
+      pos: copy3(h.contact),
+      family: h.family,
+      charge: h.charge,
+      netFault: h.netFault,
+      powerShort: h.powerShort,
+      quality: h.quality,
+      grade: h.grade,
+      jump: h.jump,
+      serve: h.serve,
+      dive: h.dive,
+      vel: copy3(h.vel),
+      stepDt: h.stepDt,
+      wobble: h.wobble,
+    });
+    const n = Math.min(36, Math.round(lat / PHYS.dt));
+    sh.launchTime -= n * PHYS.dt;
+    for (let i = 0; i < n && sh.mode !== 'down' && this.phase === 'rally'; i++) this.advanceShuttle();
+  }
+
+  /** 對方（接球方）判定這一分；score/games 是判定後的比分（本機 id 順序），以判定方為準 */
+  applyRemoteVerdict(v: { remoteWon: boolean; reason: string; score: [number, number]; games: [number, number] }): void {
+    if (this.remote === null || this.phase === 'point' || this.phase === 'matchOver') return;
+    const local: 0 | 1 = this.remote === 0 ? 1 : 0;
+    if (this.shuttle.mode !== 'down') {
+      this.shuttle.mode = 'down';
+      this.shuttle.vel = v3();
+      this.shuttle.pos.y = Math.max(0, this.shuttle.pos.y);
+    }
+    this.awardPoint(v.remoteWon ? this.remote : local, v.reason, true);
+    this.score = [v.score[0], v.score[1]];
+    this.games = [v.games[0], v.games[1]];
   }
 
   drainEvents(): MatchEvent[] {

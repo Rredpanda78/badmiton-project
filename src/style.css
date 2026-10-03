@@ -836,3 +836,61 @@ h2 {
 .press-ripple.dive {
   border-color: rgba(255, 150, 60, 0.9);
 }
+
+/* 線上對戰 */
+.join-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.join-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  font-size: 20px;
+  letter-spacing: 6px;
+  text-align: center;
+  text-transform: uppercase;
+}
+.join-row button {
+  width: auto;
+  margin: 0;
+  padding: 0 20px;
+}
+.room-code-label {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+.room-code {
+  font-size: 44px;
+  font-weight: 800;
+  letter-spacing: 12px;
+  text-align: center;
+  margin: 2px 0 10px;
+  color: #ffd54a;
+}
+.room-status {
+  min-height: 1.4em;
+  text-align: center;
+  font-size: 14px;
+  color: var(--muted);
+}
+.room-status.ok {
+  color: #7dff9a;
+}
+.room-status.error {
+  color: #ff7a7a;
+}
+#netInfo {
+  position: absolute;
+  right: 10px;
+  bottom: calc(6px + env(safe-area-inset-bottom));
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  pointer-events: none;
+}

@@ -15,6 +15,8 @@ export class Hud {
   private meterHold = 0;
   private lastCharge = 0;
   oppName = 'AI';
+  /** 對手名字旁的小標籤（AI／線上） */
+  oppTag = 'AI';
   /** 訓練關卡進度（有值時記分板改顯示這個） */
   drill: { name: string; rep: number; reps: number; ok: number; goal: string } | null = null;
   private goal: HTMLElement;
@@ -59,7 +61,7 @@ export class Hud {
       case 'game':
         if (match.phase !== 'matchOver') {
           const win = e.winner === humanId;
-          this.showBanner(win ? '你贏得這局！' : 'AI 贏得這局', `局數 ${match.games[humanId]} : ${match.games[humanId === 0 ? 1 : 0]}`, win ? 'win' : 'lose', 1.8);
+          this.showBanner(win ? '你贏得這局！' : `${this.oppName} 贏得這局`, `局數 ${match.games[humanId]} : ${match.games[humanId === 0 ? 1 : 0]}`, win ? 'win' : 'lose', 1.8);
         }
         break;
     }
@@ -105,7 +107,7 @@ export class Hud {
       this.score.innerHTML =
         `<span class="me">${serveDot(humanId)}你${multi ? `<small>${match.games[humanId]}</small>` : ''}<b>${match.score[humanId]}</b></span>` +
         `<span class="sep">:</span>` +
-        `<span class="opp"><b>${match.score[opp]}</b>${multi ? `<small>${match.games[opp]}</small>` : ''}${this.oppName}<em>AI</em>${serveDot(opp)}</span>`;
+        `<span class="opp"><b>${match.score[opp]}</b>${multi ? `<small>${match.games[opp]}</small>` : ''}${this.oppName}<em>${this.oppTag}</em>${serveDot(opp)}</span>`;
 
     if (this.bannerTimer > 0) {
       this.bannerTimer -= dt;

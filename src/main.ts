@@ -10,6 +10,8 @@ import { loadTour, saveTourWin, stopUnlocked, TOUR, type TourOpponent } from './
 import { buildKit, CHARACTERS, characterById, racketById, RACKETS, type Kit } from './sim/kits';
 import { Hud } from './ui/hud';
 import { chargeZones } from './sim/shots';
+import { OnlineSync } from './net/sync';
+import { newRoomCode, normalizeCode, RoomClient, type Hello, type StartInfo } from './net/room';
 
 const HUMAN = 0 as const;
 const $ = (id: string) => document.getElementById(id)!;
@@ -29,6 +31,9 @@ let tourCtx: { stop: number; idx: number } | null = null; // 目前的巡迴賽�
 let again: () => void = () => startGame(); // 「再來一次」要重開什麼
 let demoPlayer: AIController | null = null; // 主選單背景的 AI 示範對打
 let resultTimer: number | undefined;
+/** 線上對戰：房間連線＋比賽同步（還在大廳時 sync = null） */
+let online: { room: RoomClient; sync: OnlineSync | null } | null = null;
+let netInfoT = 0;
 
 /** 手機震動（iPhone 的 Safari 不支援，會自動略過） */
 function buzz(pattern: number | number[]): void {
@@ -77,6 +82,7 @@ function newMatch(demo: boolean, tourOpp?: TourOpponent, venue?: Venue): void {
   ]);
   applyVenue(venue ?? settings.venue);
   hud.oppName = tourOpp ? tourOpp.title : opp.name;
+  hud.oppTag = 'AI';
   hud.drill = null;
   drill = null;
   renderer.setTarget(null);
@@ -159,6 +165,8 @@ function setMode(m: Mode): void {
   $('pause').classList.toggle('show', m === 'paused');
   $('result').classList.toggle('show', m === 'result');
   $('drills').classList.remove('show');
+  if (m !== 'menu') $('online').classList.remove('show');
+  $('restartBtn').style.display = online?.sync ? 'none' : ''; // 線上不能重新開始
   $('hud').style.visibility = m === 'menu' ? 'hidden' : 'visible';
 }
 
@@ -172,7 +180,7 @@ function handleEvent(e: MatchEvent): void {
       if (live) sfx.hit(q, e.speedKmh, e.jump);
       if (mine) buzz(e.jump ? [45, 25, 35] : smash ? [40, 20, 25] : e.serve ? 14 : e.grade === '完美' ? 30 : e.grade === '勉強' ? 10 : 18);
       renderer.burst(e.pos, q, smash, e.jump);
-      if (live) hitStop = e.serve ? 0.03 : mine ? (e.jump ? 0.11 : smash ? 0.09 : e.grade === '完美' ? 0.07 : 0.05) : smash ? 0.06 : 0.03;
+      if (live && !online?.sync) hitStop = e.serve ? 0.03 : mine ? (e.jump ? 0.11 : smash ? 0.09 : e.grade === '完美' ? 0.07 : 0.05) : smash ? 0.06 : 0.03;
       break;
     }
     case 'whiff':
@@ -257,7 +265,8 @@ function tick(now: number): void {
   last = now;
   if (drill && mode === 'play' && hitStop <= 0) drill.tick(dt);
   if (hitStop > 0) hitStop -= dt;
-  else if (mode === 'play' || mode === 'menu') {
+  else if (mode === 'play' || mode === 'menu' || (online?.sync && mode === 'paused')) {
+    // 線上：暫停畫面時比賽照樣進行（對方不會等你）
     acc += dt * GAME.simSpeed;
     let n = 0;
     while (acc >= PHYS.dt && n++ < 40 && hitStop <= 0) {
@@ -279,7 +288,12 @@ function tick(now: number): void {
       }
       if (!demoPlayer) shoeSqueaks();
       acc -= PHYS.dt;
-      for (const e of match.drainEvents()) handleEvent(e);
+      const sync = online?.sync;
+      for (const e of match.drainEvents()) {
+        sync?.onEvent(e);
+        handleEvent(e);
+      }
+      sync?.afterStep();
     }
     if (hitStop > 0) acc = 0;
   }
@@ -288,6 +302,7 @@ function tick(now: number): void {
   renderer.update(match, mode === 'paused' || mode === 'result' ? 0 : dt, settings.landingHint && !demoPlayer, HUMAN);
   if (mode !== 'menu') hud.update(match, renderer, dt, HUMAN);
   controls.draw(me.charge, me.charging && !demoPlayer, renderer.bottomReserve);
+  updateNetInfo(dt);
   renderer.render();
 }
 
@@ -351,6 +366,7 @@ $('restartBtn').addEventListener('click', () => again());
 $('pauseBtn').addEventListener('click', () => mode === 'play' && setMode('paused'));
 $('resumeBtn').addEventListener('click', () => setMode('play'));
 const toMenu = () => {
+  leaveOnline();
   newMatch(true);
   setMode('menu');
 };
@@ -443,6 +459,7 @@ function startDrill(d: Drill): void {
   applyVenue(settings.venue);
   renderer.setTarget(d.target);
   hud.oppName = '發球機';
+  hud.oppTag = 'AI';
   hud.drill = { name: d.name, rep: 0, reps: d.reps, ok: 0, goal: `${d.goal}｜${settings.scheme === 'tap' ? d.howTap : d.how}` };
   hitStop = 0;
   clearTimeout(resultTimer);
@@ -603,4 +620,171 @@ function onPointAudio(winner: 0 | 1, reason: string): void {
   else if ((a >= target - 1 && a > b) || a === cap - 1) extra = match.games[srv] + 1 > match.settings.games / 2 ? '，賽點' : '，局點';
   const text = a === 0 && b === 0 ? '新的一局，零比零' : `${a} 比 ${b}${extra}`;
   window.setTimeout(() => callScore(text), 750);
+}
+
+// ---------- 線上對戰（好友房） ----------
+function myHello(): Hello {
+  return {
+    name: characterById(settings.character).name,
+    character: settings.character,
+    racket: settings.racket,
+    points: settings.points,
+    games: settings.games,
+    venue: settings.venue,
+  };
+}
+
+function showLobby(code: string | null): void {
+  $('onlineIdle').style.display = code ? 'none' : '';
+  $('onlineRoom').style.display = code ? '' : 'none';
+  $('roomCode').textContent = code ?? '';
+  if (!code) {
+    $('roomStatus').textContent = '';
+    $('roomStatus').className = 'room-status';
+  }
+}
+
+function openOnline(): void {
+  $('menu').classList.remove('show');
+  $('online').classList.add('show');
+  showLobby(online ? online.room.code : null);
+}
+
+function leaveOnline(): void {
+  online?.room.close();
+  online = null;
+  $('againBtn').style.display = '';
+  $('netInfo').textContent = '';
+}
+
+function joinRoom(code: string): void {
+  leaveOnline();
+  unlockAudio();
+  const room = new RoomClient(code, myHello);
+  online = { room, sync: null };
+  room.onStatus = (text, kind) => {
+    const el = $('roomStatus');
+    el.textContent = text;
+    el.className = `room-status ${kind}`;
+    if (mode === 'result' && online?.room === room) $('resultScore').textContent = text;
+  };
+  room.onStart = (start, peer, host) => startOnlineMatch(start, peer, host);
+  room.onGame = (msg) => online?.sync?.receive(msg);
+  room.onPeerLeft = () => {
+    if (online?.room !== room || !online.sync) return;
+    // 比賽中對方離開：結束這場
+    online.sync = null;
+    clearTimeout(resultTimer);
+    $('resultTitle').textContent = '對手離開了';
+    $('resultScore').textContent = `比分 ${match.score[0]} : ${match.score[1]}`;
+    $('againBtn').style.display = 'none';
+    setMode('result');
+  };
+  showLobby(code);
+  room.connect();
+}
+
+function startOnlineMatch(start: StartInfo, peer: Hello, host: boolean): void {
+  if (!online) return;
+  unlockAudio();
+  if (controls.isTouch || matchMedia('(pointer: coarse)').matches) document.documentElement.requestFullscreen?.().catch(() => {});
+  const me = characterById(settings.character);
+  const opp = characterById(peer.character);
+  const s: MatchSettings = { ...settings, points: start.points, games: start.games, venue: start.venue, aiCharacter: opp.id, aiRacket: peer.racket };
+  match = new Match(s, (Date.now() ^ (Math.random() * 1e9)) >>> 0);
+  match.remote = 1; // 對方 = 1 號（畫面上方），自己永遠在下方
+  match.server = host ? 0 : 1; // 房主先發
+  match.setupServe();
+  match.drainEvents();
+  opponent = null;
+  demoPlayer = null;
+  tourCtx = null;
+  drill = null;
+  hud.drill = null;
+  setupAssist(false);
+  controls.scheme = settings.scheme;
+  renderer.setLooks([
+    { ...me, racketColor: racketById(settings.racket).color },
+    // 兩邊選同一位球員：對手換成紅色球衣，才分得出來
+    { ...opp, ...(opp.id === me.id ? { shirt: 0xe0483a, shorts: 0x3a1b1b } : {}), racketColor: racketById(peer.racket).color },
+  ]);
+  applyVenue(start.venue);
+  renderer.setTarget(null);
+  hud.oppName = peer.name;
+  hud.oppTag = '線上';
+  clearTimeout(resultTimer);
+  hitStop = 0;
+  const room = online.room;
+  online.sync = new OnlineSync(match, (msg) => room.send(msg));
+  again = () => room.requestRematch();
+  $('againBtn').style.display = '';
+  acc = 0;
+  setMode('play');
+  hud.intro(`線上對戰：${peer.name}`, host ? '你先發球' : '對手先發球');
+}
+
+/** 右下角顯示連線延遲 */
+function updateNetInfo(dt: number): void {
+  const sync = online?.sync;
+  if (!sync || mode === 'menu') {
+    if ($('netInfo').textContent) $('netInfo').textContent = '';
+    return;
+  }
+  netInfoT -= dt;
+  if (netInfoT > 0) return;
+  netInfoT = 0.5;
+  $('netInfo').textContent = sync.rttMs ? `連線延遲 ${Math.round(sync.rttMs)} ms` : '';
+}
+
+$('onlineBtn').addEventListener('click', openOnline);
+$('onlineBackBtn').addEventListener('click', () => {
+  leaveOnline();
+  $('online').classList.remove('show');
+  $('menu').classList.add('show');
+});
+$('createRoomBtn').addEventListener('click', () => joinRoom(newRoomCode()));
+$('joinRoomBtn').addEventListener('click', () => {
+  const code = normalizeCode(($('roomCodeInput') as HTMLInputElement).value);
+  if (code.length < 4) {
+    $('roomStatus').textContent = '房號是 4 個字';
+    $('roomStatus').className = 'room-status error';
+    return;
+  }
+  joinRoom(code);
+});
+$('roomCodeInput').addEventListener('keydown', (e) => {
+  if ((e as KeyboardEvent).key === 'Enter') $('joinRoomBtn').click();
+});
+$('shareRoomBtn').addEventListener('click', async () => {
+  if (!online) return;
+  const code = online.room.code;
+  const url = `${location.origin}${location.pathname}?room=${code}`;
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: '羽球對決 2.5D', text: `來打羽球！房號 ${code}`, url });
+    } catch {
+      /* 取消分享 */
+    }
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    $('roomStatus').textContent = '連結已複製，貼給朋友就能直接加入';
+    $('roomStatus').className = 'room-status ok';
+  } catch {
+    window.prompt('複製這個連結給朋友', url);
+  }
+});
+
+// 從分享連結進來（?room=房號）：直接進房
+{
+  const params = new URLSearchParams(location.search);
+  const code = params.get('room');
+  if (code) {
+    params.delete('room');
+    const rest = params.toString();
+    history.replaceState(null, '', location.pathname + (rest ? `?${rest}` : ''));
+    openOnline();
+    joinRoom(normalizeCode(code));
+  }
 }

@@ -18,6 +18,7 @@
       <div id="meter"><div class="fill"></div></div>
       <div id="banner"><span></span><div class="sub"></div></div>
       <div id="drillGoal"></div>
+      <div id="netInfo"></div>
       <div id="hint">發球：按住蓄力 → <b>往上划</b> 發高遠球、<b>往下划</b> 發小球</div>
     </div>
     <div id="touch"></div>
@@ -84,7 +85,7 @@
         <button id="startBtn" class="primary">開始比賽（對 AI）</button>
         <button id="tourBtn">場館巡迴賽</button>
         <button id="drillsBtn">訓練關卡</button>
-        <button class="ghost" disabled>線上房間（開發中）</button>
+        <button id="onlineBtn">線上對戰（好友房）</button>
         <details class="howto">
           <summary>操作說明</summary>
           <h3>手機（直向、橫向都可以）</h3>
@@ -118,6 +119,12 @@
             <li>來球越快反彈力越大，接殺球輕輕一划就能擋回網前</li>
             <li>球打過來時腳邊的白圈 = 擊球範圍，變<b>綠色</b>就是現在划剛好</li>
             <li>擊球會顯示評價（完美／不錯／勉強），揮空會告訴你原因（太早／太晚／太遠／太高）</li>
+          </ul>
+          <h3>線上對戰</h3>
+          <ul>
+            <li>建立房間後把<b>房號</b>或<b>分享連結</b>傳給朋友，朋友輸入房號或點連結就會進房</li>
+            <li>分數、局數、場地照房主的設定；球員、球拍、操作方式各用自己的</li>
+            <li>右下角是連線延遲；暫停時比賽不會停</li>
           </ul>
           <h3>電腦／手把</h3>
           <ul>
@@ -153,6 +160,27 @@
         <p class="tag">發球機一直餵同一種球，每關 10 球。用上面選的球員、球拍和操作模式。</p>
         <div id="drillList" class="drill-list"></div>
         <button id="drillsBackBtn">返回</button>
+      </div>
+    </div>
+
+    <div id="online" class="overlay">
+      <div class="panel small">
+        <h2>線上對戰</h2>
+        <p class="tag">跟朋友對打：建立房間，把房號或連結傳給對方。各自用自己選的球員、球拍和操作方式；分數、局數、場地照房主的設定。</p>
+        <div id="onlineIdle">
+          <button id="createRoomBtn" class="primary">建立房間</button>
+          <div class="join-row">
+            <input id="roomCodeInput" maxlength="8" placeholder="輸入房號" autocomplete="off" autocapitalize="characters" spellcheck="false" />
+            <button id="joinRoomBtn">加入</button>
+          </div>
+        </div>
+        <div id="onlineRoom" style="display: none">
+          <div class="room-code-label">房號</div>
+          <div id="roomCode" class="room-code"></div>
+          <button id="shareRoomBtn">分享連結給朋友</button>
+        </div>
+        <p id="roomStatus" class="room-status"></p>
+        <button id="onlineBackBtn">返回</button>
       </div>
     </div>
 

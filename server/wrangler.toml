@@ -1,0 +1,13 @@
+# 羽球對決線上房間（npm run deploy 部署到 Cloudflare）
+name = "badminton-rooms"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+
+[[durable_objects.bindings]]
+name = "ROOM"
+class_name = "Room"
+
+# 免費方案只能用 SQLite 版的 Durable Object
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]
