@@ -1422,3 +1422,33 @@ body.in-menu #a2hsTip.show {
 .setup-picker.show {
   display: block;
 }
+
+/* iPhone：整頁關掉選字（-webkit-user-select: none）會讓輸入框看不到打的字 → 輸入框要打開；字色也寫死 */
+input,
+textarea {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+  touch-action: manipulation;
+}
+.join-row {
+  flex-direction: column;
+}
+.join-row input {
+  width: 100%;
+  color: #fff;
+  -webkit-text-fill-color: #fff;
+  caret-color: #ffd54a;
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.12);
+  border: 2px solid rgba(255, 213, 74, 0.55);
+}
+.join-row input:focus {
+  outline: none;
+  border-color: #ffd54a;
+  background: rgba(255, 255, 255, 0.16);
+}
+.join-row button {
+  width: 100%;
+  height: 48px;
+}
