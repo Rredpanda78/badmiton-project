@@ -26,6 +26,35 @@ export const angleDiff = (a: number, b: number) => {
 
 const _u = new THREE.Vector3();
 const _n = new THREE.Vector3();
+const _bx = new THREE.Vector3();
+const _bz = new THREE.Vector3();
+const _bm = new THREE.Matrix4();
+
+/**
+ * 骨頭的朝向：局部 +Y 指向 y（單位向量）、局部 -Z（正面）盡量朝 front（取垂直於 y 的分量）。
+ * front 跟 y 平行時退而求其次用 -Z／+X。不配置記憶體。
+ */
+export function quatYFront(out: THREE.Quaternion, y: THREE.Vector3, front: THREE.Vector3): THREE.Quaternion {
+  const z = _bz.copy(front).addScaledVector(y, -front.dot(y));
+  if (z.lengthSq() < 1e-8) z.set(0, 0, -1).addScaledVector(y, y.z);
+  if (z.lengthSq() < 1e-8) z.set(1, 0, 0).addScaledVector(y, -y.x);
+  z.normalize().negate();
+  _bx.crossVectors(y, z);
+  _bm.makeBasis(_bx, y, z);
+  return out.setFromRotationMatrix(_bm);
+}
+
+/** 骨頭的朝向：局部 +X = x、+Y = y（兩者已垂直、單位長） */
+export function quatXY(out: THREE.Quaternion, x: THREE.Vector3, y: THREE.Vector3): THREE.Quaternion {
+  _bz.crossVectors(x, y);
+  _bm.makeBasis(x, y, _bz);
+  return out.setFromRotationMatrix(_bm);
+}
+
+/** 子骨頭的局部旋轉 = 父骨頭世界旋轉的反向 × 子骨頭世界旋轉（寫進 child.quaternion） */
+export function setLocal(child: THREE.Object3D, parentWorld: THREE.Quaternion, world: THREE.Quaternion): void {
+  child.quaternion.copy(parentWorld).invert().multiply(world);
+}
 
 /**
  * 兩節骨 IK（髖 → 膝 → 踝）：解出膝蓋位置。

@@ -19,6 +19,21 @@ export interface Kit {
   accuracy: number; // 落點誤差倍率（越小越準）
 }
 
+/** 髮型（純外觀，畫面在 src/render/body.ts 做） */
+export type HairStyle = 'short' | 'buzz' | 'ponytail' | 'spiky' | 'undercut';
+
+/** 球員外觀（純裝飾，不影響數值） */
+export interface Look {
+  hair: HairStyle;
+  hairColor: number;
+  skin: number; // 膚色
+  headband?: boolean; // 頭帶（隊伍色）
+  height?: number; // 身高倍率（1 = 標準，約 0.9–1.1）
+  build?: number; // 體型寬度倍率（肩寬、四肢粗細）
+  number?: number; // 背號
+  accent?: number; // 球衣配色（領口、側邊條、袖口）
+}
+
 export interface Character {
   id: string;
   name: string;
@@ -26,6 +41,7 @@ export interface Character {
   desc: string;
   shirt: number;
   shorts: number;
+  look: Look;
   kit: Partial<Omit<Kit, 'speed'>> & { speed?: Partial<Record<ShotGroup, number>> };
 }
 
@@ -45,6 +61,8 @@ export const CHARACTERS: Character[] = [
     desc: '沒有弱點，什麼都會一點',
     shirt: 0x2f7fe0,
     shorts: 0x1b2a44,
+    // 小羽：標準身材、俐落短髮
+    look: { hair: 'short', hairColor: 0x2a1d14, skin: 0xf0c7a0, number: 1, accent: 0xffffff },
     kit: {},
   },
   {
@@ -54,6 +72,8 @@ export const CHARACTERS: Character[] = [
     desc: '殺球更快；跑得慢一點',
     shirt: 0xe0483a,
     shorts: 0x3a1b1b,
+    // 阿豪：高壯、平頭、頭帶
+    look: { hair: 'buzz', hairColor: 0x15100c, skin: 0xd59d74, headband: true, height: 1.07, build: 1.17, number: 9, accent: 0x2a1414 },
     kit: { speed: { smash: 1.12 }, move: 0.96, accel: 0.94 },
   },
   {
@@ -63,6 +83,8 @@ export const CHARACTERS: Character[] = [
     desc: '切球、放網更快更準；殺球、高遠球較慢',
     shirt: 0xf27fb0,
     shorts: 0x5a2340,
+    // 小櫻：嬌小、馬尾（髮圈隊伍色）
+    look: { hair: 'ponytail', hairColor: 0x4a2a1c, skin: 0xf7d7c0, height: 0.95, build: 0.9, number: 7, accent: 0xffffff },
     kit: { speed: { drop: 1.03, smash: 0.94, clear: 0.95 }, accuracy: 0.85 },
   },
   {
@@ -72,6 +94,8 @@ export const CHARACTERS: Character[] = [
     desc: '推球、平抽更快；高遠球較慢',
     shirt: 0xf2a23a,
     shorts: 0x4a3010,
+    // 阿哲：兩側削短的油頭（undercut）、頭帶
+    look: { hair: 'undercut', hairColor: 0x2a1d14, skin: 0xe0ae86, headband: true, height: 1.02, build: 1.05, number: 5, accent: 0x4a3010 },
     kit: { speed: { push: 1.06, clear: 0.93 } },
   },
   {
@@ -81,6 +105,8 @@ export const CHARACTERS: Character[] = [
     desc: '移動與起步最快；球速稍慢',
     shirt: 0x34c38f,
     shorts: 0x14402f,
+    // 小風：瘦長、淺棕刺蝟頭
+    look: { hair: 'spiky', hairColor: 0x7a5230, skin: 0xedc29c, height: 1.01, build: 0.86, number: 3, accent: 0xffffff },
     kit: { move: 1.05, accel: 1.1, speed: { smash: 0.95, push: 0.97 } },
   },
 ];

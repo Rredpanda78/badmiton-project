@@ -1,15 +1,22 @@
 import * as THREE from 'three';
 import { GAME } from '../config';
+import { CHARACTERS, type Look } from '../sim/kits';
 import type { PlayerState, Swing } from '../sim/match';
 import type { Family } from '../sim/shots';
 import { chargeZones } from '../sim/shots';
 import type { ContactHint } from './anim/contact';
-import { clamp, damp, easeIn, easeOut, lerp, smooth01, solveTwoBone } from './anim/ik';
+import { clamp, damp, easeIn, easeOut, lerp, quatXY, quatYFront, setLocal, smooth01, solveTwoBone } from './anim/ik';
 import {
   ARM_READY,
   ARM_RELAX,
   ARM_RUN,
+  BEND_READY,
+  BEND_RELAX,
+  BEND_RUN,
   BH_UNDER,
+  ELBOW_DIVE,
+  ELBOW_READY,
+  ELBOW_RELAX,
   FH_UNDER,
   L_LUNGE_FORE,
   L_LUNGE_UP,
@@ -22,61 +29,32 @@ import {
   SWING_POSES,
   type SwingType,
 } from './anim/poses';
-import { merge, paint } from './geo';
-import { makeRacket } from './racket';
+import { ANKLE, buildRig, FOREARM, HAND_TO_HEAD, HEAD_Y, type PartName, type Rig, SHIN, SHOULDER_Y, THIGH, UPPER_ARM, WAIST } from './body';
 import { RacketTrail, SWOOSH_JUMP, SWOOSH_NORMAL, SWOOSH_SMASH } from './swoosh';
 
-/** 髮型（頭上一個頂點色合併的 mesh；馬尾另外一個會甩的 mesh） */
-export type HairStyle = 'short' | 'crop' | 'ponytail' | 'spiky' | 'cap';
-
-/** 球員外觀（全部可省略，省略 = 預設的小羽） */
-export interface PlayerStyle {
+/** 球員外觀（全部可省略，省略 = 預設的小羽；髮型、膚色等照 kits.ts 的 Character.look） */
+export interface PlayerStyle extends Partial<Look> {
   racketColor?: number; // 拍框顏色（拍線維持淺色）；省略 = 球衣色
   racket?: string; // 球拍種類（kits.ts 的 RACKETS id，決定拍框外型）；省略 = 均衡拍
-  hair?: number; // 髮色
-  hairStyle?: HairStyle;
-  skin?: number; // 膚色
-  height?: number; // 身高倍率（1 = 標準，約 0.9–1.1）
-  build?: number; // 體型寬度倍率（肩寬、四肢粗細）
-  headband?: number; // 頭帶顏色（馬尾：髮圈也用這個色；帽子：帽簷色）
-  cap?: number; // 帽子顏色（hairStyle = 'cap'）
-  number?: number; // 背號
-  accent?: number; // 球衣配色（領口、側邊條）
+  band?: number; // 頭帶、護腕、髮圈、鞋側條的顏色；省略 = 球衣色（隊伍色）
 }
-
-/** 五位球員的外觀，key = kits.ts 的 CHARACTERS id */
-export const CHARACTER_STYLES: Record<string, PlayerStyle> = {
-  // 小羽：全能型，標準身材
-  allround: { hairStyle: 'short', hair: 0x2a1d14, number: 1, accent: 0xffffff },
-  // 阿豪：重砲手，高壯、黑短髮、紅頭帶
-  power: { hairStyle: 'crop', hair: 0x15100c, headband: 0xd8262a, skin: 0xd59d74, height: 1.07, build: 1.17, number: 9, accent: 0x2a1414 },
-  // 小櫻：網前魔術師，嬌小、馬尾＋粉紅髮帶
-  touch: { hairStyle: 'ponytail', hair: 0x4a2a1c, headband: 0xff6fa8, skin: 0xf7d7c0, height: 0.95, build: 0.9, number: 7, accent: 0xffffff },
-  // 阿哲：推壓手，白色棒球帽（橘色帽簷）
-  driver: { hairStyle: 'cap', hair: 0x2a1d14, cap: 0xf6f4ee, headband: 0xf2a23a, skin: 0xe0ae86, height: 1.02, build: 1.05, number: 5, accent: 0x4a3010 },
-  // 小風：快腿，瘦長、淺棕刺蝟頭
-  runner: { hairStyle: 'spiky', hair: 0x7a5230, skin: 0xedc29c, height: 1.01, build: 0.86, number: 3, accent: 0xffffff },
-};
 
 /** 球員外觀＋球拍顏色／種類：new PlayerModel(shirt, shorts, playerStyle(characterId, racket.color, racket.id)) */
 export function playerStyle(characterId: string, racketColor?: number, racket?: string): PlayerStyle {
-  const s: PlayerStyle = { ...(CHARACTER_STYLES[characterId] ?? {}) };
+  const s: PlayerStyle = { ...(CHARACTERS.find((c) => c.id === characterId)?.look ?? {}) };
   if (racketColor !== undefined) s.racketColor = racketColor;
   if (racket !== undefined) s.racket = racket;
   return s;
 }
 
 const ZONES = chargeZones();
-const ARM_LEN = 1.06; // 肩膀到拍面中心的距離
+const ARM_LEN = 1.06; // 肩膀到拍面中心的距離（探身用的基準）
+const HEAD_NOMINAL = UPPER_ARM + FOREARM + HAND_TO_HEAD; // 手伸直時肩膀到拍面中心（0.94）
 
-// ---- 骨架尺寸（公尺）。root 原點 = 腳底中心，模型面向 -z、右手在 +x ----
-const THIGH = 0.41;
-const SHIN = 0.41;
-const ANKLE = 0.075; // 腳踝離地高度
+// ---- 骨架尺寸（公尺，見 body.ts）。root 原點 = 腳底中心，模型面向 -z、右手在 +x ----
 const BALL = 0.13; // 前腳掌（墊腳尖的支點）在腳踝前方多遠
 const HEEL = 0.08; // 腳跟在腳踝後方多遠
 const LEG = THIGH + SHIN;
-const HIP_W = 0.1; // 髖關節左右間距的一半
 const STAND_H = 0.86; // 站直時髖關節高度
 const READY_H = 0.75; // 準備姿勢（膝蓋微蹲）
 const RUN_H = 0.79;
@@ -112,15 +90,11 @@ const DIVE_LIE_PITCH = -1.55; // 趴下時身體前傾（-π/2 = 完全水平）
 const DIVE_BACK = 0.12; // 骨盆在 root 後方多遠（頭、手、拍子往前伸過 root，搆向擊球點）
 const DIVE_GET = 0.4; // downT 剩這麼多時開始爬起來（先撐成跪姿再站起），downT 歸零剛好站好
 const KNEEL_Y = 0.5; // 跪姿髖部高度
-const WAIST = 0.1; // 腰（上身旋轉軸）在髖關節上方
-const UPPER_ARM = 0.29;
-const FOREARM = 0.27;
 
-// 胸口座標
-const SHOULDER_R = new THREE.Vector3(0.24, 0.46, 0);
-const SHOULDER_L = new THREE.Vector3(-0.24, 0.46, 0);
-const NECK = new THREE.Vector3(0, 0.62, 0);
-const DOWN = new THREE.Vector3(0, -1, 0);
+// 腰座標
+const HEAD_PIVOT = new THREE.Vector3(0, HEAD_Y, 0); // 頭的轉軸（看球的視線起點）
+const UP = new THREE.Vector3(0, 1, 0);
+const FORWARD = new THREE.Vector3(0, 0, -1);
 
 /** 一隻腳的落腳狀態：著地時固定在世界座標不動（不會滑），換步時沿弧線移到下一個落點 */
 class Foot {
@@ -157,9 +131,9 @@ class Foot {
   readonly ankle = new THREE.Vector3();
   constructor(
     readonly sign: 1 | -1, // -1 左腳、+1 右腳
-    readonly thigh: THREE.Mesh,
-    readonly shin: THREE.Mesh,
-    readonly shoe: THREE.Mesh,
+    readonly upperLeg: THREE.Bone, // 樞紐：髖關節（+Y 指向膝蓋）
+    readonly lowerLeg: THREE.Bone, // 膝蓋（+Y 指向腳踝）
+    readonly foot: THREE.Bone, // 腳踝（Y 上、腳尖 -Z）
   ) {}
 }
 
@@ -168,67 +142,50 @@ const _v1 = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
 const _v3 = new THREE.Vector3();
 const _v4 = new THREE.Vector3();
+const _v5 = new THREE.Vector3();
+const _v6 = new THREE.Vector3();
 const _pole = new THREE.Vector3();
 const _q1 = new THREE.Quaternion();
 const _q2 = new THREE.Quaternion();
 const _q3 = new THREE.Quaternion();
+const _e = new THREE.Euler();
 const _sw = new THREE.Vector3();
 const _sq = new THREE.Quaternion();
 
-const hexStr = (n: number) => '#' + n.toString(16).padStart(6, '0');
-
-/**
- * 球衣貼圖（膠囊 UV：u=0 左側、0.25 背後、0.5 右側、0.75 前面；v=1 在頂端）：
- * 領口、兩側配色條、背號（前胸小號碼）。
- */
-function shirtTexture(shirt: number, accent: number, num?: number): THREE.CanvasTexture {
-  const c = document.createElement('canvas');
-  c.width = 256;
-  c.height = 128;
-  const g = c.getContext('2d')!;
-  g.scale(2, 2); // 以下用 128×64 的座標畫
-  g.fillStyle = hexStr(shirt);
-  g.fillRect(0, 0, 128, 64);
-  g.fillStyle = hexStr(accent);
-  g.fillRect(0, 0, 128, 4); // 領口
-  // 側邊條（u = 0／0.5，接縫在 u = 0，所以兩端各畫一半）
-  g.fillRect(0, 14, 4, 32);
-  g.fillRect(124, 14, 4, 32);
-  g.fillRect(60, 14, 8, 32);
-  if (num !== undefined) {
-    g.textAlign = 'center';
-    g.textBaseline = 'middle';
-    g.font = 'bold 19px sans-serif';
-    g.lineWidth = 3;
-    g.strokeStyle = 'rgba(0,0,0,0.35)';
-    g.strokeText(String(num), 32, 30);
-    g.fillStyle = '#ffffff';
-    g.fillText(String(num), 32, 30);
-    g.font = 'bold 9px sans-serif';
-    g.fillText(String(num), 104, 22);
+/** 揮拍姿勢表的手肘方向：k = 0 引拍、1 擊球、2 隨揮結束（跟 poseAt 同樣的曲線） */
+function elbowAt(out: THREE.Vector3, P: (typeof SWING_POSES)[number], k: number): THREE.Vector3 {
+  if (k <= 1) {
+    const u = Math.max(0, k);
+    return out.copy(P.elbowPrep).lerp(P.elbowHit, u * u);
   }
-  const t = new THREE.CanvasTexture(c);
-  t.colorSpace = THREE.SRGBColorSpace;
-  return t;
+  const u = 1 - Math.min(1, k - 1);
+  return out.copy(P.elbowHit).lerp(P.elbowFollow, 1 - u * u * u);
 }
 
 /**
- * 程序式動畫的低多邊形球員：
+ * 程序式動畫的球員（身體零件、骨架、材質在 body.ts；這裡只負責每一幀把樞紐擺到位）：
  * - 腳會「踩住」地面（世界座標固定，轉腳以前腳掌為軸），依速度決定步幅與步頻，膝蓋用兩節骨 IK
  * - 依移動方向切換步法：往前跑（後腳墊腳尖蹬地）、側併步、後退側身併步／交叉步、對手擊球時分腿跳（split step）
  * - 最後一步跟擊球同步（用 predictContact 預估的擊球時間／位置）：前場正反手、側邊防守 → 左腳先踩、右腳大跨弓步，
  *   腳跟剛好在擊球前著地、後腳留在後面墊腳尖拖，打完撐一下再蹬回；後場頭頂球 → 先側身右腳退後，擊球瞬間剪刀交換
  * - 髖部與上身會轉向羽球或移動方向，加減速時前傾／後仰，步伐帶上下起伏
- * - 揮拍依擊球點分成頭頂／正反手平抽／下手，有轉體與隨揮；空中跳殺做剪刀腳；落地屈膝緩衝
+ * - 揮拍依擊球點分成頭頂／正反手平抽／下手，有轉體與隨揮；持拍手「肩膀→拍頭」那條線照姿勢表／擊球點瞄準，
+ *   手肘在線外彎（引拍時彎、擊球時打直）、拍面轉向揮的方向；空中跳殺做剪刀腳；落地屈膝緩衝
  */
 export class PlayerModel {
   readonly root = new THREE.Group();
-  private pelvis = new THREE.Group();
-  private chest = new THREE.Group();
-  private head = new THREE.Group();
-  private armR = new THREE.Group();
-  private upperL: THREE.Mesh;
-  private foreL: THREE.Mesh;
+  /** 樞紐（骨頭）：原點在關節、+Y 沿骨頭指向下一個關節，父子關係照 Mixamo 人形骨架（body.ts 的 MIXAMO_NAMES） */
+  readonly parts: Record<PartName, THREE.Bone>;
+  private readonly rig: Rig;
+  private hips: THREE.Bone; // 骨盆：root 的子物件，原點 = 髖關節中心
+  private spine: THREE.Bone; // 腰：上身旋轉軸（肩膀、頭都在它底下）
+  private neck: THREE.Bone;
+  private head: THREE.Bone;
+  private upArmL: THREE.Bone;
+  private foreArmL: THREE.Bone;
+  private upArmR: THREE.Bone;
+  private foreArmR: THREE.Bone;
+  private handR: THREE.Bone;
   private feet: [Foot, Foot];
   private aura: THREE.Mesh;
   private auraMat: THREE.MeshBasicMaterial;
@@ -237,15 +194,23 @@ export class PlayerModel {
   private jumpMark: THREE.Mesh;
   private jumpMat: THREE.MeshBasicMaterial;
   private trail = new RacketTrail();
-  private shirtTex: THREE.CanvasTexture;
   // 外觀（身高用整體縮放：模型內部單位 = 公尺 / h）
   private readonly h: number;
   private readonly ih: number;
   private readonly hipW: number;
   private readonly shR0 = new THREE.Vector3();
   private readonly shL0 = new THREE.Vector3();
+  // 持拍手：qArm = 肩膀→拍頭那條線的方向（root 座標，+Y = 那條線）；手肘在線外彎、手腕回到線上，拍子沿線
+  private qArm = new THREE.Quaternion();
+  private stretch = 1; // 探身：整條手臂＋拍子伸長倍率
+  private bend = BEND_READY; // 手肘彎曲（弧度）
+  private elbow = new THREE.Vector3(0.5, -0.7, 0.4); // 手肘凸出的方向（root 座標）
+  private faceN = new THREE.Vector3(0, 0, -1); // 拍面法線（root 座標，垂直於拍子）：揮拍時朝揮的方向
+  private headRel = new THREE.Vector3(); // 拍頭相對肩膀（上一幀，root 座標）
+  private headHave = false;
+  private wristY = UPPER_ARM + FOREARM; // 手腕在肩膀→拍頭線上的距離（彎手肘時變短）
   // 馬尾（彈簧甩動）
-  private ponytail: THREE.Group | null = null;
+  private ponytail: THREE.Bone | null;
   private ptX = 0;
   private ptVX = 0;
   private ptZ = 0;
@@ -371,117 +336,48 @@ export class PlayerModel {
   private headPitch = 0;
 
   constructor(shirt: number, shorts: number, style: PlayerStyle = {}) {
-    // ---- 體型：身高 = 整體縮放；體型 = 肩寬、髖寬、四肢粗細 ----
+    // ---- 體型：身高 = 整體縮放；體型 = 肩寬、髖寬、四肢粗細（body.ts）----
     const h = (this.h = clamp(style.height ?? 1, 0.85, 1.15));
     this.ih = 1 / h;
-    const b = clamp(style.build ?? 1, 0.8, 1.25);
-    const limb = 1 + (b - 1) * 0.8;
-    this.root.scale.setScalar(h);
-    this.hipW = HIP_W * (1 + (b - 1) * 0.6);
-    this.shR0.set(SHOULDER_R.x * (1 + (b - 1) * 0.9), SHOULDER_R.y, SHOULDER_R.z);
-    this.shL0.set(-this.shR0.x, SHOULDER_L.y, SHOULDER_L.z);
-
-    const skinHex = style.skin ?? 0xf0c7a0;
-    const skin = new THREE.MeshLambertMaterial({ color: skinHex });
-    const shirtM = new THREE.MeshLambertMaterial({ color: shirt });
-    const shortsM = new THREE.MeshLambertMaterial({ color: shorts });
-    // 頂點色零件（頭髮／頭帶、小腿＋襪子、鞋、球拍）共用一個材質
-    const vcM = new THREE.MeshLambertMaterial({ vertexColors: true });
-
-    // ---- 髖部（root 的子物件，原點 = 髖關節中心）----
-    const hips = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.17, 0.22, 10), shortsM);
-    hips.position.y = 0.05;
-    hips.scale.set(b, 1, 1 + (b - 1) * 0.5);
-    this.pelvis.add(hips);
-    this.pelvis.rotation.order = 'YXZ';
-    this.pelvis.position.y = READY_H;
-
-    // ---- 上身（腰部旋轉）：球衣貼圖有領口、側邊條、背號 ----
-    this.chest.position.y = WAIST;
-    this.chest.rotation.order = 'YXZ';
-    this.shirtTex = shirtTexture(shirt, style.accent ?? 0xffffff, style.number);
-    const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.42, 4, 12), new THREE.MeshLambertMaterial({ map: this.shirtTex }));
-    torso.position.y = 0.24;
-    torso.scale.set(b, 1, 0.7 * (1 + (b - 1) * 0.5));
-    this.chest.add(torso);
-    this.head.position.copy(NECK);
+    const rig = (this.rig = buildRig({
+      shirt,
+      shorts,
+      skin: style.skin ?? 0xf0c7a0,
+      hair: style.hair ?? 'short',
+      hairColor: style.hairColor ?? 0x2a1d14,
+      band: style.band ?? shirt,
+      headband: !!style.headband,
+      accent: style.accent ?? 0xffffff,
+      number: style.number,
+      build: style.build ?? 1,
+      racketColor: style.racketColor ?? shirt,
+      racket: style.racket ?? 'balance',
+    }));
+    const b = (this.parts = rig.bones);
+    this.hips = b.hips;
+    this.spine = b.spine;
+    this.neck = b.neck;
+    this.head = b.head;
+    this.upArmL = b.upperArmL;
+    this.foreArmL = b.forearmL;
+    this.upArmR = b.upperArmR;
+    this.foreArmR = b.forearmR;
+    this.handR = b.handR;
+    this.ponytail = rig.ponytail;
+    this.hipW = rig.hipW;
+    this.shR0.set(rig.shoulderX, SHOULDER_Y, 0);
+    this.shL0.set(-rig.shoulderX, SHOULDER_Y, 0);
+    this.hips.rotation.order = 'YXZ';
+    this.hips.position.y = READY_H;
+    this.spine.rotation.order = 'YXZ';
+    this.spine.position.y = WAIST;
+    this.neck.rotation.order = 'YXZ';
     this.head.rotation.order = 'YXZ';
-    const headM = new THREE.Mesh(new THREE.SphereGeometry(0.13, 14, 10), skin);
-    headM.position.y = 0.08;
-    this.head.add(headM);
-    this.buildHair(style, vcM);
-    this.chest.add(this.head);
-    this.pelvis.add(this.chest);
-    this.root.add(this.pelvis);
-
-    // ---- 腿：大腿、小腿、鞋各自擺在 root 座標（由 IK 決定）----
-    const thighGeo = new THREE.CapsuleGeometry(0.068, THIGH, 3, 8);
-    thighGeo.translate(0, -THIGH / 2, 0);
-    const shortLegGeo = new THREE.CapsuleGeometry(0.088, 0.12, 3, 8);
-    shortLegGeo.translate(0, -0.08, 0);
-    // 小腿：下面一截是白襪（頂點色，跟膚色同一個 mesh）
-    const shinGeo = new THREE.CapsuleGeometry(0.054, SHIN, 3, 8, 6);
-    shinGeo.translate(0, -SHIN / 2, 0);
-    {
-      const p = shinGeo.attributes.position;
-      const a = new Float32Array(p.count * 3);
-      const cs = new THREE.Color(skinHex);
-      const cw = new THREE.Color(0xf4f4f2);
-      for (let i = 0; i < p.count; i++) {
-        const c = p.getY(i) < -SHIN + 0.075 ? cw : cs;
-        a[i * 3] = c.r;
-        a[i * 3 + 1] = c.g;
-        a[i * 3 + 2] = c.b;
-      }
-      shinGeo.setAttribute('color', new THREE.BufferAttribute(a, 3));
-    }
-    // 鞋：白色鞋面＋膠底＋球衣色側邊條，合成一個幾何
-    const shoeGeo = merge([
-      paint(new THREE.BoxGeometry(0.112, 0.024, 0.258).translate(0, -ANKLE + 0.012, -0.05), 0xb98a5c),
-      paint(new THREE.BoxGeometry(0.102, 0.052, 0.235).translate(0, -ANKLE + 0.05, -0.055), 0xf4f4f2),
-      paint(new THREE.BoxGeometry(0.107, 0.016, 0.12).translate(0, -ANKLE + 0.04, -0.035), shirt),
-    ]);
-    const mkFoot = (sign: 1 | -1) => {
-      const thigh = new THREE.Mesh(thighGeo, skin);
-      thigh.scale.set(limb, 1, limb);
-      thigh.add(new THREE.Mesh(shortLegGeo, shortsM));
-      const shin = new THREE.Mesh(shinGeo, vcM);
-      shin.scale.set(limb, 1, limb);
-      const shoe = new THREE.Mesh(shoeGeo, vcM);
-      shoe.rotation.order = 'YXZ';
-      this.root.add(thigh, shin, shoe);
-      return new Foot(sign, thigh, shin, shoe);
-    };
-    this.feet = [mkFoot(-1), mkFoot(1)];
-
-    // ---- 左手（兩節：上臂＋前臂，沿 -Y）----
-    const sleeveGeo = new THREE.CapsuleGeometry(0.062, 0.06, 3, 8);
-    sleeveGeo.translate(0, -0.05, 0);
-    const upperGeo = new THREE.CapsuleGeometry(0.045, UPPER_ARM, 3, 8);
-    upperGeo.translate(0, -UPPER_ARM / 2, 0);
-    const foreGeo = new THREE.CapsuleGeometry(0.04, FOREARM, 3, 8);
-    foreGeo.translate(0, -FOREARM / 2, 0);
-    this.upperL = new THREE.Mesh(upperGeo, skin);
-    this.upperL.scale.set(limb, 1, limb);
-    this.upperL.add(new THREE.Mesh(sleeveGeo, shirtM));
-    this.foreL = new THREE.Mesh(foreGeo, skin);
-    this.foreL.scale.set(limb, 1, limb);
-    this.root.add(this.upperL, this.foreL);
-
-    // ---- 右手＋球拍：沿 +Y 方向延伸，用四元數指向目標 ----
-    const armGeo = new THREE.CylinderGeometry(0.045, 0.04, 0.55, 8);
-    armGeo.translate(0, 0.275, 0);
-    const arm = new THREE.Mesh(armGeo, skin);
-    arm.scale.set(limb, 1, limb);
-    this.armR.add(arm);
-    const sleeveR = new THREE.Mesh(new THREE.CapsuleGeometry(0.062, 0.06, 3, 8), shirtM);
-    sleeveR.position.y = 0.05;
-    sleeveR.scale.set(limb, 1, limb);
-    this.armR.add(sleeveR);
-    // 球拍：握把（深色）＋拍桿＋拍框（球拍色）合成一個幾何，拍線淺色半透明；外型照球拍種類（racket.ts）
-    this.armR.add(makeRacket(style.racketColor ?? shirt, style.racket, vcM));
-    this.armR.quaternion.copy(ARM_READY);
-    this.root.add(this.armR);
+    if (this.ponytail) this.ponytail.rotation.order = 'XZY';
+    this.feet = [new Foot(-1, b.upperLegL, b.lowerLegL, b.footL), new Foot(1, b.upperLegR, b.lowerLegR, b.footR)];
+    this.root.add(this.hips, rig.mesh);
+    this.root.scale.setScalar(h);
+    this.qArm.copy(ARM_READY);
     // 揮拍拖尾（頂點是世界座標，見 update 最後）
     this.root.add(this.trail.mesh);
 
@@ -509,114 +405,86 @@ export class PlayerModel {
     this.jumpMark.scale.setScalar(this.ih); // 提示圈大小不跟著身高變
   }
 
-  /** 髮型＋頭帶／帽子：全部頂點色合成一個 mesh；馬尾另外一個（會甩） */
-  private buildHair(st: PlayerStyle, mat: THREE.Material): void {
-    const hairC = st.hair ?? 0x2a1d14;
-    const kind = st.hairStyle ?? 'short';
-    const C = 0.09; // 頭髮球心（頭中心略上）
-    const parts: THREE.BufferGeometry[] = [];
-    // 半球（往後傾 tilt：蓋住頭頂與後腦，看得出臉朝哪）
-    const dome = (r: number, tilt: number, cover: number, color: number) =>
-      paint(new THREE.SphereGeometry(r, 14, 8, 0, Math.PI * 2, 0, cover).rotateX(tilt).translate(0, C, 0), color);
-    // 繞頭一圈的帶子（球面上的一條環帶，前高後低）
-    const band = (r: number, color: number) =>
-      paint(new THREE.SphereGeometry(r, 16, 1, 0, Math.PI * 2, 1.1, 0.22).rotateX(0.15).translate(0, C, 0), color);
-    // 從球心往 (polar a, azimuth b) 方向長出的錐（刺蝟頭）
-    const m4 = new THREE.Matrix4();
-    const qd = new THREE.Quaternion();
-    const dir = new THREE.Vector3();
-    const up = new THREE.Vector3(0, 1, 0);
-    const spike = (a: number, az: number, len: number) => {
-      dir.set(Math.sin(a) * Math.sin(az), Math.cos(a), Math.sin(a) * Math.cos(az));
-      qd.setFromUnitVectors(up, dir);
-      const g = new THREE.ConeGeometry(0.034, len, 4);
-      g.applyMatrix4(m4.compose(_v1.copy(dir).multiplyScalar(0.118 + len / 2).add(_v2.set(0, C, 0)), qd, _v3.set(1, 1, 1)));
-      return paint(g, hairC);
-    };
+  /**
+   * 一條腿的樞紐：大腿指向膝蓋、小腿指向腳（踩住的腳伸不到時小腿拉長，襪子那段跟著腳、不裂開）、腳掌照 pitch／yaw。
+   * f.hip、f.knee（root 座標）要先用 solveTwoBone 算好；foot = 腳踝位置（root 座標）；pole = 膝蓋朝的方向
+   */
+  private poseLeg(f: Foot, foot: THREE.Vector3, pole: THREE.Vector3, pitch: number, yaw: number): void {
+    const yT = _v5.subVectors(f.knee, f.hip).normalize();
+    quatYFront(_q1, yT, pole); // 大腿（root 座標）
+    setLocal(f.upperLeg, this.hips.quaternion, _q1);
+    const yS = _v6.subVectors(foot, f.knee);
+    const len = yS.length();
+    if (len > 1e-4) yS.multiplyScalar(1 / len);
+    else yS.copy(yT);
+    quatYFront(_q2, yS, pole); // 小腿
+    setLocal(f.lowerLeg, _q1, _q2);
+    f.foot.position.y = clamp(len, SHIN * 0.8, SHIN * 1.35);
+    _q3.setFromEuler(_e.set(pitch, yaw, 0, 'YXZ')); // 腳掌（root 座標）
+    setLocal(f.foot, _q2, _q3);
+  }
 
-    let domeR = 0.137;
-    if (kind === 'crop') {
-      domeR = 0.134;
-      parts.push(dome(domeR, 0.45, Math.PI * 0.47, hairC));
-    } else if (kind === 'spiky') {
-      parts.push(dome(domeR, 0.35, Math.PI / 2, hairC));
-      // 頭頂、一圈、後腦往外翹；前面兩撮瀏海往前
-      parts.push(spike(0.12, 0, 0.1));
-      for (let i = 0; i < 6; i++) parts.push(spike(0.6, (i / 6) * Math.PI * 2 + 0.3, 0.095));
-      for (const az of [-1.4, -0.7, 0, 0.7, 1.4]) parts.push(spike(1.08, az, 0.08));
-      parts.push(spike(0.95, Math.PI - 0.35, 0.075), spike(0.95, Math.PI + 0.35, 0.075));
-    } else if (kind === 'cap') {
-      parts.push(dome(0.135, 1.05, Math.PI / 2, hairC)); // 帽子底下露出的後腦頭髮
-      const capC = st.cap ?? 0xf6f4ee;
-      parts.push(
-        paint(new THREE.SphereGeometry(0.145, 14, 6, 0, Math.PI * 2, 0, Math.PI * 0.47).rotateX(0.15).translate(0, C + 0.005, 0), capC),
-      );
-      // 帽簷：半圓片，往前略往下
-      parts.push(
-        paint(
-          new THREE.CylinderGeometry(0.11, 0.11, 0.012, 14, 1, false, Math.PI / 2, Math.PI)
-            .scale(1, 1, 0.9)
-            .rotateX(-0.12)
-            .translate(0, C + 0.03, -0.115),
-          st.headband ?? capC,
-        ),
-      );
-      parts.push(paint(new THREE.SphereGeometry(0.016, 6, 4).translate(0, C + 0.15, 0.02), st.headband ?? capC)); // 帽頂鈕
-    } else {
-      parts.push(dome(domeR, kind === 'ponytail' ? 0.42 : 0.5, Math.PI / 2, hairC));
+  /**
+   * 持拍手：肩膀→拍頭的線 = qArm 的 +Y（擊球時瞄準擊球點）；手肘往 elbow 的方向凸出 bend 弧度、手腕回到線上，
+   * 拍子沿線（手腕回正）；整條線伸長 stretch 倍（探身）。拍面法線 faceN：揮拍時朝拍頭移動的方向、平常朝身體正前方。
+   */
+  private poseRightArm(ta: number): void {
+    const u = _v1.set(0, 1, 0).applyQuaternion(this.qArm);
+    const s = this.stretch;
+    // 手肘方向：去掉沿線的分量；伸長（探身）時手臂打直
+    const d = _v2.copy(this.elbow).addScaledVector(u, -this.elbow.dot(u));
+    if (d.lengthSq() < 1e-6) d.set(0, 0, 1).applyQuaternion(this.qArm);
+    d.normalize();
+    const a = this.bend * clamp(1 - (s - 1) * 3, 0, 1);
+    const sa = Math.sin(a);
+    const ca = Math.cos(a);
+    const yW = (this.wristY = UPPER_ARM * ca + Math.sqrt(Math.max(0, FOREARM * FOREARM - UPPER_ARM * UPPER_ARM * sa * sa)));
+    const yU = _v3.copy(u).multiplyScalar(ca).addScaledVector(d, sa); // 上臂方向
+    const yF = _v4.copy(u).multiplyScalar(yW).addScaledVector(yU, -UPPER_ARM).normalize(); // 前臂：手肘 → 手腕
+    const front = _v5.copy(d).negate(); // 手肘彎的那一面
+    quatYFront(_q1, yU, front); // 上臂（root 座標）
+    setLocal(this.upArmR, this.qC, _q1);
+    this.upArmR.scale.y = s;
+    quatYFront(_q2, yF, front); // 前臂
+    setLocal(this.foreArmR, _q1, _q2);
+    // 拍面法線：揮拍時朝拍頭（相對肩膀）移動的方向，其他時候朝身體正前方；都取垂直於拍子的分量
+    const headRel = _v6.copy(u).multiplyScalar(s * (yW + HAND_TO_HEAD));
+    const nT = _v5;
+    let swinging = false;
+    if (this.headHave && ta > 0) {
+      nT.subVectors(headRel, this.headRel);
+      swinging = nT.length() / ta > 1.2;
     }
-    if (st.headband !== undefined && kind !== 'cap') {
-      parts.push(band(domeR + 0.005, st.headband));
-      if (kind === 'crop') {
-        // 腦後打結垂下的兩條帶尾
-        for (const s of [-1, 1]) {
-          parts.push(
-            paint(
-              new THREE.BoxGeometry(0.032, 0.1, 0.01)
-                .translate(0, -0.05, 0)
-                .rotateX(-0.45)
-                .rotateZ(s * 0.28)
-                .translate(s * 0.015, C + 0.03, 0.132),
-              st.headband,
-            ),
-          );
-        }
-      }
-    }
-    this.head.add(new THREE.Mesh(merge(parts), mat));
+    if (!swinging) nT.copy(FORWARD).applyQuaternion(this.qC);
+    this.headRel.copy(headRel);
+    this.headHave = true;
+    nT.addScaledVector(u, -nT.dot(u));
+    if (nT.lengthSq() < 1e-6) nT.set(1, 0, 0).applyQuaternion(this.qArm);
+    nT.normalize();
+    if (nT.dot(this.faceN) < 0) nT.negate(); // 拍線兩面一樣：取跟現在比較接近的那一面
+    this.faceN.lerp(nT, 1 - Math.exp(-14 * ta));
+    this.faceN.addScaledVector(u, -this.faceN.dot(u));
+    if (this.faceN.lengthSq() < 1e-6) this.faceN.copy(nT);
+    this.faceN.normalize();
+    // 手：沿線（手腕回正）、手掌法線 = 拍面法線
+    quatXY(_q3, this.faceN, u);
+    setLocal(this.handR, _q2, _q3);
+  }
 
-    if (kind === 'ponytail') {
-      // 馬尾：掛點在後腦偏上；原點 = 掛點，往 -Y 垂下
-      const pt = (this.ponytail = new THREE.Group());
-      pt.position.set(0, C + 0.07, 0.112);
-      pt.rotation.order = 'XZY';
-      pt.add(
-        new THREE.Mesh(
-          merge([
-            paint(new THREE.TorusGeometry(0.03, 0.013, 6, 10).rotateX(Math.PI / 2).translate(0, -0.02, 0), st.headband ?? 0xff6fa8),
-            // 水滴形髮束（中段最粗、尾端收尖）
-            paint(
-              new THREE.LatheGeometry(
-                [
-                  [0, -0.27],
-                  [0.012, -0.255],
-                  [0.03, -0.21],
-                  [0.044, -0.15],
-                  [0.05, -0.09],
-                  [0.044, -0.04],
-                  [0.026, -0.01],
-                  [0, 0],
-                ].map(([x, y]) => new THREE.Vector2(x, y)),
-                8,
-              ).scale(1, 1, 0.8),
-              hairC,
-            ),
-          ]),
-          mat,
-        ),
-      );
-      this.head.add(pt);
-    }
+  /** 非持拍手：上臂沿 lU、前臂沿 lF（root 座標），手肘彎的那一面朝前臂；手跟著前臂 */
+  private poseLeftArm(): void {
+    const fwd = _v5.copy(FORWARD).applyQuaternion(this.qC);
+    const front = _v6.copy(this.lF).addScaledVector(this.lU, -this.lF.dot(this.lU)).addScaledVector(fwd, 0.3);
+    quatYFront(_q1, this.lU, front);
+    setLocal(this.upArmL, this.qC, _q1);
+    quatYFront(_q2, this.lF, front);
+    setLocal(this.foreArmL, _q1, _q2);
+  }
+
+  /** 頭：脖子分擔一部分轉頭／抬頭 */
+  private poseHead(pitch: number, yaw: number): void {
+    this.neck.rotation.set(pitch * 0.35, yaw * 0.35, 0);
+    this.head.rotation.set(pitch * 0.65, yaw * 0.65, 0);
   }
 
   /** 下一幀直接擺成準備姿勢、步法和揮拍狀態全部重來（回放進出時用，不要沿用另一段的動作） */
@@ -627,7 +495,7 @@ export class PlayerModel {
     this.scissorSwing = null;
   }
 
-  /** 換人時釋放 GPU 資源（幾何、材質、球衣貼圖、拖尾） */
+  /** 換人時釋放 GPU 資源（幾何、材質、球衣貼圖、骨架、拖尾） */
   dispose(): void {
     const mats = new Set<THREE.Material>();
     const geos = new Set<THREE.BufferGeometry>();
@@ -641,7 +509,8 @@ export class PlayerModel {
     });
     geos.forEach((g) => g.dispose());
     mats.forEach((m) => m.dispose());
-    this.shirtTex.dispose();
+    this.rig.mesh.skeleton.dispose();
+    this.rig.texture.dispose();
   }
 
   /**
@@ -743,7 +612,7 @@ export class PlayerModel {
       this.swingHit = false;
       this.kLast = 0;
       if (s) {
-        this.swingStartQ.copy(this.armR.quaternion);
+        this.swingStartQ.copy(this.qArm);
         this.swingType = this.classify(shNear ? this.shL : null, s.family, p.airborne || s.airborne);
         this.trail.reset();
       }
@@ -1364,16 +1233,16 @@ export class PlayerModel {
     if (p.airborne) leanF = leanR = 0;
     const lf = -leanR * sy + leanF * cy; // 換到骨盆座標
     const lr = leanR * cy + leanF * sy;
-    this.pelvis.position.set(this.offX, y, this.offZ);
-    this.pelvis.rotation.set(-lf * 0.45, yawP, -lr * 0.45);
+    this.hips.position.set(this.offX, y, this.offZ);
+    this.hips.rotation.set(-lf * 0.45, yawP, -lr * 0.45);
     // 弓步時上身大致挺直（前傾不要太多）
     const pitchC = 0.1 * (1 - relaxK) + 0.06 * moveK + 0.14 * L * this.lungeDepth + poseAt(P.pitch, kp) * wPose * (1 - 0.35 * L) * (1 - 0.45 * this.serveK);
-    this.chest.position.y = WAIST + this.offY;
-    this.chest.rotation.set(-(pitchC + lf * 0.55), twist, -lr * 0.55 + poseAt(P.roll, kp) * wPose);
-    this.pelvis.updateMatrix();
-    this.chest.updateMatrix();
-    this.mC.multiplyMatrices(this.pelvis.matrix, this.chest.matrix);
-    this.qC.multiplyQuaternions(this.pelvis.quaternion, this.chest.quaternion);
+    this.spine.position.y = WAIST + this.offY;
+    this.spine.rotation.set(-(pitchC + lf * 0.55), twist, -lr * 0.55 + poseAt(P.roll, kp) * wPose);
+    this.hips.updateMatrix();
+    this.spine.updateMatrix();
+    this.mC.multiplyMatrices(this.hips.matrix, this.spine.matrix);
+    this.qC.multiplyQuaternions(this.hips.quaternion, this.spine.quaternion);
     this.qCi.copy(this.qC).invert();
     this.shoulderR.copy(this.shR0).applyMatrix4(this.mC);
     this.shoulderL.copy(this.shL0).applyMatrix4(this.mC);
@@ -1383,25 +1252,17 @@ export class PlayerModel {
     const pfz = -Math.cos(yawP);
     for (let i = 0; i < 2; i++) {
       const f = this.feet[i];
-      f.hip.set(f.sign * this.hipW, 0, 0).applyMatrix4(this.pelvis.matrix);
+      f.hip.set(f.sign * this.hipW, 0, 0).applyMatrix4(this.hips.matrix);
       // 膝蓋朝腳尖方向、略往外
       _pole.set(-Math.sin(f.yaw) + pfx * 0.3 + f.sign * cy * 0.15, 0, -Math.cos(f.yaw) + pfz * 0.3 - f.sign * sy * 0.15);
       solveTwoBone(f.hip, f.local, THIGH, SHIN, _pole, f.knee, f.ankle);
-      f.thigh.position.copy(f.hip);
-      f.thigh.quaternion.setFromUnitVectors(DOWN, _v1.subVectors(f.knee, f.hip).normalize());
       // 踩住的腳：鞋子留在原地（小腿稍微拉長補縫）；空中的腳：跟著 IK 收回
-      const foot = f.planted ? f.local : f.ankle;
-      const sv = _v1.subVectors(foot, f.knee);
-      const len = sv.length();
-      f.shin.position.copy(f.knee);
-      if (len > 1e-4) f.shin.quaternion.setFromUnitVectors(DOWN, sv.multiplyScalar(1 / len));
-      f.shin.scale.y = clamp(len / SHIN, 0.85, 1.15);
-      f.shoe.position.copy(foot);
-      f.shoe.rotation.set(f.pitch, f.yaw, 0);
+      this.poseLeg(f, f.planted ? f.local : f.ankle, _pole, f.pitch, f.yaw);
     }
 
     // ---------- 持拍手 ----------
-    this.armR.position.copy(this.shoulderR);
+    let bendT: number;
+    const elbowT = _v4; // 手肘方向（胸口座標）
     if (s) {
       const qW = _q1.multiplyQuaternions(this.qC, P.wind);
       if (s.t < 0.05) qW.slerpQuaternions(this.swingStartQ, _q3.copy(qW), s.t / 0.05);
@@ -1409,29 +1270,39 @@ export class PlayerModel {
       if (s.contacted && s.contactPoint) this.aimFromShoulder(qHit, this.cpL);
       else if (shNear) this.aimFromShoulder(qHit, this.shL);
       else qHit.multiplyQuaternions(this.qC, P.contact);
-      if (k <= 1) this.armR.quaternion.slerpQuaternions(qW, qHit, easeIn(k));
+      if (k <= 1) this.qArm.slerpQuaternions(qW, qHit, easeIn(k));
       else {
         const qF = _q3.multiplyQuaternions(this.qC, P.follow);
         // 網前小球（下壓族、低點）：隨揮很短
         if (under && s.family === 'down') qF.slerpQuaternions(qHit, _q1.copy(qF), 0.35);
-        this.armR.quaternion.slerpQuaternions(qHit, qF, easeOut(k - 1));
+        this.qArm.slerpQuaternions(qHit, qF, easeOut(k - 1));
       }
+      bendT = poseAt(P.bend, k);
+      elbowAt(elbowT, P, k);
     } else {
       let target: THREE.Quaternion;
-      if (p.charging) target = _q1.multiplyQuaternions(this.qC, P.wind);
-      else {
+      if (p.charging) {
+        target = _q1.multiplyQuaternions(this.qC, P.wind);
+        bendT = P.bend[0];
+        elbowT.copy(P.elbowPrep);
+      } else {
         _q2.copy(ARM_READY).slerp(ARM_RUN, moveK * 0.7).slerp(ARM_RELAX, relaxK);
         target = _q1.multiplyQuaternions(this.qC, _q2);
+        bendT = lerp(lerp(BEND_READY, BEND_RUN, moveK * 0.7), BEND_RELAX, relaxK);
+        elbowT.copy(ELBOW_READY).lerp(ELBOW_RELAX, relaxK);
       }
-      this.armR.quaternion.slerp(target, 1 - Math.exp(-(p.charging ? 22 : 13) * ta));
+      this.qArm.slerp(target, 1 - Math.exp(-(p.charging ? 22 : 13) * ta));
     }
-    this.armR.scale.y += (stretch - this.armR.scale.y) * Math.min(1, ta * 48);
+    this.stretch += (stretch - this.stretch) * Math.min(1, ta * 48);
+    this.bend = damp(this.bend, bendT, s ? 20 : 8, ta);
+    this.elbow.lerp(elbowT.applyQuaternion(this.qC), 1 - Math.exp(-(s ? 16 : 8) * ta));
+    this.poseRightArm(ta);
 
     // ---------- 非持拍手 ----------
     this.updateLeftArm(P, poseType, kp, wPose, moveK, relaxK, L, runK, shOK, ta);
 
     // ---------- 頭：看羽球 ----------
-    const neck = _v1.copy(NECK).applyMatrix4(this.mC);
+    const neck = _v1.copy(HEAD_PIVOT).applyMatrix4(this.mC);
     const look = shOK ? _v2.subVectors(this.shL, neck) : _v2.set(0, -0.2, -1);
     look.applyQuaternion(this.qCi);
     let hy = Math.atan2(-look.x, -look.z);
@@ -1439,7 +1310,7 @@ export class PlayerModel {
     const hp = Math.atan2(look.y, Math.hypot(look.x, look.z));
     this.headYaw = damp(this.headYaw, clamp(hy, -1.1, 1.1), 12, ta);
     this.headPitch = damp(this.headPitch, clamp(hp, -0.5, 0.75), 12, ta);
-    this.head.rotation.set(this.headPitch, this.headYaw, 0);
+    this.poseHead(this.headPitch, this.headYaw);
 
     // ---------- 馬尾：彈簧甩動（加減速往反方向甩、轉頭時慢半拍）----------
     if (this.ponytail) {
@@ -1467,8 +1338,8 @@ export class PlayerModel {
     }
     const swishing = s !== null && k >= 0.45 && k <= 1.6 && wPose > 0.5;
     _sw.copy(this.shoulderR).applyMatrix4(this.root.matrixWorld);
-    _sq.multiplyQuaternions(this.root.quaternion, this.armR.quaternion);
-    this.trail.step(ta, swishing, _sw, _sq, this.armR.scale.y * H);
+    _sq.multiplyQuaternions(this.root.quaternion, this.qArm);
+    this.trail.step(ta, swishing, _sw, _sq, (this.stretch * H * (this.wristY + HAND_TO_HEAD)) / HEAD_NOMINAL);
     const tm = this.trail.mesh;
     if (tm.visible) {
       // 拖尾頂點是世界座標：抵銷 root 的變換
@@ -1777,10 +1648,7 @@ export class PlayerModel {
     const r = 1 - Math.exp(-16 * ta);
     if (tu.lengthSq() > 1e-4) this.lU.lerp(tu.normalize(), r).normalize();
     if (tf.lengthSq() > 1e-4) this.lF.lerp(tf.normalize(), r).normalize();
-    this.upperL.position.copy(this.shoulderL);
-    this.upperL.quaternion.setFromUnitVectors(DOWN, this.lU);
-    this.foreL.position.copy(this.shoulderL).addScaledVector(this.lU, UPPER_ARM);
-    this.foreL.quaternion.setFromUnitVectors(DOWN, this.lF);
+    this.poseLeftArm();
   }
 
   /** 蓄力光圈與跳殺標記（與原本相同） */
@@ -1862,14 +1730,14 @@ export class PlayerModel {
     }
     const ox = lerp(this.dvOffX0, 0, kIn) + fx * along;
     const oz = lerp(this.dvOffZ0, 0, kIn) + fz * along;
-    this.pelvis.position.set(ox, py, oz);
-    this.pelvis.rotation.set(pitch, yaw, 0);
-    this.chest.position.y = WAIST;
-    this.chest.rotation.set(arch, twist, roll);
-    this.pelvis.updateMatrix();
-    this.chest.updateMatrix();
-    this.mC.multiplyMatrices(this.pelvis.matrix, this.chest.matrix);
-    this.qC.multiplyQuaternions(this.pelvis.quaternion, this.chest.quaternion);
+    this.hips.position.set(ox, py, oz);
+    this.hips.rotation.set(pitch, yaw, 0);
+    this.spine.position.y = WAIST;
+    this.spine.rotation.set(arch, twist, roll);
+    this.hips.updateMatrix();
+    this.spine.updateMatrix();
+    this.mC.multiplyMatrices(this.hips.matrix, this.spine.matrix);
+    this.qC.multiplyQuaternions(this.hips.quaternion, this.spine.quaternion);
     this.qCi.copy(this.qC).invert();
     this.shoulderR.copy(this.shR0).applyMatrix4(this.mC);
     this.shoulderL.copy(this.shL0).applyMatrix4(this.mC);
@@ -1878,14 +1746,14 @@ export class PlayerModel {
     this.offZ = oz;
 
     // ---------- 腿：不踩地，跟著身體（起跳時腳先留在原地蹬、再拖到身後；爬起來時收成跪姿再踩回站姿）----------
-    const bodyFront = _v4.set(0, 0, -1).applyQuaternion(this.pelvis.quaternion); // 身體正面（趴著時朝下）
+    const bodyFront = _v4.set(0, 0, -1).applyQuaternion(this.hips.quaternion); // 身體正面（趴著時朝下）
     const cS = Math.cos(yawS);
     const sS = Math.sin(yawS);
     for (let i = 0; i < 2; i++) {
       const f = this.feet[i];
       f.planted = false;
       // 拖在身後的腳（骨盆座標：沿腿往下、趴著時腳背貼地）
-      const tgt = _v2.set(f.sign * 0.12, -0.8, lerp(0.05, -0.05, kLie)).applyMatrix4(this.pelvis.matrix);
+      const tgt = _v2.set(f.sign * 0.12, -0.8, lerp(0.05, -0.05, kLie)).applyMatrix4(this.hips.matrix);
       let shoeP = pitch - 1.2; // 腳背打直（腳尖朝後）
       let shoeY = a;
       let uf = 0;
@@ -1915,7 +1783,7 @@ export class PlayerModel {
       }
       // 膝蓋：撲出去／跪著朝身體正面，站起來時朝腳尖
       _pole.copy(bodyFront).lerp(_v3.set(-Math.sin(shoeY), 0, -Math.cos(shoeY)), uf);
-      f.hip.set(f.sign * this.hipW, 0, 0).applyMatrix4(this.pelvis.matrix);
+      f.hip.set(f.sign * this.hipW, 0, 0).applyMatrix4(this.hips.matrix);
       solveTwoBone(f.hip, tgt, THIGH, SHIN, _pole, f.knee, f.ankle);
       f.local.copy(tgt);
       f.wx = p.pos.x + side * tgt.x * H;
@@ -1923,15 +1791,7 @@ export class PlayerModel {
       f.h = Math.max(0, tgt.y - ANKLE);
       f.yaw = shoeY;
       f.pitch = shoeP;
-      f.thigh.position.copy(f.hip);
-      f.thigh.quaternion.setFromUnitVectors(DOWN, _v1.subVectors(f.knee, f.hip).normalize());
-      const sv = _v1.subVectors(f.ankle, f.knee);
-      const len = sv.length();
-      f.shin.position.copy(f.knee);
-      if (len > 1e-4) f.shin.quaternion.setFromUnitVectors(DOWN, sv.multiplyScalar(1 / len));
-      f.shin.scale.y = 1;
-      f.shoe.position.copy(f.ankle);
-      f.shoe.rotation.set(shoeP, shoeY, 0);
+      this.poseLeg(f, f.ankle, _pole, shoeP, shoeY);
     }
 
     // ---------- 持拍手：往前伸直；羽球在前面就搆向它；擊到時往上挑一下 ----------
@@ -1950,11 +1810,13 @@ export class PlayerModel {
       if (d > 0.05 && to.x * fx + to.z * fz > 0.2 * d) dir.lerp(to.multiplyScalar(1 / d), 0.7 * (1 - clamp((d - 1) / 1.4, 0, 1))).normalize();
     }
     if (g > 0) dir.lerp(_v2.set(fx * 0.35 + rx * 0.15, -0.9, fz * 0.35 + rz * 0.15).normalize(), u1).normalize();
-    const qT = _q1.setFromUnitVectors(_v3.set(0, 1, 0), dir);
+    const qT = _q1.setFromUnitVectors(UP, dir);
     if (u2 > 0) qT.slerp(_q2.multiplyQuaternions(this.qC, ARM_READY), u2);
-    this.armR.position.copy(this.shoulderR);
-    this.armR.quaternion.slerp(qT, 1 - Math.exp(-28 * ta));
-    this.armR.scale.y += (lerp(1.04, 1, Math.max(u1, 1 - kIn)) - this.armR.scale.y) * Math.min(1, ta * 20);
+    this.qArm.slerp(qT, 1 - Math.exp(-28 * ta));
+    this.stretch += (lerp(1.04, 1, Math.max(u1, 1 - kIn)) - this.stretch) * Math.min(1, ta * 20);
+    this.bend = damp(this.bend, lerp(0.12, BEND_READY, u2), 12, ta);
+    this.elbow.lerp(_v4.copy(ELBOW_DIVE).lerp(ELBOW_READY, u2).applyQuaternion(this.qC), 1 - Math.exp(-10 * ta));
+    this.poseRightArm(ta);
 
     // ---------- 非持拍手：往前伸、準備撐地；趴著時手掌貼地；爬起來時放下 ----------
     const tu = _v2.set(fx * 0.6 - rx * 0.35, -0.55, fz * 0.6 - rz * 0.35);
@@ -1970,15 +1832,12 @@ export class PlayerModel {
     const r = 1 - Math.exp(-18 * ta);
     this.lU.lerp(tu.normalize(), r).normalize();
     this.lF.lerp(tf.normalize(), r).normalize();
-    this.upperL.position.copy(this.shoulderL);
-    this.upperL.quaternion.setFromUnitVectors(DOWN, this.lU);
-    this.foreL.position.copy(this.shoulderL).addScaledVector(this.lU, UPPER_ARM);
-    this.foreL.quaternion.setFromUnitVectors(DOWN, this.lF);
+    this.poseLeftArm();
 
     // ---------- 頭：抬頭看前面 ----------
     this.headPitch = damp(this.headPitch, lerp(lerp(0, 1.1, kIn), 0.15, g), 14, ta);
     this.headYaw = damp(this.headYaw, 0, 14, ta);
-    this.head.rotation.set(this.headPitch, this.headYaw, 0);
+    this.poseHead(this.headPitch, this.headYaw);
     if (this.ponytail) {
       this.ptX = damp(this.ptX, lerp(-0.35, -1.1, kIn * (1 - g)), 10, ta);
       this.ptZ = damp(this.ptZ, 0, 10, ta);
@@ -1998,8 +1857,8 @@ export class PlayerModel {
     const swish = !!(s && s.dive && s.contacted && s.t - s.contactT < 0.14);
     this.trail.setStyle(SWOOSH_NORMAL);
     _sw.copy(this.shoulderR).applyMatrix4(this.root.matrixWorld);
-    _sq.multiplyQuaternions(this.root.quaternion, this.armR.quaternion);
-    this.trail.step(ta, swish, _sw, _sq, this.armR.scale.y * H);
+    _sq.multiplyQuaternions(this.root.quaternion, this.qArm);
+    this.trail.step(ta, swish, _sw, _sq, (this.stretch * H * (this.wristY + HAND_TO_HEAD)) / HEAD_NOMINAL);
     const tm = this.trail.mesh;
     if (tm.visible) {
       tm.matrix.copy(this.root.matrixWorld).invert();
@@ -2012,14 +1871,14 @@ export class PlayerModel {
   private beginDive(p: PlayerState): void {
     this.diving = true;
     this.dvG = 0;
-    this.dvYaw0 = this.pelvis.rotation.y;
-    this.dvPitch0 = this.pelvis.rotation.x;
-    this.dvArch0 = this.chest.rotation.x;
-    this.dvTwist0 = this.chest.rotation.y;
-    this.dvRoll0 = this.chest.rotation.z;
-    this.dvY0 = this.pelvis.position.y;
-    this.dvOffX0 = this.pelvis.position.x;
-    this.dvOffZ0 = this.pelvis.position.z;
+    this.dvYaw0 = this.hips.rotation.y;
+    this.dvPitch0 = this.hips.rotation.x;
+    this.dvArch0 = this.spine.rotation.x;
+    this.dvTwist0 = this.spine.rotation.y;
+    this.dvRoll0 = this.spine.rotation.z;
+    this.dvY0 = this.hips.position.y;
+    this.dvOffX0 = this.hips.position.x;
+    this.dvOffZ0 = this.hips.position.z;
     const d = p.dive;
     // 撲的方向 → 骨盆朝向（就近轉：往後撲時從比較近的那一側轉過去）
     let a = d ? Math.atan2(-d.dx * p.side, -d.dz * p.side) : this.dvYaw0;
@@ -2064,10 +1923,10 @@ export class PlayerModel {
       f.local.set(hx, ANKLE, hz);
     }
     this.psi = this.dvYaw;
-    this.hipY = this.yOut = this.pelvis.position.y;
+    this.hipY = this.yOut = this.hips.position.y;
     this.crouch = this.crouchV = 0;
-    this.offX = this.pelvis.position.x;
-    this.offZ = this.pelvis.position.z;
+    this.offX = this.hips.position.x;
+    this.offZ = this.hips.position.z;
     this.offY = 0;
     this.lunging = this.lungeHold = false;
     this.L = 0;
@@ -2134,6 +1993,8 @@ export class PlayerModel {
     this.shHave = false;
     this.shToward = false;
     this.trail.reset();
+    this.headHave = false;
+    this.faceN.set(0, 0, -1);
     this.ptX = -0.35;
     this.ptZ = this.ptVX = this.ptVZ = 0;
   }

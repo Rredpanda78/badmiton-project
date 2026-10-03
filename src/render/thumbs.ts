@@ -143,11 +143,11 @@ export function racketThumb(racket: string, color: number): string {
   const key = `r|${racket}|${color}`;
   const hit = cache.get(key);
   if (hit !== undefined) return hit;
-  const g = makeRacket(color, racket, undefined, true);
+  const g = makeRacket(color, racket);
   const holder = new THREE.Group();
   holder.add(g);
   g.rotation.y = -0.75; // 拍面（法線 = X）轉向鏡頭
-  g.position.y = -0.795; // 以球拍中段為軸傾斜
+  g.position.y = -0.24; // 以球拍中段為軸傾斜（手腕座標：握把在 0、拍頭約 0.5）
   holder.rotation.z = -0.2;
   holder.position.y = 0.8;
   holder.updateMatrixWorld(true);
