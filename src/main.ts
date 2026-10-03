@@ -488,12 +488,26 @@ function replayOn(): boolean {
   return settings.replay && !demoPlayer && !online?.sync && !tutorial && !drill && !match.settings.practice;
 }
 
+const REPLAY_SHOTS = new Set(['殺球', '跳殺', '機會殺球', '撲球', '跳撲']);
+
+/** 這一分打之前有沒有一方在局點（或賽點）：得分事件時比分已經加上這一分 */
+function wasGamePoint(winner: TeamId): boolean {
+  const s = match.score.slice();
+  s[winner]--;
+  const target = match.settings.points;
+  const cap = target === 21 ? 30 : target === 15 ? 21 : 15;
+  const onePointFrom = (a: number, b: number) => (a + 1 >= target && a + 1 - b >= 2) || a + 1 >= cap;
+  return onePointFrom(s[0], s[1]) || onePointFrom(s[1], s[0]);
+}
+
 /** 主動得分（羽球落在對方場內）：記下致勝的那一拍和落地，得分橫幅出現一下之後才開始播 */
 function queueReplay(winner: TeamId): void {
   const hit = recorder.lastHit;
   const land = recorder.lastLand;
   if (recorder.recording !== match || !hit || !land || land.tick !== recorder.lastTick || !land.e.inBounds || hit.tick >= land.tick) return;
   if (match.teamOf(hit.e.player) !== winner || hit.e.netFault) return;
+  // 只回放殺球、撲球，以及局點／賽點那一分的致勝球（每分都播太頻繁）
+  if (!REPLAY_SHOTS.has(hit.e.name) && !wasGamePoint(winner)) return;
   replayPending = { m: match, hit, land };
 }
 
