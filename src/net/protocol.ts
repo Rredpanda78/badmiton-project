@@ -3,7 +3,7 @@ import type { Family } from '../sim/shots';
 import type { HitGrade } from '../sim/match';
 
 /** 兩邊版本不同就不能一起玩（改了訊息格式或物理就 +1） */
-export const PROTOCOL = 5;
+export const PROTOCOL = 6;
 
 type V3 = [number, number, number];
 
@@ -72,6 +72,36 @@ export type EvMsg =
   | { t: 'ev'; ep: number; re: number; k: 'hit'; s: number; ct: number; d: number; so: 0 | 1; h: HitFields }
   | { t: 'ev'; ep: number; re: number; k: 'land'; s: number; ct: number; w: 0 | 1; r: string };
 
+// ---------- 觀戰、遊戲大廳 ----------
+
+/** 快照裡一位玩家（2 人房）：跟 hello 一樣的欄位；on = 連線中 */
+export interface SpecPlayer {
+  name: string;
+  character: string;
+  racket: string;
+  shirt?: number;
+  shorts?: number;
+  partner?: string;
+  partnerRacket?: string;
+  on?: boolean;
+}
+/** 快照裡這場的規則（2 人房，跟 start 一樣） */
+export interface SpecStart {
+  points: 11 | 15 | 21;
+  games: 1 | 3;
+  venue: Venue;
+  matchType: 'singles' | 'doubles';
+  difficulty?: Difficulty;
+}
+/**
+ * 玩家（2 人房：房主，房主斷線了就加入的人；4 人房：帶大家繼續的人）回給觀眾的狀態快照（觀眾送 spec-hello 來要）。
+ * 比分、發球都是「標準視角」：2 人房 h = 房主（球員 0、AI 隊友 2）、g = 加入的人（1、3），sc/gm = [房主, 加入的人]，srv = 房主手機上的發球球員編號；
+ * 4 人房照名單座位（A 隊在 z>0），ep/q = 裁決器目前的 ep、已裁決到第幾個事件（觀眾從下一個開始套用）
+ */
+export type SnapMsg =
+  | { t: 'snap'; k: 'duo'; h: SpecPlayer | null; g: SpecPlayer | null; start: SpecStart | null; ph: 'wait' | 'play' | 'over'; sc?: [number, number]; gm?: [number, number]; srv?: number }
+  | { t: 'snap'; k: 'quad'; r: QuadRoster; ph: 'wait' | 'play' | 'over'; ep?: number; q?: number; sc?: [number, number]; gm?: [number, number]; srv?: number; courts?: (1 | -1)[] };
+
 /** 玩家之間的訊息：2 人房的座標是「送出方自己的視角」（自己在 z>0 那半場），收到的一方鏡像 */
 export type PeerMsg =
   | {
@@ -130,13 +160,38 @@ export type PeerMsg =
   | { t: 'resume4'; r: QuadRoster; ep: number; sc: [number, number]; gm: [number, number]; srv: number; courts: (1 | -1)[] }
   | { t: 'arb'; ep: number; q: number } // → 伺服器：裁決器重設（新的 ep、序號從 q 開始）
   | EvMsg
-  | { t: 'acc'; q: number; e: EvMsg }; // 伺服器 → 大家：裁決結果（第 q 個事件）
+  | { t: 'acc'; q: number; e: EvMsg } // 伺服器 → 大家：裁決結果（第 q 個事件）
+  // ---- 觀戰、遊戲大廳 ----
+  | { t: 'spec-hello' } // 觀眾 → 玩家（伺服器轉給玩家）：我剛進來，請給我目前的狀態
+  | SnapMsg
+  // 房主 → 伺服器（不轉送）：這個房間在大廳的資料；pub 只有建房的人送（1 = 公開到大廳），之後沿用；st = 等待中／比賽中／已結束
+  | { t: 'lob'; pub?: 0 | 1; name: string; mode: 'singles' | 'doubles' | 'quad'; venue: Venue; points: number; games: number; st: 'wait' | 'play' | 'over'; sc?: [number, number]; gm?: [number, number] };
 
-/** 伺服器送的訊息（cap = 房間人數上限；4 人房多帶 cid） */
+/** 伺服器送的訊息（cap = 房間人數上限；4 人房多帶 cid；spec = 觀眾人數） */
 export type ServerMsg =
-  | { t: 'welcome'; role: 'host' | 'guest'; peers: number; cap?: number; cid?: string; ids?: string[] }
+  | { t: 'welcome'; role: 'host' | 'guest' | 'spectator'; peers: number; cap?: number; cid?: string; ids?: string[]; spec?: number }
   | { t: 'peer-join'; cid?: string }
   | { t: 'peer-left'; cid?: string }
-  | { t: 'full'; cap?: number };
+  | { t: 'full'; cap?: number; spec?: 1 }
+  | { t: 'spec'; n: number }; // 觀眾人數變了
 
 export type NetMsg = PeerMsg | ServerMsg;
+/** 伺服器轉給觀眾的訊息多帶 fr：2 人房 h = 房主送的、g = 加入的人送的（座標要照送出的人換算）；4 人房的訊息自帶座位，不標 */
+export type SpecMsg = NetMsg & { fr?: 'h' | 'g' };
+
+/** 遊戲大廳的一筆（GET /lobby 回傳 { rooms: LobbyRoom[] }；跟 server/src/lobby.ts 的 LobbyEntry 一樣） */
+export interface LobbyRoom {
+  code: string;
+  host: string;
+  mode: 'singles' | 'doubles' | 'quad';
+  venue: string;
+  points: number;
+  games: number;
+  cap: 2 | 4;
+  players: number;
+  spectators: number;
+  status: 'wait' | 'play' | 'over';
+  sc?: [number, number];
+  gm?: [number, number];
+  t: number;
+}

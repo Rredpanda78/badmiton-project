@@ -1797,3 +1797,220 @@ body.replaying #touch {
     opacity: 0;
   }
 }
+
+/* ---------- 遊戲大廳、觀戰 ---------- */
+/* 房號輸入框旁：加入／觀戰 */
+.join-btns {
+  display: flex;
+  gap: 8px;
+}
+.join-btns button {
+  flex: 1;
+}
+.panel.small .join-btns button.ghost {
+  background: transparent;
+}
+/* 房間畫面：觀眾人數 */
+.room-spec {
+  min-height: 1.2em;
+  margin: -4px 0 6px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+}
+/* 大廳名單 */
+.lobby-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+  text-align: left;
+}
+.lobby-room {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas:
+    'code main acts'
+    'code sub acts';
+  gap: 4px 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.lobby-room.playing {
+  border-color: rgba(255, 213, 74, 0.45);
+}
+.lobby-room .code {
+  grid-area: code;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 3px;
+  color: #ffd54a;
+  font-variant-numeric: tabular-nums;
+}
+.lobby-room .main {
+  grid-area: main;
+  min-width: 0;
+  font-weight: 700;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lobby-room .sub {
+  grid-area: sub;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.lobby-room .st {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.12);
+}
+.lobby-room .st.play {
+  background: rgba(255, 213, 74, 0.25);
+  color: #ffe08a;
+}
+.lobby-room .st.wait {
+  background: rgba(60, 207, 122, 0.25);
+  color: #9dffc3;
+}
+.lobby-room .st.over {
+  color: var(--muted);
+}
+.lobby-room .acts {
+  grid-area: acts;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.panel .lobby-room .acts button {
+  width: auto;
+  min-width: 68px;
+  margin: 0;
+  padding: 7px 10px;
+  border-radius: 9px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.panel .lobby-room .acts button.primary {
+  margin: 0;
+  padding: 7px 10px;
+}
+.lobby-empty {
+  padding: 18px 8px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 14px;
+}
+@media (max-width: 420px) {
+  .lobby-room {
+    grid-template-columns: auto 1fr;
+    grid-template-areas:
+      'code main'
+      'code sub'
+      'acts acts';
+  }
+  .lobby-room .acts {
+    flex-direction: row;
+  }
+  .panel .lobby-room .acts button {
+    flex: 1;
+  }
+}
+/* HUD：玩家看到的觀眾人數 */
+#specBadge {
+  display: none;
+  position: absolute;
+  top: calc(max(10px, env(safe-area-inset-top)) + 50px);
+  left: max(12px, env(safe-area-inset-left));
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(10, 16, 24, 0.72);
+  border: 1px solid var(--line);
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.85);
+}
+#specBadge.show {
+  display: block;
+}
+/* HUD：觀戰中的工具列（取代暫停鈕的位置） */
+#specBar {
+  display: none;
+  position: absolute;
+  top: max(10px, env(safe-area-inset-top));
+  left: max(12px, env(safe-area-inset-left));
+  align-items: center;
+  gap: 6px;
+  pointer-events: auto;
+}
+body.spectating #specBar {
+  display: flex;
+}
+body.spectating #pauseBtn {
+  display: none;
+}
+#specBar .sp-tag {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 42px;
+  padding: 0 12px;
+  border-radius: 12px;
+  background: rgba(10, 16, 24, 0.72);
+  border: 1px solid var(--line);
+  font-size: 13px;
+  font-weight: 700;
+}
+#specBar .sp-tag i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ff5a5a;
+  box-shadow: 0 0 8px #ff5a5a;
+  animation: sp-blink 1.4s ease-in-out infinite;
+}
+@keyframes sp-blink {
+  50% {
+    opacity: 0.35;
+  }
+}
+#specBar button {
+  height: 42px;
+  padding: 0 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: rgba(10, 16, 24, 0.72);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+#specBar button:active {
+  background: var(--me);
+}
+/* 窄螢幕（手機直向）：記分板佔滿上方，工具列放到記分板下面 */
+@media (max-width: 600px) {
+  #specBar {
+    top: calc(max(10px, env(safe-area-inset-top)) + 58px);
+  }
+  #specBar .sp-tag,
+  #specBar button {
+    height: 34px;
+    padding: 0 9px;
+    font-size: 12px;
+  }
+  body.spectating #specBadge {
+    display: none;
+  }
+}

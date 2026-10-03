@@ -1528,6 +1528,31 @@ export class Match {
     this.games = [v.games[0], v.games[1]];
   }
 
+  /**
+   * 觀眾（2 人房）：接球方判定的這一分（pt），比分、局數以送來的為準（觀眾自己不判分，漏接一分也會對回來）。
+   * 先退回「這一分之前」的比分再 awardPoint，局數／比賽結束的事件才會照正確的比分算
+   */
+  applyAbsoluteVerdict(winner: TeamId, reason: string, score: [number, number], games: [number, number]): void {
+    if (this.phase === 'matchOver') return;
+    const sh = this.shuttle;
+    if (sh.mode !== 'down') {
+      sh.mode = 'down';
+      sh.vel = v3();
+      sh.pos.y = Math.max(0, sh.pos.y);
+    }
+    const loser: TeamId = winner === 0 ? 1 : 0;
+    this.score = [score[0], score[1]];
+    this.score[winner] = Math.max(0, this.score[winner] - 1);
+    this.games = [games[0], games[1]];
+    const target = this.settings.points;
+    const cap = target === 21 ? 30 : target === 15 ? 21 : 15;
+    const w = score[winner];
+    if (((w >= target && w - score[loser] >= 2) || w >= cap) && this.games[winner] > 0) this.games[winner]--; // 這一分贏了這局：awardPoint 會加回來
+    this.awardPoint(winner, reason, true);
+    this.score = [score[0], score[1]];
+    this.games = [games[0], games[1]];
+  }
+
   /** 這顆球最後是不是這一隊打的（同一隊不能連打兩拍） */
   hitByTeam(team: TeamId): boolean {
     const h = this.shuttle.lastHitter;

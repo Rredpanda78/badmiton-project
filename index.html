@@ -24,6 +24,10 @@
       <div id="banner"><span></span><div class="sub"></div></div>
       <div id="drillGoal"></div>
       <div id="netInfo"></div>
+      <!-- 線上：有觀眾時的小標籤（玩家看） -->
+      <div id="specBadge"></div>
+      <!-- 觀戰中：換邊、離開 -->
+      <div id="specBar"><span class="sp-tag"><i></i>觀戰中</span><button id="specFlipBtn">⇅ 換邊</button><button id="specLeaveBtn">離開</button></div>
       <div id="tutCard">
         <div class="tut-head"><b id="tutTitle"></b><span id="tutProg"></span></div>
         <div id="tutText"></div>
@@ -109,6 +113,7 @@
           <ul>
             <li>建立房間後把<b>房號</b>或<b>分享連結</b>傳給朋友，朋友輸入房號或點連結就會進房</li>
             <li>分數、局數、場地照房主上次在「比賽設定」選的；球員、球拍、操作方式各用自己的</li>
+            <li><b>遊戲大廳</b>：建立房間時選「公開到大廳」，大家就能在大廳看到你的房間，有空位就能加入、比賽中也能進去<b>觀戰</b>（房號旁也有「觀戰」）</li>
             <li>右下角是連線延遲；暫停時比賽不會停</li>
           </ul>
           <h3>電腦／手把</h3>
@@ -201,6 +206,11 @@
             <div class="seg fill" data-key="moveMode"><button data-v="auto">自動</button><button data-v="assist">輔助</button><button data-v="manual">手動</button></div>
           </div>
           <div class="field">
+            <div class="section-title">遊戲大廳</div>
+            <div class="seg fill" data-key="roomPublic"><button data-v="true">公開到大廳</button><button data-v="false">只用房號</button></div>
+            <p class="hint-line">公開 = 大家在「遊戲大廳」看得到這個房間，可以加入或觀戰；只用房號 = 要有房號或連結才進得來（也能觀戰）</p>
+          </div>
+          <div class="field">
             <div class="section-title">場地</div>
             <div class="seg fill wrap4" data-key="venuePick">
               <button data-v="sakura">櫻花園</button><button data-v="night">夜櫻</button><button data-v="bamboo">竹林</button><button data-v="indoor">室內</button>
@@ -262,19 +272,32 @@
         <div class="online-me"><span id="onlineMe"></span><button id="onlinePickBtn">更換選手</button></div>
         <div id="onlineIdle">
           <button id="createRoomBtn" class="primary">建立房間</button>
+          <button id="lobbyBtn">🏟 遊戲大廳（公開房間）</button>
           <div class="join-row">
             <input id="roomCodeInput" maxlength="8" placeholder="輸入房號" autocomplete="off" autocapitalize="characters" spellcheck="false" inputmode="text" enterkeyhint="go" />
-            <button id="joinRoomBtn">加入</button>
+            <div class="join-btns"><button id="joinRoomBtn">加入</button><button id="spectateBtn" class="ghost">👀 觀戰</button></div>
           </div>
         </div>
         <div id="onlineRoom" style="display: none">
-          <div class="room-code-label">房號</div>
+          <div id="roomCodeLabel" class="room-code-label">房號</div>
           <div id="roomCode" class="room-code"></div>
+          <p id="roomSpec" class="room-spec"></p>
           <button id="shareRoomBtn">分享連結給朋友</button>
           <div id="quadLobby" style="display: none"></div>
         </div>
         <p id="roomStatus" class="room-status"></p>
         <button id="onlineBackBtn">返回</button>
+      </div>
+    </div>
+
+    <!-- 遊戲大廳：公開房間的名單（每 3 秒更新） -->
+    <div id="lobby" class="overlay">
+      <div class="panel">
+        <h2>遊戲大廳</h2>
+        <p class="tag">公開的房間都在這裡：有空位就能加入，比賽中也可以進去觀戰。建立房間時選「公開到大廳」才會列出來。</p>
+        <div id="lobbyList" class="lobby-list"></div>
+        <p id="lobbyStatus" class="room-status"></p>
+        <button id="lobbyBackBtn">返回</button>
       </div>
     </div>
 

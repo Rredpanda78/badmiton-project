@@ -1,21 +1,25 @@
 // 無畫面測試 4 人房（線上雙打 2 對 2）：四台「手機」各跑一場比賽，各自的 AI 控制自己的球員（房主另外模擬 AI 補位），
 // 中間是有延遲的假網路（每台到伺服器單程 30–150 ms、每則訊息再加抖動，同一條連線不亂序）和真正的裁決器（server/src/arbiter.ts）。
 // 偶爾故意讓兩個隊友都去搶同一球；檢查四台比分一致、不會卡住、搶球都有解決，印出統計（衝突、還原、瞬移距離）。
-// 執行：npx tsx scripts/online4-test.ts [場數=3] [名單=4h|2h|2hs] [drop]
+// 執行：npx tsx scripts/online4-test.ts [場數=3] [名單=4h|2h|2hs] [drop] [spec]
 //   4h = 四個真人；2h = A、B 隊各一個真人（其餘 AI 由房主模擬）；2hs = 兩個真人同一隊（對面兩個 AI）
 //   drop = 第一場中途 3 號座位斷線（房主讓 AI 代打），幾分後他重新整理網頁回來，下一分拿回座位
+//   spec = 打到 5 分時一位觀眾進房：伺服器把玩家的訊息、裁決結果都轉給他；他送 spec-hello 要快照，房主回 snap（名單＋比分＋裁決序號），
+//          他照快照建比賽、從下一個裁決開始套用；最後比分要跟四台一樣
 import { AIController } from '../src/ai/ai';
 import { DEFAULT_SETTINGS, GAME, PHYS } from '../src/config';
 import { Arbiter, type ArbEv } from '../server/src/arbiter';
-import type { PeerMsg, QuadHuman, QuadRoster } from '../src/net/protocol';
+import type { PeerMsg, QuadHuman, QuadRoster, SpecMsg } from '../src/net/protocol';
 import { isHuman, QuadLobby } from '../src/net/quad';
 import { QuadSession } from '../src/net/session4';
-import { idleInput } from '../src/sim/match';
+import { snapQuad, Spectator } from '../src/net/spectate';
+import { idleInput, type Match } from '../src/sim/match';
 import { Rng } from '../src/sim/rng';
 
 const N = Number(process.argv[2] ?? 3);
 const layout = (process.argv[3] ?? '4h') as '4h' | '2h' | '2hs';
 const drop = process.argv.includes('drop');
+const spec = process.argv.includes('spec');
 // 例：QUADHOLD='{"max":0}' 關掉 4 人房的「隊友附近放慢」
 if (process.env.QUADHOLD) Object.assign(GAME.quadHold, JSON.parse(process.env.QUADHOLD));
 const tickMs = (PHYS.dt / GAME.simSpeed) * 1000;
@@ -48,7 +52,7 @@ function human(cid: string, name: string, character: string): QuadHuman {
   return { cid, name, character, racket: 'balance', mv: 'auto', ready: true, on: true };
 }
 
-const totals = { conflicts: 0, undo: 0, rejected: 0, landBeatHit: 0, decided: 0, points: 0, jumps: [] as number[], mateJumps: [] as number[], maxAwait: 0, maxRally: 0, ok: 0, whiffs: 0, hits: 0 };
+const totals = { conflicts: 0, undo: 0, rejected: 0, landBeatHit: 0, decided: 0, points: 0, jumps: [] as number[], mateJumps: [] as number[], maxAwait: 0, maxRally: 0, ok: 0, whiffs: 0, hits: 0, specOk: 0 };
 
 for (let g = 0; g < N; g++) {
   // ---- 名單 ----
@@ -79,8 +83,26 @@ for (let g = 0; g < N; g++) {
     down.push({ at: p.lastDown, to: p.idx, msg: JSON.parse(JSON.stringify(msg)) });
     down.sort((a, b) => a.at - b.at);
   };
+  // ---- 觀眾 S（spec 模式；不在 phones 裡，不算人數）：單程 80 ms＋抖動；伺服器轉給他玩家的訊息和裁決結果 ----
+  let S: Spectator | null = null;
+  let sMatch: Match | null = null;
+  let sHits = 0;
+  const sLat = 80;
+  let sLastDown = 0;
+  const sDown: { at: number; msg: Msg }[] = [];
+  const toSpec = (msg: Msg, t: number) => {
+    if (!S) return;
+    sLastDown = Math.max(sLastDown, t + sLat + jit());
+    sDown.push({ at: sLastDown, msg: JSON.parse(JSON.stringify(msg)) });
+    sDown.sort((a, b) => a.at - b.at);
+  };
+  const SPEC = -1; // up 裡 from = -1 代表觀眾送的
   const broadcast = (ds: { q: number; ev: ArbEv }[], t: number) => {
-    for (const d of ds) for (const p of phones) toClient(p, { t: 'acc', q: d.q, e: d.ev as never }, t);
+    for (const d of ds) {
+      const acc: Msg = { t: 'acc', q: d.q, e: d.ev as never };
+      for (const p of phones) toClient(p, acc, t);
+      toSpec(acc, t);
+    }
   };
   // 伺服器：依時間順序處理上行訊息和裁決窗口
   const serverRun = () => {
@@ -93,12 +115,22 @@ for (let g = 0; g < N; g++) {
       }
       if (!m || m.at > now) break;
       up.shift();
-      const from = phones[m.from];
       const msg = m.msg;
+      if (m.from === SPEC) {
+        // 觀眾送的：只接受 ping（直接回）、spec-hello（轉給玩家）
+        if (msg.t === 'ping') toSpec({ t: 'pong', a: msg.a }, m.at);
+        else if (msg.t === 'spec-hello') for (const p of phones) toClient(p, msg, m.at);
+        continue;
+      }
+      const from = phones[m.from];
       if (msg.t === 'ping') toClient(from, { t: 'pong', a: msg.a }, m.at);
       else if (msg.t === 'ev') broadcast(arb.submit(msg as unknown as ArbEv, m.at), m.at);
       else if (msg.t === 'arb') arb.reset(msg.ep, msg.q);
-      else for (const p of phones) if (p !== from) toClient(p, msg, m.at);
+      else if (msg.t === 'snap') toSpec(msg, m.at); // 快照只給觀眾
+      else {
+        for (const p of phones) if (p !== from) toClient(p, msg, m.at);
+        toSpec(msg, m.at);
+      }
     }
   };
 
@@ -137,6 +169,9 @@ for (let g = 0; g < N; g++) {
     } else if (msg.t === 'hello' && p === host && msg.cid) {
       const h = human(msg.cid, msg.name, msg.character);
       if (lobby.join(h, true) === 'return') pendingReturn = h;
+    } else if (msg.t === 'spec-hello') {
+      // 觀眾要快照：帶大家繼續的人（房主）回（跟 main.ts 的 sendSnap 一樣）
+      if (p === host) toServer(host, snapQuad(host.sess, lobby.r));
     } else p.sess?.sync.receive(msg as PeerMsg);
   };
   // 房主開打
@@ -164,8 +199,29 @@ for (let g = 0; g < N; g++) {
       const d = down.shift()!;
       if (phones[d.to].up) clientRecv(phones[d.to], d.msg);
     }
-    // drop：第一場打到 5 分以上、回合中 → 最後一台手機斷線
     const hs = host.sess;
+    // spec：打到 5 分、回合中 → 觀眾進房（伺服器送 welcome，他接著要快照）
+    if (spec && !S && hs && hs.match.score[0] + hs.match.score[1] >= 5 && hs.match.phase === 'rally') {
+      S = new Spectator(
+        { ...DEFAULT_SETTINGS },
+        (x) => {
+          up.push({ at: now + sLat + jit(), from: SPEC, msg: JSON.parse(JSON.stringify(x)) });
+          up.sort((a, b) => a.at - b.at);
+        },
+        () => now,
+        9000 + g,
+      );
+      S.onMatch = (m) => (sMatch = m);
+      sLastDown = now;
+      S.receive({ t: 'welcome', role: 'spectator', peers: phones.length, cap: 4, spec: 1 });
+    }
+    while (S && sDown.length && sDown[0].at <= now) S.receive(sDown.shift()!.msg as SpecMsg);
+    if (S && sMatch) {
+      sMatch.step(sMatch.players.map(() => idleInput()));
+      for (const e of sMatch.drainEvents()) if (e.type === 'hit') sHits++;
+      S.afterStep();
+    }
+    // drop：第一場打到 5 分以上、回合中 → 最後一台手機斷線
     if (drop && g === 0 && !dropped && hs && hs.match.score[0] + hs.match.score[1] >= 5 && hs.match.phase === 'rally') {
       dropped = true;
       victim.up = false;
@@ -238,6 +294,13 @@ for (let g = 0; g < N; g++) {
     if (victim.sess && !isHuman(victim.sess.roster.seats[victim.sess.mySeat])) fail('drop：座位沒有還給回來的人');
   }
   if (same && over) totals.ok++;
+  if (spec) {
+    // 觀眾（標準視角：A 隊、B 隊）最後的比分要跟四台一樣
+    const sSame = !!sMatch && sMatch.score[0] === res[0].sc[0] && sMatch.score[1] === res[0].sc[1] && sMatch.games[0] === res[0].gm[0] && sMatch.games[1] === res[0].gm[1] && sMatch.phase === 'matchOver';
+    if (sSame) totals.specOk++;
+    else fail(`第 ${g + 1} 場：觀眾的比分不一致 ${JSON.stringify({ sc: sMatch?.score, gm: sMatch?.games, phase: sMatch?.phase })} vs ${JSON.stringify(res[0])}`);
+    console.log(`  觀眾 S（5 分時進房）：A:B 局數 ${sMatch?.games.join(':')} 比分 ${sMatch?.score.join(':')}｜${sSame ? '跟四台一致' : '不一致！'}｜看到 ${sHits} 拍｜RTT ${S?.rttMs.toFixed(0)}ms`);
+  }
   const undo = phones.reduce((a, p) => a + (p.sess?.sync.stats.undo ?? 0), 0);
   const jumps = phones.flatMap((p) => p.sess?.sync.stats.jumps ?? []);
   const mateJumps = phones.flatMap((p) => p.sess?.sync.stats.mateJumps ?? []);

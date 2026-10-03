@@ -41,6 +41,10 @@ export class QuadSync {
   /** 本機搶先的擊球沒被採用（by = 被採用的擊球是誰打的；null = 球先落地） */
   onUndo: (by: PlayerId | null) => void = () => {};
 
+  /**
+   * spectator = 觀眾（src/net/spectate.ts）：mySeat 用 0（標準視角）、四個座位都是遠端，不送事件（伺服器也不會收），
+   * 只套用裁決結果；放慢照「接球的人的延遲」算（不管打向哪一隊）
+   */
   constructor(
     private match: Match,
     private roster: QuadRoster,
@@ -48,6 +52,7 @@ export class QuadSync {
     private local: boolean[],
     private send: (m: PeerMsg) => void,
     private now: () => number = () => performance.now(),
+    readonly spectator = false,
   ) {
     match.flightDilate = (id) => this.dilateFor(id);
     match.holdNeed = (id) => this.holdNeed(id);
@@ -134,7 +139,7 @@ export class QuadSync {
     const m = this.match;
     const hs = this.seatOf(id);
     const rt = 1 - (hs % 2);
-    if (rt === this.mySeat % 2) return 1;
+    if (rt === this.mySeat % 2 && !this.spectator) return 1;
     const pred = m.shuttle.prediction;
     if (!pred) return 1;
     const a = ballTaker(m, m.teamOf(id) === 0 ? 1 : 0);
@@ -164,6 +169,7 @@ export class QuadSync {
 
   /** match.drainEvents() 的每個事件都要給這裡看 */
   onEvent(e: MatchEvent): void {
+    if (this.spectator) return; // 觀眾不送事件（落地判定由玩家送）
     const m = this.match;
     if (e.type === 'hit' && !m.isRemote(e.player)) {
       const s = this.seatOf(e.player);

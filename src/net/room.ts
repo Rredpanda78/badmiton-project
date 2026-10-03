@@ -1,11 +1,13 @@
 import type { Difficulty, MoveMode, Venue } from '../config';
-import { PROTOCOL, type NetMsg, type PeerMsg } from './protocol';
+import { PROTOCOL, type NetMsg, type PeerMsg, type SpecMsg } from './protocol';
 
 /** 房間伺服器（Cloudflare Worker）；網址加 ?server=local 改連本機的 wrangler dev（?server=local:8797 = 指定連接埠） */
 const PROD_SERVER = 'wss://badminton-rooms.rredpanda78.workers.dev';
 const serverParam = new URLSearchParams(location.search).get('server') ?? '';
 const localPort = /^local(?::(\d{2,5}))?$/.exec(serverParam);
 export const ROOM_SERVER = localPort ? `ws://127.0.0.1:${localPort[1] ?? '8787'}` : PROD_SERVER;
+/** 遊戲大廳的名單（GET，JSON { rooms: LobbyRoom[] }） */
+export const LOBBY_URL = ROOM_SERVER.replace(/^ws/, 'http') + '/lobby';
 
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 不用 0/O、1/I 這種容易看錯的
 export function newRoomCode(): string {
@@ -134,7 +136,9 @@ export interface StartInfo {
  * 4 人房（cap = 4）：連線、重連還是這裡管，訊息全部交給 onQuad（src/main.ts 的 4 人大廳）。
  */
 export class RoomClient {
-  role: 'host' | 'guest' | null = null;
+  role: 'host' | 'guest' | 'spectator' | null = null;
+  /** 觀眾：連線網址帶 ?spec=1，沒有座位；所有訊息交給 onSpectate（src/net/spectate.ts） */
+  spectator = false;
   peer: Hello | null = null;
   /** 對方 hello 帶來的比賽狀態（0 = 沒有比賽，要先送 start 給他重建） */
   peerMs: 0 | 1 | 2 = 0;
@@ -175,6 +179,14 @@ export class RoomClient {
   onResume: (msg: Extract<PeerMsg, { t: 'resume' }>) => void = () => {};
   /** 4 人房：所有訊息（含伺服器的 welcome／peer-join／peer-left） */
   onQuad: (msg: NetMsg) => void = () => {};
+  /** 觀眾：所有訊息（2 人房的訊息多帶 fr = 誰送的） */
+  onSpectate: (msg: SpecMsg) => void = () => {};
+  /** 2 人房：有觀眾進來要狀態快照（房主回 snap） */
+  onSpecHello: () => void = () => {};
+  /** 2 人房：觀眾人數變了 */
+  onSpectators: (n: number) => void = () => {};
+  /** 2 人房：連上了（房主要把房間資料送給大廳） */
+  onWelcome: () => void = () => {};
 
   constructor(
     readonly code: string,
@@ -192,7 +204,7 @@ export class RoomClient {
     this.onStatus(this.retries ? '重新連線中…' : '連線中…', 'wait');
     let ws: WebSocket;
     try {
-      ws = new WebSocket(`${ROOM_SERVER}/room/${this.code}?cid=${encodeURIComponent(this.cid)}${this.cap === 4 ? '&cap=4' : ''}`);
+      ws = new WebSocket(`${ROOM_SERVER}/room/${this.code}?cid=${encodeURIComponent(this.cid)}${this.cap === 4 ? '&cap=4' : ''}${this.spectator ? '&spec=1' : ''}`);
     } catch {
       this.onStatus('連不上伺服器', 'error');
       return;
@@ -300,6 +312,16 @@ export class RoomClient {
 
   private handle(msg: NetMsg): void {
     if ((msg.t === 'welcome' || msg.t === 'full') && msg.cap === 4) this.cap = 4;
+    if (this.spectator) {
+      // 觀眾：全部交給 spectate.ts
+      if (msg.t === 'welcome') {
+        this.role = msg.role;
+        this.retries = 0;
+      }
+      if (msg.t === 'full') this.closedByMe = true;
+      this.onSpectate(msg as SpecMsg);
+      return;
+    }
     if (this.cap === 4) {
       // 4 人房：大廳、比賽都由 main.ts 的 4 人邏輯處理
       if (msg.t === 'welcome') {
@@ -314,6 +336,8 @@ export class RoomClient {
       case 'welcome':
         this.role = msg.role;
         this.retries = 0;
+        if (msg.spec !== undefined) this.onSpectators(msg.spec);
+        this.onWelcome();
         if (msg.peers === 0) {
           if (this.inMatch) this.onStatus('重新連上了，等對手回來…', 'wait');
           else if (this.creator) this.onStatus('等待對手加入…（把房號或連結傳給朋友）', 'wait');
@@ -363,6 +387,7 @@ export class RoomClient {
         break;
       case 'resume':
         this.dropped = false;
+        this.peerMs = 2; // 帶大家繼續的是對方：他的狀態最新（觀眾要快照時由他回）
         this.onResume(msg);
         break;
       case 'rematch':
@@ -370,6 +395,15 @@ export class RoomClient {
         if (!this.wantRematch) this.onStatus('對手想再來一場！', 'ok');
         this.maybeRematch();
         break;
+      case 'spec':
+        this.onSpectators(msg.n);
+        break;
+      case 'spec-hello':
+        this.onSpecHello();
+        break;
+      case 'snap':
+      case 'lob':
+        break; // 只有觀眾／伺服器會收到
       default:
         this.onGame(msg);
     }

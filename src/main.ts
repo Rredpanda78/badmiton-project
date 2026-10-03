@@ -17,11 +17,12 @@ import { v3 } from './sim/physics';
 import { OnlineSync } from './net/sync';
 import { buildTutorial, TutorialRunner, type TutUI } from './modes/tutorial';
 import type { PlayerId, PlayerInput } from './sim/match';
-import { adoptClientId, clearRejoin, loadRejoin, newRoomCode, normalizeCode, peekClientId, RoomClient, saveRejoin, type Hello, type RejoinRecord, type StartInfo } from './net/room';
-import { PROTOCOL, type NetMsg, type PeerMsg, type QuadCfg, type QuadHuman } from './net/protocol';
+import { adoptClientId, clearRejoin, loadRejoin, LOBBY_URL, newRoomCode, normalizeCode, peekClientId, RoomClient, saveRejoin, type Hello, type RejoinRecord, type StartInfo } from './net/room';
+import { PROTOCOL, type LobbyRoom, type NetMsg, type PeerMsg, type QuadCfg, type QuadHuman } from './net/protocol';
 import { isAi, isHuman, QuadLobby, seatTeam, TEAM_NAMES } from './net/quad';
 import { QuadSession } from './net/session4';
 import type { QuadSync } from './net/sync4';
+import { snapDuo, snapQuad, Spectator, specPlayer, type SpecView } from './net/spectate';
 import { isWinner, ReplayPlayer, ReplayRecorder } from './render/replay';
 
 const HUMAN = 0 as const;
@@ -50,16 +51,21 @@ let resultTimer: number | undefined;
  * - 2 人房：aiTakeover = 對手不在，AI 在本機接手（變成對 AI 的比賽，房間還開著）；
  *   pendingReturn = 對手回來了，這一分打完就換回來；start = 這場的設定（對手重新整理網頁回來時請他重建）
  * - quad：4 人房（名單、這場比賽、誰斷線）
+ * - spectator：自己是觀眾（src/net/spectate.ts；比賽建好後 sync = spectator）；spectators = 房間裡的觀眾人數（玩家看）
+ * - pub：自己建的房間有沒有公開到遊戲大廳
  */
 let online: {
   room: RoomClient;
-  sync: OnlineSync | QuadSync | null;
+  sync: OnlineSync | QuadSync | Spectator | null;
   waiting: boolean;
   wait: WaitState | null;
   aiTakeover: boolean;
   pendingReturn: boolean;
   start: StartInfo | null;
   quad: QuadState | null;
+  spectator: Spectator | null;
+  spectators: number;
+  pub: boolean;
 } | null = null;
 /** 等待面板：title、倒數到什麼時候（null = 不限時間）、self = 自己的連線出問題、gaveUp = 自動重連放棄了 */
 interface WaitState {
@@ -88,7 +94,7 @@ let afterReplay: (() => void) | null = null;
 
 /** 手機震動（iPhone 的 Safari 不支援，會自動略過） */
 function buzz(pattern: number | number[]): void {
-  if (!settings.vibration || demoPlayer) return;
+  if (!settings.vibration || demoPlayer || online?.spectator) return;
   try {
     navigator.vibrate?.(pattern);
   } catch {
@@ -295,7 +301,7 @@ function setMode(m: Mode): void {
   mode = m;
   $('tour').classList.remove('show');
   if (m !== 'result') $('nextBtn').style.display = 'none';
-  controls.enabled = m === 'play';
+  controls.enabled = m === 'play' && !online?.spectator; // 觀眾沒有操作
   controls.reset();
   document.body.classList.toggle('in-menu', m === 'menu');
   $('menu').classList.toggle('show', m === 'menu');
@@ -355,13 +361,14 @@ function handleEvent(e: MatchEvent): void {
       break;
     case 'point':
       if (live) {
-        sfx.point(e.winner === match.teamOf(HUMAN));
+        sfx.point(!!online?.spectator || e.winner === match.teamOf(HUMAN)); // 觀眾：中立，一律用得分的聲音
         onPointAudio(e.winner, e.reason);
       }
       if (isWinner(e) && replayOn()) queueReplay(e.winner);
+      if (online && !online.spectator) sendLob(); // 大廳：比分變了（房主才會真的送）
       break;
     case 'match':
-      if (online) {
+      if (online && !online.spectator) {
         online.room.inMatch = false;
         clearRejoin(online.room.cid); // 打完了：不用再「回到剛剛的房間」
       }
@@ -371,7 +378,7 @@ function handleEvent(e: MatchEvent): void {
           const win = e.winner === match.teamOf(HUMAN);
           // 比分、局數以隊伍為索引：0 = 自己這隊
           const sc = match.settings.games > 1 ? `局數 ${match.games[0]} : ${match.games[1]}` : `比分 ${match.score[0]} : ${match.score[1]}`;
-          $('resultTitle').textContent = win ? (match.doubles ? '🏆 你們贏了！' : '🏆 你贏了！') : `${hud.oppName} 獲勝`;
+          $('resultTitle').textContent = online?.spectator ? `${hud.teamNames[e.winner]} 獲勝` : win ? (match.doubles ? '🏆 你們贏了！' : '🏆 你贏了！') : `${hud.oppName} 獲勝`;
           $('resultScore').textContent = sc;
           if (ctx) {
             const stop = TOUR[ctx.stop];
@@ -481,10 +488,12 @@ function tick(now: number): void {
   }
   if (replay) return replayTick(0); // 這一幀開始回放：直接畫回放的第一格（不要再用電影鏡頭畫一次比賽）
   const me = match.players[HUMAN];
-  if (!demoPlayer) chargeZoneTicks(me.charging, me.charge, match.phase === 'serve' && match.server === HUMAN, match.doubles);
+  const spec = !!online?.spectator && online.sync === online.spectator;
+  if (!demoPlayer && !spec) chargeZoneTicks(me.charging, me.charge, match.phase === 'serve' && match.server === HUMAN, match.doubles);
   renderer.update(match, mode === 'paused' || mode === 'result' ? 0 : dt, settings.landingHint && !demoPlayer, HUMAN);
-  if (mode !== 'menu') hud.update(match, renderer, dt, HUMAN);
-  controls.draw(me.charge, me.charging && !demoPlayer, renderer.bottomReserve);
+  // 觀戰：記分板左邊 = 畫面下方那隊（可以換邊）
+  if (mode !== 'menu') hud.update(match, renderer, dt, spec ? (renderer.viewSide === 1 ? 0 : 1) : HUMAN);
+  if (!spec) controls.draw(me.charge, me.charging && !demoPlayer, renderer.bottomReserve);
   updateNetInfo(dt);
   renderer.render();
 }
@@ -866,6 +875,7 @@ function layoutSetup(): void {
   // 線上單打沒有 AI：難度只給雙打的 AI 隊友（4 人房 = AI 補位）用
   show('.seg[data-key="difficulty"]', m === 'local' || (m === 'create' && settings.matchType !== 'singles'));
   show('.seg[data-key="allManual"]', quad);
+  show('.seg[data-key="roomPublic"]', m === 'create');
   show('#setup .seg[data-key="moveMode"]', m !== 'local');
   show('.seg[data-key="venuePick"]', m !== 'join');
   show('.seg[data-key="points"]', m !== 'join');
@@ -939,7 +949,7 @@ const toMenu = () => {
 // 線上比賽中按「回主選單」：再按一次才離開（不小心按到；對手會看到你離開，10 分鐘內可以從主選單回來）
 let leaveArmed = 0;
 $('menuBtn').addEventListener('click', () => {
-  const inOnline = !!online?.sync && match.phase !== 'matchOver';
+  const inOnline = !!online?.sync && !online.spectator && match.phase !== 'matchOver'; // 觀眾離開不用確認
   if (inOnline && performance.now() - leaveArmed > 3000) {
     leaveArmed = performance.now();
     $('menuBtn').textContent = '確定離開？再按一次（對手會看到你離開）';
@@ -1284,16 +1294,34 @@ function myHello(): Hello {
 }
 
 function showLobby(code: string | null): void {
-  // 2 人房進房後不能換選手（已經告訴對方了）；4 人房可以（重新告訴房主）
-  $('onlinePickBtn').style.display = code && !online?.quad ? 'none' : '';
+  const spec = !!online?.spectator;
+  // 2 人房進房後不能換選手（已經告訴對方了）；4 人房可以（重新告訴房主）；觀眾沒有選手
+  $('onlinePickBtn').style.display = code && (!online?.quad || spec) ? 'none' : '';
   $('onlineIdle').style.display = code ? 'none' : '';
   $('onlineRoom').style.display = code ? '' : 'none';
   $('roomCode').textContent = code ?? '';
+  $('roomCodeLabel').textContent = spec ? '觀戰中・房號' : '房號';
+  $('shareRoomBtn').style.display = spec ? 'none' : '';
   if (!code) {
     $('roomStatus').textContent = '';
     $('roomStatus').className = 'room-status';
   }
+  renderSpectators();
   renderQuadLobby();
+}
+
+/** 房間畫面＋HUD 的觀眾人數（玩家看）；觀眾自己看到的是「觀眾 N（含你）」 */
+function renderSpectators(): void {
+  const n = online?.spectator ? online.spectator.spectators : (online?.spectators ?? 0);
+  const text = n ? `👀 觀眾 ${n}${online?.spectator ? '（含你）' : ''}` : '';
+  $('roomSpec').textContent = text;
+  const badge = $('specBadge');
+  badge.textContent = n && !online?.spectator ? `👀 觀眾 ${n}` : '';
+  badge.classList.toggle('show', !!badge.textContent);
+}
+function setSpectators(n: number): void {
+  if (online) online.spectators = n;
+  renderSpectators();
 }
 
 function openOnline(): void {
@@ -1312,6 +1340,16 @@ function leaveOnline(): void {
   $('againBtn').style.display = '';
   $('netInfo').textContent = '';
   $('quadLobby').style.display = 'none';
+  $('specBadge').classList.remove('show');
+  // 觀戰結束：鏡頭、記分板、搖桿都還原
+  if (renderer.spectator || renderer.viewSide !== 1) {
+    renderer.spectator = false;
+    renderer.viewSide = 1;
+    renderer.resize();
+  }
+  hud.spectator = false;
+  $('touch').style.display = '';
+  document.body.classList.remove('spectating');
 }
 
 /**
@@ -1327,7 +1365,7 @@ function joinRoom(code: string, creator = false, rejoin: RejoinRecord | null = n
   const room = new RoomClient(code, myHello);
   room.creator = creator;
   if ((creator && settings.matchType === 'quad') || rejoin?.cap === 4) room.cap = 4;
-  online = { room, sync: null, waiting: false, wait: null, aiTakeover: false, pendingReturn: false, start: null, quad: room.cap === 4 ? newQuad() : null };
+  online = { room, sync: null, waiting: false, wait: null, aiTakeover: false, pendingReturn: false, start: null, quad: room.cap === 4 ? newQuad() : null, spectator: null, spectators: 0, pub: creator && settings.roomPublic !== false };
   saveRejoin({ code, cid: room.cid, cap: room.cap, t: Date.now() });
   room.onStatus = (text, kind) => {
     const el = $('roomStatus');
@@ -1337,6 +1375,10 @@ function joinRoom(code: string, creator = false, rejoin: RejoinRecord | null = n
   };
   room.onStart = (start, peer, host, rj) => startOnlineMatch(start, peer, host, rj);
   room.onGame = (msg) => online?.sync?.receive(msg);
+  // 觀眾、遊戲大廳（2 人房；4 人房在 onQuadMsg）
+  room.onWelcome = () => online?.room === room && sendLob();
+  room.onSpectators = (n) => online?.room === room && setSpectators(n);
+  room.onSpecHello = () => online?.room === room && sendSnap();
   // 比賽中對方斷線／離開：不把人踢出去，暫停並讓玩家選「AI 接手繼續」「繼續等待」「離開」
   room.onPeerLeft = (bye) => {
     if (online?.room !== room || !online.sync || online.aiTakeover || match.phase === 'matchOver') return;
@@ -1452,9 +1494,245 @@ function startOnlineMatch(start: StartInfo, peer: Hello, host: boolean, rejoin =
   $('againBtn').style.display = '';
   acc = 0;
   setMode('play');
+  renderSpectators();
+  sendLob(); // 大廳：比賽中
   if (rejoin) hud.intro('回到比賽', '從目前比分繼續');
   else hud.intro(doubles ? `線上雙打：${peer.name}＋${oppMate.name}（AI）` : `線上對戰：${peer.name}`, `${doubles ? `你的隊友：${mate.name}（AI）｜` : ''}${host ? (doubles ? '你們先發球' : '你先發球') : '對手先發球'}`);
 }
+
+// ---------- 遊戲大廳、觀戰（玩家這一邊） ----------
+
+/** 自己是不是回快照／送大廳資料的人：2 人房 = 房主（房主斷線時加入的人）；4 人房 = 房主（比賽中 = 帶大家繼續的人） */
+function iAnswerSpectators(): boolean {
+  if (!online || online.spectator) return false;
+  const room = online.room;
+  if (online.quad) return !!online.quad.lobby && (quadInMatch() ? iLead() : quadIsHost());
+  if (room.role === 'host') return !room.dropped || !room.peer;
+  return room.role === 'guest' && (!room.peer || room.peerMs < room.matchState());
+}
+
+/**
+ * 房主 → 伺服器：這個房間在大廳的資料（公開與否只有建房的人送；伺服器自己算人數、觀眾數）。
+ * 2 人房只有房主送（加入的人剛連上時還不知道對方的狀態，送了會把「比賽中」蓋成「等待中」）；4 人房 = 房主／帶大家繼續的人
+ */
+function sendLob(): void {
+  if (!online || online.spectator) return;
+  if (online.quad ? !iAnswerSpectators() : online.room.role !== 'host') return;
+  const room = online.room;
+  const me = myHello();
+  const playing = !!online.sync && match.phase !== 'matchOver';
+  const over = !!online.sync && match.phase === 'matchOver';
+  const cfg = online.quad?.lobby?.r.cfg;
+  let sc: [number, number] | undefined;
+  let gm: [number, number] | undefined;
+  if (online.sync) {
+    // 標準視角：2 人房 [房主, 加入的人]；4 人房 [A 隊, B 隊]
+    const f = online.quad?.sess ? online.quad.sess.mySeat & 1 : room.role === 'host' ? 0 : 1;
+    sc = [match.score[f], match.score[f ^ 1]];
+    gm = [match.games[f], match.games[f ^ 1]];
+  }
+  room.send({
+    t: 'lob',
+    ...(room.creator ? { pub: online.pub ? 1 : 0 } : {}),
+    name: me.name,
+    mode: online.quad ? 'quad' : (online.start?.matchType ?? (me.matchType === 'doubles' ? 'doubles' : 'singles')),
+    venue: cfg?.venue ?? online.start?.venue ?? me.venue,
+    points: cfg?.points ?? online.start?.points ?? me.points,
+    games: cfg?.games ?? online.start?.games ?? me.games,
+    st: over ? 'over' : playing ? 'play' : 'wait',
+    sc,
+    gm,
+  });
+}
+
+/** 有觀眾進來要狀態：回快照（只有一個人回，不然觀眾會重建兩次） */
+function sendSnap(): void {
+  if (!online || online.spectator || !iAnswerSpectators()) return;
+  const room = online.room;
+  if (online.quad) {
+    const q = online.quad;
+    if (q.lobby) room.send(snapQuad(quadInMatch() ? q.sess : null, q.lobby.r));
+    return;
+  }
+  const inMatch = !!online.sync && !online.aiTakeover;
+  const peer = room.peer ? specPlayer(room.peer) : null;
+  room.send(snapDuo(room.role === 'host' ? 'host' : 'guest', specPlayer(myHello()), peer, online.start, inMatch ? match : null));
+}
+
+// ---------- 觀戰（觀眾這一邊） ----------
+/** 觀眾：畫面下方是哪一隊（false = 標準視角：房主／A 隊在下方） */
+let specFlip = false;
+
+/** 以觀眾身分進房：沒有座位，照收到的訊息看比賽（src/net/spectate.ts） */
+function spectateRoom(code: string): void {
+  leaveOnline();
+  unlockAudio();
+  const room = new RoomClient(code, myHello);
+  room.spectator = true;
+  const spec = new Spectator(settings, (m) => room.send(m));
+  online = { room, sync: null, waiting: false, wait: null, aiTakeover: false, pendingReturn: false, start: null, quad: null, spectator: spec, spectators: 0, pub: false };
+  room.onStatus = (text, kind) => {
+    const el = $('roomStatus');
+    el.textContent = text;
+    el.className = `room-status ${kind}`;
+  };
+  spec.onStatus = (t) => {
+    room.onStatus(t, 'wait');
+    renderSpectators();
+  };
+  spec.onNote = (t) => {
+    if (mode === 'menu') room.onStatus(t, 'wait');
+    else hud.intro(t, '');
+  };
+  spec.onMatch = (m, v) => enterSpectate(m, v);
+  room.onSpectate = (msg) => {
+    if (online?.room !== room) return;
+    spec.receive(msg);
+    if (msg.t === 'spec' || msg.t === 'welcome') renderSpectators();
+  };
+  room.onGiveUp = () => room.onStatus('連不上伺服器，請回到大廳再試一次', 'error');
+  showLobby(code);
+  room.connect();
+}
+
+/** 觀眾：比賽建好（或重建）了 → 換外觀、場地、記分板名字，開始看 */
+function enterSpectate(m: Match, v: SpecView): void {
+  const spec = online?.spectator;
+  if (!spec || !online) return;
+  endTutorial();
+  cancelReplay();
+  unlockAudio();
+  match = m;
+  bots = [];
+  demoPlayer = null;
+  tourCtx = null;
+  drill = null;
+  hud.drill = null;
+  setupAssist(true); // 沒有輔助、沒有搖桿
+  controls.scheme = settings.scheme;
+  // 球衣：兩隊各穿自己（第一位真人）選的顏色，太像就把對方換成對比色
+  const chr = (p: SpecView['players'][number]) => characterById(p.character);
+  const teamColor = (ids: number[]): Colors => {
+    const ps = ids.map((i) => v.players[i]).filter(Boolean);
+    const h = ps.find((p) => !p.ai && p.shirt !== undefined);
+    const base = chr(h ?? ps[0]);
+    return { shirt: h?.shirt ?? base.shirt, shorts: h?.shorts ?? base.shorts };
+  };
+  const c0 = teamColor(v.doubles ? [0, 2] : [0]);
+  let c1 = teamColor(v.doubles ? [1, 3] : [1]);
+  const avoid = v.doubles ? [c0.shirt, shade(c0.shirt, -0.32)] : [c0.shirt];
+  if (avoid.some((a) => tooClose(c1.shirt, a))) c1 = pickOppColor('random', avoid);
+  const looks = v.players.map((p) => lookOf(chr(p), p.racket));
+  renderer.setLooks(v.doubles ? teamLooks(looks, c0, c1) : [{ ...looks[0], ...c0 }, { ...looks[1], ...c1 }]);
+  applyVenue(v.venue);
+  renderer.setTarget(null);
+  renderer.spectator = true;
+  renderer.viewSide = specFlip ? -1 : 1;
+  renderer.resize();
+  hud.spectator = true;
+  hud.teamNames = v.teamNames;
+  hud.oppName = v.teamNames[1];
+  hud.oppTag = '線上';
+  clearTimeout(resultTimer);
+  hitStop = 0;
+  online.sync = spec;
+  $('againBtn').style.display = 'none';
+  $('touch').style.display = 'none';
+  document.body.classList.add('spectating');
+  acc = 0;
+  setMode('play');
+  renderSpectators();
+  hud.intro(`觀戰：${v.teamNames[0]} vs ${v.teamNames[1]}`, `${VENUE_LABEL[v.venue]}・${v.points} 分${v.games > 1 ? '・三戰兩勝' : ''}`);
+}
+$('specFlipBtn').addEventListener('click', () => {
+  if (!online?.spectator) return;
+  specFlip = !specFlip;
+  renderer.viewSide = specFlip ? -1 : 1;
+  renderer.resize();
+});
+$('specLeaveBtn').addEventListener('click', () => toMenu());
+
+// ---------- 遊戲大廳：公開房間的名單（每 3 秒拉一次） ----------
+let lobbyTimer: number | undefined;
+const MODE_LABEL: Record<LobbyRoom['mode'], string> = { singles: '單打', doubles: '雙打（AI 隊友）', quad: '雙打（4 人）' };
+
+function openLobbyList(): void {
+  $('online').classList.remove('show');
+  $('lobby').classList.add('show');
+  $('lobbyList').innerHTML = '<div class="lobby-empty">讀取中…</div>';
+  $('lobbyStatus').textContent = '';
+  void refreshLobby();
+  window.clearInterval(lobbyTimer);
+  lobbyTimer = window.setInterval(() => void refreshLobby(), 3000);
+}
+function closeLobbyList(): void {
+  window.clearInterval(lobbyTimer);
+  lobbyTimer = undefined;
+  $('lobby').classList.remove('show');
+}
+async function refreshLobby(): Promise<void> {
+  if (!$('lobby').classList.contains('show')) return;
+  try {
+    const res = await fetch(LOBBY_URL, { cache: 'no-store' });
+    if (!res.ok) throw new Error(String(res.status));
+    const data = (await res.json()) as { rooms?: LobbyRoom[] };
+    if (!$('lobby').classList.contains('show')) return;
+    renderLobby(Array.isArray(data.rooms) ? data.rooms : []);
+    $('lobbyStatus').textContent = `${new Date().toLocaleTimeString('zh-TW', { hour12: false })} 更新`;
+    $('lobbyStatus').className = 'room-status';
+  } catch {
+    $('lobbyStatus').textContent = '連不上伺服器，稍後再試';
+    $('lobbyStatus').className = 'room-status error';
+  }
+}
+function renderLobby(rooms: LobbyRoom[]): void {
+  const box = $('lobbyList');
+  if (!rooms.length) {
+    box.innerHTML = '<div class="lobby-empty">目前沒有公開的房間。建立房間時選「公開到大廳」，朋友就能在這裡找到你。</div>';
+    return;
+  }
+  const venueName = (v: string) => VENUE_LABEL[v as Venue] ?? v;
+  box.innerHTML = rooms
+    .map((r) => {
+      const score = r.sc ? `${r.sc[0]} : ${r.sc[1]}${r.games > 1 && r.gm ? `（局 ${r.gm[0]} : ${r.gm[1]}）` : ''}` : '';
+      const st = r.status === 'play' ? `<span class="st play">比賽中</span>${score}` : r.status === 'over' ? `<span class="st over">已結束</span>${score}` : '<span class="st wait">等待中</span>';
+      const canJoin = r.players < r.cap && r.status !== 'play';
+      return (
+        `<div class="lobby-room${r.status === 'play' ? ' playing' : ''}" data-code="${esc(r.code)}">` +
+        `<div class="code">${esc(r.code)}</div>` +
+        `<div class="main">${esc(r.host)} 的房間・${MODE_LABEL[r.mode] ?? r.mode}</div>` +
+        `<div class="acts"><button data-act="join" class="primary"${canJoin ? '' : ' disabled'}>加入</button><button data-act="spec">👀 觀戰</button></div>` +
+        `<div class="sub">${st}　👤 ${r.players}/${r.cap}　👀 ${r.spectators}　${venueName(r.venue)}・${r.points} 分・${r.games > 1 ? '三戰兩勝' : '一局'}</div>` +
+        `</div>`
+      );
+    })
+    .join('');
+}
+$('lobbyBtn').addEventListener('click', openLobbyList);
+$('lobbyBackBtn').addEventListener('click', () => {
+  closeLobbyList();
+  openOnline();
+});
+$('lobbyList').addEventListener('click', (e) => {
+  const b = (e.target as HTMLElement).closest('button');
+  const row = (e.target as HTMLElement).closest<HTMLElement>('.lobby-room');
+  if (!b || !row || b.disabled) return;
+  const code = normalizeCode(row.dataset.code ?? '');
+  if (code.length < 4) return;
+  closeLobbyList();
+  openOnline();
+  if (b.dataset.act === 'join') joinRoom(code);
+  else spectateRoom(code);
+});
+$('spectateBtn').addEventListener('click', () => {
+  const code = normalizeCode(($('roomCodeInput') as HTMLInputElement).value);
+  if (code.length < 4) {
+    $('roomStatus').textContent = '房號是 4 個字';
+    $('roomStatus').className = 'room-status error';
+    return;
+  }
+  spectateRoom(code);
+});
 
 /** 右下角顯示連線延遲；順便更新「回到剛剛的房間」的時間 */
 let rejoinSaveT = 0;
@@ -1552,17 +1830,31 @@ $('rejoinBtn').addEventListener('click', () => {
   joinRoom(r.code, false, r);
 });
 
-// 從分享連結進來（?room=房號）：直接進房；同一個分頁重新整理（比賽中斷線）→ 自動回到剛剛的房間
+// 從分享連結進來（?room=房號）：直接進房；?spectate=房號 = 直接觀戰；?lobby = 直接開遊戲大廳；
+// 同一個分頁重新整理（比賽中斷線）→ 自動回到剛剛的房間
 {
   const params = new URLSearchParams(location.search);
   const code = params.get('room');
+  const specCode = params.get('spectate');
+  const toLobby = params.get('lobby') !== null;
   const r = loadRejoin(peekClientId()); // 這個分頁自己的紀錄（重新整理前在房間裡）
-  if (code) {
-    params.delete('room');
+  const strip = (...keys: string[]) => {
+    for (const k of keys) params.delete(k);
     const rest = params.toString();
     history.replaceState(null, '', location.pathname + (rest ? `?${rest}` : ''));
+  };
+  if (code) {
+    strip('room');
     openOnline();
     joinRoom(normalizeCode(code), false, r && r.code === normalizeCode(code) ? r : null);
+  } else if (specCode && normalizeCode(specCode).length >= 4) {
+    strip('spectate');
+    openOnline();
+    spectateRoom(normalizeCode(specCode));
+  } else if (toLobby) {
+    strip('lobby');
+    openOnline();
+    openLobbyList();
   } else if (r && !r.left) {
     openOnline();
     joinRoom(r.code, false, r);
@@ -1611,6 +1903,7 @@ function handBack2p(): void {
   match.resumePoint(match.score.slice() as [number, number], match.games.slice() as [number, number], match.server);
   room.dropped = false;
   resumed();
+  sendLob(); // 大廳：又是比賽中了
 }
 
 /** 每幀（比賽推進後）：一分打完的空檔才做的事 —— 回來的人換回去（2 人：AI → 對手；4 人：AI 代打 → 還座位） */
@@ -1687,6 +1980,7 @@ function broadcastLobby(): void {
   if (!q?.lobby || !online) return;
   online.room.send({ t: 'lobby', r: q.lobby.r });
   renderQuadLobby();
+  sendLob(); // 房主換了選手（名字）也讓大廳知道
 }
 
 function onQuadMsg(room: RoomClient, msg: NetMsg): void {
@@ -1695,11 +1989,13 @@ function onQuadMsg(room: RoomClient, msg: NetMsg): void {
   switch (msg.t) {
     case 'welcome':
       saveRejoin({ code: room.code, cid: room.cid, cap: 4, t: Date.now() });
+      if (msg.spec !== undefined) setSpectators(msg.spec);
       if (!q.lobby && msg.role === 'host' && msg.peers === 0 && room.creator) {
         q.lobby = QuadLobby.create({ ...meHuman(), ready: true }, quadCfg());
         room.onStatus('房間建好了：把房號或連結傳給朋友（最多 4 人）', 'ok');
       } else if (!q.lobby) room.onStatus(msg.peers ? '連上了，等房主的名單…' : `房間 ${room.code} 目前沒有人（房主可能暫時離開，或房號打錯），等房主回來…`, 'wait');
       sendQuadHello();
+      sendLob();
       if (quadInMatch() && online.wait?.self) {
         online.wait.text = '重新連上了，等大家繼續…';
         online.wait.gaveUp = false;
@@ -1744,6 +2040,15 @@ function onQuadMsg(room: RoomClient, msg: NetMsg): void {
     case 'peer-join':
     case 'rematch':
       break; // peer-join：等他的 hello
+    case 'spec':
+      setSpectators(msg.n);
+      break;
+    case 'spec-hello':
+      sendSnap();
+      break;
+    case 'snap':
+    case 'lob':
+      break; // 只有觀眾／伺服器會收到
     default:
       if (q.sess && online.sync === q.sess.sync) q.sess.sync.receive(msg as PeerMsg);
   }
@@ -1871,6 +2176,7 @@ function quadGo(msg: Go4): void {
     return;
   }
   enterQuadMatch(s);
+  sendLob(); // 大廳：比賽中
   const mate = s.roster.seats[s.mySeat ^ 2];
   const opps = [s.mySeat ^ 1, s.mySeat ^ 3].map((i) => s.roster.seats[i]);
   const nm = (x: (typeof opps)[number]) => (isHuman(x) ? x.name : `AI（${characterById(x!.character).name}）`);
@@ -1899,6 +2205,7 @@ function quadResume(msg: Resume4): void {
   room.dropped = false;
   room.inMatch = true;
   resumed();
+  sendLob();
 }
 
 /** 進入一場 4 人比賽（開打、或斷線回來重建） */

@@ -59,7 +59,9 @@ export class GameRenderer {
   /** 得分回放的電影鏡頭（null = 一般比賽鏡頭）；回放時落點提示、擊球範圍圈、發球區、雙打箭頭都不畫 */
   private cine: CamPose | null = null;
   private cineDt = 0; // 回放時鏡頭震動用真實時間衰減（動畫的 dt 是慢動作）
-  viewSide: 1 | -1 = 1; // 1 = 自己在畫面下方（z>0）
+  viewSide: 1 | -1 = 1; // 1 = 自己在畫面下方（z>0）；觀戰可以換邊
+  /** 觀戰：轉播鏡頭（不跟著哪位球員，稍微跟著球左右）、不畫擊球範圍圈、發球區、雙打箭頭；直向也不保留搖桿區 */
+  spectator = false;
 
   constructor(container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -182,7 +184,7 @@ export class GameRenderer {
     this.renderer.setSize(w, h);
     const portrait = h > w * 1.05;
     this.pose = portrait ? CAMERA.portrait : CAMERA.landscape;
-    this.reserve = portrait && matchMedia('(pointer: coarse)').matches ? 0.22 : 0;
+    this.reserve = portrait && !this.spectator && matchMedia('(pointer: coarse)').matches ? 0.22 : 0;
 
     // 先把球場塞進「上方區域」(寬 w、高 hc)
     const hc = h * (1 - this.reserve);
@@ -409,8 +411,9 @@ export class GameRenderer {
     this.models.forEach((m, i) => (m.root.visible = i < match.players.length));
 
     const cine = this.cine;
-    // 鏡頭：在自己這側後上方，稍微跟著自己左右移動（回放：照回放算好的電影鏡頭）
-    if (!cine) this.camX += (me.pos.x * this.pose.follow - this.camX) * Math.min(1, dt * 3);
+    // 鏡頭：在自己這側後上方，稍微跟著自己左右移動（回放：照回放算好的電影鏡頭；觀戰：稍微跟著球）
+    const followX = this.spectator ? match.shuttle.pos.x * this.pose.follow : me.pos.x * this.pose.follow;
+    if (!cine) this.camX += (followX - this.camX) * Math.min(1, dt * (this.spectator ? 1.5 : 3));
     const sdt = cine ? this.cineDt : dt;
     this.shakeT += sdt;
     const env = Math.max(0, 1 - this.shakeT / this.shakeDur);
@@ -445,8 +448,8 @@ export class GameRenderer {
       const hint = !match.doubles || p.id === taker ? predictContact(match, p.id, this.hints[i]) : null;
       this.models[i].update(p, dt, match.shuttle.pos, hint, serve);
     });
-    // 雙打：標出自己
-    this.youMark.visible = match.doubles && !cine;
+    // 雙打：標出自己（觀戰沒有「自己」）
+    this.youMark.visible = match.doubles && !cine && !this.spectator;
     if (this.youMark.visible) {
       const bob = Math.sin(performance.now() / 260) * 0.06;
       this.youMark.position.set(me.pos.x, 0, me.pos.z);
@@ -494,10 +497,11 @@ export class GameRenderer {
       this.trail.geometry.setFromPoints(this.trailPts);
     } else this.resetTrail(sh.pos);
 
-    // 落點提示：對方打來的球（黃／紅）；自己剛打出去的球短暫顯示白色虛影
+    // 落點提示：對方打來的球（黃／紅）；自己剛打出去的球短暫顯示白色虛影（觀戰：每一球都是黃／紅）
     const pred = sh.prediction;
-    const incoming = flying && sh.lastHitter !== null && !match.hitByTeam(me.team);
-    const mineJustHit = flying && sh.lastHitter === humanId && match.time - sh.launchTime < 0.45;
+    const spec = this.spectator;
+    const incoming = flying && sh.lastHitter !== null && (spec || !match.hitByTeam(me.team));
+    const mineJustHit = !spec && flying && sh.lastHitter === humanId && match.time - sh.launchTime < 0.45;
     if (showHint && !cine && (incoming || mineJustHit) && pred?.landing) {
       const L = pred.landing;
       this.marker.visible = true;
@@ -511,9 +515,9 @@ export class GameRenderer {
     // 擊球範圍圈：球打過來時顯示；羽球即將進入範圍（現在划剛好）時變綠
     const rr = this.reachRing.material as THREE.MeshBasicMaterial;
     // 雙打：分給隊友的球不顯示（除非球真的會飛進自己的範圍）
-    const tIn = incoming && match.phase === 'rally' && !cine ? timeUntilInReach(match, humanId) : null;
+    const tIn = incoming && !spec && match.phase === 'rally' && !cine ? timeUntilInReach(match, humanId) : null;
     const mineToTake = !match.doubles || taker === humanId || tIn !== null;
-    if (incoming && match.phase === 'rally' && mineToTake && !cine) {
+    if (incoming && !spec && match.phase === 'rally' && mineToTake && !cine) {
       const now = tIn !== null && flickNow(match, humanId, 0.05);
       this.reachRing.visible = true;
       this.reachRing.position.set(me.pos.x, 0.011, me.pos.z);
@@ -522,8 +526,8 @@ export class GameRenderer {
       rr.opacity = now ? 0.75 : 0.18;
     } else this.reachRing.visible = false;
 
-    // 發球時自己能站的區域
-    const box = cine ? null : match.serveBox(humanId);
+    // 發球時自己能站的區域（觀戰不畫）
+    const box = cine || spec ? null : match.serveBox(humanId);
     this.serveBoxLine.visible = !!box;
     if (box) {
       const y = 0.013;
