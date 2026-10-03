@@ -100,6 +100,15 @@ const SIDE_X = 0.45; // 擊球點在身體側邊這麼遠（或低於 LOW_Y）�
 const LOW_Y = 1.05;
 const PRE_T = 0.6; // 擊球前這麼久開始準備（後場側身右腳退後、前場重心先放後面）
 const RUN_PUSH = 0.45; // 跑步時後腳離地前腳跟先抬起（前腳掌蹬地）的角度
+
+// ---- 魚躍（撲救）：一律做成往前撲（身體先轉向撲的方向）----
+const DIVE_LAND_K = 0.72; // 撲出去後 dur 的這個比例胸口著地，剩下的順勢滑一小段（模擬在 dur 停住）
+const DIVE_FLY_Y = 0.55; // 撲出去時髖部高度（低、幾乎水平）
+const DIVE_LIE_Y = 0.17; // 趴在地上時髖部（骨盆中心）高度
+const DIVE_LIE_PITCH = -1.55; // 趴下時身體前傾（-π/2 = 完全水平）
+const DIVE_BACK = 0.12; // 骨盆在 root 後方多遠（頭、手、拍子往前伸過 root，搆向擊球點）
+const DIVE_GET = 0.4; // downT 剩這麼多時開始爬起來（先撐成跪姿再站起），downT 歸零剛好站好
+const KNEEL_Y = 0.5; // 跪姿髖部高度
 const WAIST = 0.1; // 腰（上身旋轉軸）在髖關節上方
 const UPPER_ARM = 0.29;
 const FOREARM = 0.27;
@@ -155,6 +164,7 @@ class Foot {
 const _v1 = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
 const _v3 = new THREE.Vector3();
+const _v4 = new THREE.Vector3();
 const _pole = new THREE.Vector3();
 const _q1 = new THREE.Quaternion();
 const _q2 = new THREE.Quaternion();
@@ -300,6 +310,21 @@ export class PlayerModel {
   private prepOver = 0; // 後場頭頂球準備（右腳退後、側身）
   private prepFront = 0; // 前場弓步前：重心先放後腳
   private scissorSwing: Swing | null = null; // 已經做過地面剪刀交換的那一拍
+  // 魚躍
+  private diving = false; // 魚躍／趴地／爬起來中（腳不踩地，整個身體照時間擺姿勢）
+  private dvYaw = 0; // 撲的方向（骨盆朝向，已就近換算到起跳時朝向 ±π 內）
+  private dvYaw0 = 0; // 起跳時的骨盆朝向、前傾、上身扭轉／側彎、髖高、骨盆位移
+  private dvPitch0 = 0;
+  private dvArch0 = 0;
+  private dvTwist0 = 0;
+  private dvRoll0 = 0;
+  private dvY0 = READY_H;
+  private dvOffX0 = 0;
+  private dvOffZ0 = 0;
+  private dvG = 0; // 爬起來的進度（0..1）
+  private readonly dvFoot = [new THREE.Vector3(), new THREE.Vector3()]; // 起跳時腳的位置（x,z 世界；y = root 座標高度）
+  private readonly dvFootYaw = [0, 0];
+  private readonly dvLie = [new THREE.Vector3(), new THREE.Vector3()]; // 趴著時腳的位置（root 座標，爬起來的起點）
   // 揮拍
   private curSwing: Swing | null = null;
   private swingHit = false;
@@ -696,6 +721,9 @@ export class PlayerModel {
     }
     const shNear = shOK && Math.hypot(this.shL.x, this.shL.z) < 3.5;
     const relaxK = (this.relaxK = damp(this.relaxK, this.shRest > 0.4 ? 1 : 0, 3, ta));
+
+    // ---------- 魚躍（撲出去／趴在地上／爬起來）：整個身體另外擺，結束那一幀交回一般步法 ----------
+    if ((p.dive || p.downT > 0 || this.diving) && this.updateDive(p, ta, shOK)) return;
 
     // ---------- 揮拍 ----------
     const s = p.swing;
@@ -1642,9 +1670,295 @@ export class PlayerModel {
     this.jumpMark.visible = this.jumpMat.opacity > 0.01;
   }
 
+  /**
+   * 魚躍（撲救）動畫：不管往哪個方向撲，一律做成「往前撲」——
+   * 起跳時身體轉向撲的方向、壓低前傾，幾乎水平地撲出去；持拍手連拍子往前伸直（羽球在前面就搆向它，
+   * 擊到時往上小挑一下），另一隻手往前準備撐地，兩腳拖在後面；撲出去 DIVE_LAND_K 時胸口著地、順勢滑一小段；
+   * 趴著等 downT；最後 DIVE_GET 秒先撐成跪姿再一腳一腳站起來，downT 歸零時剛好站好，交回一般步法。
+   * 只看 p.dive.t／dx／dz、p.downT 與 GAME.dive（線上對手也一樣）。回傳 false = 已結束，這一幀照一般動畫。
+   */
+  private updateDive(p: PlayerState, ta: number, shOK: boolean): boolean {
+    const dv = p.dive;
+    if (!dv && p.downT <= 0) {
+      // 結束：爬起來有做完 → 直接接手；被中斷（得分後重新站位等）→ 擺回準備姿勢
+      const done = this.dvG > 0.85;
+      this.endDive(p);
+      if (!done) this.reset(p);
+      return false;
+    }
+    const side = p.side;
+    const H = this.h;
+    const iH = this.ih;
+    if (!this.diving) this.beginDive(p);
+    const dur = GAME.dive.dur;
+    const land = dur * DIVE_LAND_K;
+    const t = dv ? Math.min(dv.t, dur) : dur;
+    const g = dv ? 0 : clamp(1 - p.downT / DIVE_GET, 0, 1); // 爬起來的進度
+    this.dvG = g;
+    const u1 = smooth01(g / 0.45); // 趴 → 跪
+    const u2 = smooth01((g - 0.45) / 0.55); // 跪 → 站
+    const kIn = smooth01(t / 0.08); // 起跳：轉身、前傾
+    const kLie = smooth01((t - land + 0.06) / 0.08); // 快著地 → 趴平
+    const a = this.dvYaw;
+    const fx = -Math.sin(a); // 撲的方向（root 座標）
+    const fz = -Math.cos(a);
+    const rx = -fz; // 撲的方向的右手邊
+    const rz = fx;
+
+    // ---------- 骨盆與上身 ----------
+    let py: number;
+    if (t < 0.06) py = lerp(this.dvY0, DIVE_FLY_Y + 0.03, smooth01(t / 0.06));
+    else if (t < 0.13) py = lerp(DIVE_FLY_Y + 0.03, DIVE_FLY_Y, smooth01((t - 0.06) / 0.07));
+    else py = lerp(DIVE_FLY_Y, DIVE_LIE_Y, smooth01((t - 0.13) / (land - 0.13)));
+    let pitch = lerp(this.dvPitch0, -1.35, smooth01(t / 0.12));
+    pitch = lerp(pitch, DIVE_LIE_PITCH, smooth01((t - 0.12) / (land - 0.12)));
+    let along = -DIVE_BACK * smooth01(t / 0.1);
+    let arch = lerp(lerp(this.dvArch0, 0.12, kIn), 0.2, kLie); // 正 = 抬胸
+    let yaw = lerp(this.dvYaw0, a, kIn);
+    let twist = this.dvTwist0 * (1 - kIn);
+    const roll = this.dvRoll0 * (1 - kIn);
+    const yawS = 0.8 * a; // 站好時的骨盆朝向（交回一般動畫時 psi = a）
+    if (g > 0) {
+      const standY = lerp(READY_H, STAND_H, this.relaxK);
+      py = lerp(lerp(DIVE_LIE_Y, KNEEL_Y, u1), standY, u2);
+      pitch = lerp(lerp(DIVE_LIE_PITCH, -0.6, u1), 0, u2);
+      along = lerp(lerp(-DIVE_BACK, -0.3, u1), 0, u2);
+      arch = lerp(lerp(0.2, 0.05, u1), -0.1 * (1 - this.relaxK), u2);
+      yaw = lerp(a, yawS, u2);
+      twist = (a - yawS) * u2;
+    }
+    const ox = lerp(this.dvOffX0, 0, kIn) + fx * along;
+    const oz = lerp(this.dvOffZ0, 0, kIn) + fz * along;
+    this.pelvis.position.set(ox, py, oz);
+    this.pelvis.rotation.set(pitch, yaw, 0);
+    this.chest.position.y = WAIST;
+    this.chest.rotation.set(arch, twist, roll);
+    this.pelvis.updateMatrix();
+    this.chest.updateMatrix();
+    this.mC.multiplyMatrices(this.pelvis.matrix, this.chest.matrix);
+    this.qC.multiplyQuaternions(this.pelvis.quaternion, this.chest.quaternion);
+    this.qCi.copy(this.qC).invert();
+    this.shoulderR.copy(this.shR0).applyMatrix4(this.mC);
+    this.shoulderL.copy(this.shL0).applyMatrix4(this.mC);
+    this.hipY = this.yOut = py;
+    this.offX = ox;
+    this.offZ = oz;
+
+    // ---------- 腿：不踩地，跟著身體（起跳時腳先留在原地蹬、再拖到身後；爬起來時收成跪姿再踩回站姿）----------
+    const bodyFront = _v4.set(0, 0, -1).applyQuaternion(this.pelvis.quaternion); // 身體正面（趴著時朝下）
+    const cS = Math.cos(yawS);
+    const sS = Math.sin(yawS);
+    for (let i = 0; i < 2; i++) {
+      const f = this.feet[i];
+      f.planted = false;
+      // 拖在身後的腳（骨盆座標：沿腿往下、趴著時腳背貼地）
+      const tgt = _v2.set(f.sign * 0.12, -0.8, lerp(0.05, -0.05, kLie)).applyMatrix4(this.pelvis.matrix);
+      let shoeP = pitch - 1.2; // 腳背打直（腳尖朝後）
+      let shoeY = a;
+      let uf = 0;
+      if (dv) {
+        // 起跳：左腳先離地、右腳最後蹬
+        const wl = smooth01((t - (f.sign > 0 ? 0.03 : 0)) / 0.1);
+        const s0 = this.dvFoot[i];
+        const lx = (s0.x - p.pos.x) * side * iH;
+        const lz = (s0.z - p.pos.z) * side * iH;
+        tgt.set(lerp(lx, tgt.x, wl), lerp(s0.y, tgt.y, wl) + 0.08 * Math.sin(Math.PI * wl), lerp(lz, tgt.z, wl));
+        shoeP = lerp(0, shoeP, wl);
+        shoeY = lerp(this.dvFootYaw[i], a, wl);
+        this.dvLie[i].copy(tgt);
+      } else if (g <= 0) this.dvLie[i].copy(tgt);
+      else {
+        // 爬起來：先收成跪姿（小腿貼地、腳尖在後），再一腳一腳踩到站姿位置（右腳先）
+        uf = f.sign > 0 ? smooth01(u2 / 0.65) : smooth01((u2 - 0.3) / 0.65);
+        const lie = this.dvLie[i];
+        const kx = fx * -0.6 + rx * f.sign * 0.14;
+        const kz = fz * -0.6 + rz * f.sign * 0.14;
+        const px = f.sign * 0.21;
+        const pz = f.sign > 0 ? -0.07 : 0.03;
+        tgt.set(lerp(lie.x, kx, u1), lerp(lie.y, ANKLE + 0.03, u1), lerp(lie.z, kz, u1));
+        tgt.set(lerp(tgt.x, px * cS + pz * sS, uf), lerp(tgt.y, ANKLE, uf) + 0.09 * Math.sin(Math.PI * uf), lerp(tgt.z, -px * sS + pz * cS, uf));
+        shoeP = lerp(lerp(DIVE_LIE_PITCH - 1.2, -1.9, u1), 0, uf);
+        shoeY = lerp(a, yawS - f.sign * 0.22, uf);
+      }
+      // 膝蓋：撲出去／跪著朝身體正面，站起來時朝腳尖
+      _pole.copy(bodyFront).lerp(_v3.set(-Math.sin(shoeY), 0, -Math.cos(shoeY)), uf);
+      f.hip.set(f.sign * this.hipW, 0, 0).applyMatrix4(this.pelvis.matrix);
+      solveTwoBone(f.hip, tgt, THIGH, SHIN, _pole, f.knee, f.ankle);
+      f.local.copy(tgt);
+      f.wx = p.pos.x + side * tgt.x * H;
+      f.wz = p.pos.z + side * tgt.z * H;
+      f.h = Math.max(0, tgt.y - ANKLE);
+      f.yaw = shoeY;
+      f.pitch = shoeP;
+      f.thigh.position.copy(f.hip);
+      f.thigh.quaternion.setFromUnitVectors(DOWN, _v1.subVectors(f.knee, f.hip).normalize());
+      const sv = _v1.subVectors(f.ankle, f.knee);
+      const len = sv.length();
+      f.shin.position.copy(f.knee);
+      if (len > 1e-4) f.shin.quaternion.setFromUnitVectors(DOWN, sv.multiplyScalar(1 / len));
+      f.shin.scale.y = 1;
+      f.shoe.position.copy(f.ankle);
+      f.shoe.rotation.set(shoeP, shoeY, 0);
+    }
+
+    // ---------- 持拍手：往前伸直；羽球在前面就搆向它；擊到時往上挑一下 ----------
+    const s = p.swing;
+    const dir = _v1.set(fx + rx * 0.12, -0.15, fz + rz * 0.12).normalize();
+    if (s && s.dive && s.contacted && s.contactPoint) {
+      const cp = s.contactPoint;
+      const to = _v2.set((cp.x - p.pos.x) * side * iH, (cp.y - p.pos.y) * iH, (cp.z - p.pos.z) * side * iH).sub(this.shoulderR);
+      if (to.lengthSq() > 1e-4) dir.lerp(to.normalize(), 0.7).normalize();
+      const fl = Math.sin(Math.PI * clamp((s.t - s.contactT) / 0.15, 0, 1));
+      dir.y += 0.6 * fl; // 手腕往上一挑把球撈起來
+      dir.normalize();
+    } else if (dv && shOK) {
+      const to = _v2.subVectors(this.shL, this.shoulderR);
+      const d = to.length();
+      if (d > 0.05 && to.x * fx + to.z * fz > 0.2 * d) dir.lerp(to.multiplyScalar(1 / d), 0.7 * (1 - clamp((d - 1) / 1.4, 0, 1))).normalize();
+    }
+    if (g > 0) dir.lerp(_v2.set(fx * 0.35 + rx * 0.15, -0.9, fz * 0.35 + rz * 0.15).normalize(), u1).normalize();
+    const qT = _q1.setFromUnitVectors(_v3.set(0, 1, 0), dir);
+    if (u2 > 0) qT.slerp(_q2.multiplyQuaternions(this.qC, ARM_READY), u2);
+    this.armR.position.copy(this.shoulderR);
+    this.armR.quaternion.slerp(qT, 1 - Math.exp(-28 * ta));
+    this.armR.scale.y += (lerp(1.04, 1, Math.max(u1, 1 - kIn)) - this.armR.scale.y) * Math.min(1, ta * 20);
+
+    // ---------- 非持拍手：往前伸、準備撐地；趴著時手掌貼地；爬起來時放下 ----------
+    const tu = _v2.set(fx * 0.6 - rx * 0.35, -0.55, fz * 0.6 - rz * 0.35);
+    const tf = _v3.set(fx * 0.85 - rx * 0.1, -0.45, fz * 0.85 - rz * 0.1);
+    tu.lerp(_v4.set(fx * 0.45 - rx * 0.35, -0.8, fz * 0.45 - rz * 0.35), kLie);
+    tf.lerp(_v4.set(fx * 0.9, -0.25, fz * 0.9), kLie);
+    if (g > 0) {
+      tu.lerp(_v4.set(fx * 0.1 - rx * 0.15, -1, fz * 0.1 - rz * 0.15), u1);
+      tf.lerp(_v4.set(fx * 0.3 - rx * 0.1, -0.9, fz * 0.3 - rz * 0.1), u1);
+      tu.normalize().lerp(_v4.copy(L_READY_UP).applyQuaternion(this.qC), u2);
+      tf.normalize().lerp(_v4.copy(L_READY_FORE).applyQuaternion(this.qC), u2);
+    }
+    const r = 1 - Math.exp(-18 * ta);
+    this.lU.lerp(tu.normalize(), r).normalize();
+    this.lF.lerp(tf.normalize(), r).normalize();
+    this.upperL.position.copy(this.shoulderL);
+    this.upperL.quaternion.setFromUnitVectors(DOWN, this.lU);
+    this.foreL.position.copy(this.shoulderL).addScaledVector(this.lU, UPPER_ARM);
+    this.foreL.quaternion.setFromUnitVectors(DOWN, this.lF);
+
+    // ---------- 頭：抬頭看前面 ----------
+    this.headPitch = damp(this.headPitch, lerp(lerp(0, 1.1, kIn), 0.15, g), 14, ta);
+    this.headYaw = damp(this.headYaw, 0, 14, ta);
+    this.head.rotation.set(this.headPitch, this.headYaw, 0);
+    if (this.ponytail) {
+      this.ptX = damp(this.ptX, lerp(-0.35, -1.1, kIn * (1 - g)), 10, ta);
+      this.ptZ = damp(this.ptZ, 0, 10, ta);
+      this.ptVX = this.ptVZ = 0;
+      this.ponytail.rotation.set(this.ptX - this.headPitch, 0, this.ptZ);
+    }
+
+    // ---------- 影子：拉成橢圓，跟著身體 ----------
+    const prone = g > 0 ? 1 - u2 : smooth01(t / 0.15);
+    this.shadow.position.x = ox + fx * 0.4 * prone;
+    this.shadow.position.z = oz + fz * 0.4 * prone;
+    this.shadow.rotation.z = Math.atan2(-fz, fx);
+    const sh = 1 - Math.min(0.3, Math.max(0, py - DIVE_LIE_Y) * 0.5);
+    this.shadow.scale.set((1 + 0.8 * prone) * sh, (1 - 0.15 * prone) * sh, 1);
+
+    // ---------- 擊到時的拍子拖尾 ----------
+    const swish = !!(s && s.dive && s.contacted && s.t - s.contactT < 0.14);
+    this.trail.setStyle(SWOOSH_NORMAL);
+    _sw.copy(this.shoulderR).applyMatrix4(this.root.matrixWorld);
+    _sq.multiplyQuaternions(this.root.quaternion, this.armR.quaternion);
+    this.trail.step(ta, swish, _sw, _sq, this.armR.scale.y * H);
+    const tm = this.trail.mesh;
+    if (tm.visible) {
+      tm.matrix.copy(this.root.matrixWorld).invert();
+      tm.matrixWorldNeedsUpdate = true;
+    }
+    return true;
+  }
+
+  /** 撲出去的第一幀：記下起跳時的姿勢（之後從這裡平順地轉成撲出去的姿勢） */
+  private beginDive(p: PlayerState): void {
+    this.diving = true;
+    this.dvG = 0;
+    this.dvYaw0 = this.pelvis.rotation.y;
+    this.dvPitch0 = this.pelvis.rotation.x;
+    this.dvArch0 = this.chest.rotation.x;
+    this.dvTwist0 = this.chest.rotation.y;
+    this.dvRoll0 = this.chest.rotation.z;
+    this.dvY0 = this.pelvis.position.y;
+    this.dvOffX0 = this.pelvis.position.x;
+    this.dvOffZ0 = this.pelvis.position.z;
+    const d = p.dive;
+    // 撲的方向 → 骨盆朝向（就近轉：往後撲時從比較近的那一側轉過去）
+    let a = d ? Math.atan2(-d.dx * p.side, -d.dz * p.side) : this.dvYaw0;
+    while (a - this.dvYaw0 > Math.PI) a -= Math.PI * 2;
+    while (a - this.dvYaw0 < -Math.PI) a += Math.PI * 2;
+    this.dvYaw = a;
+    for (let i = 0; i < 2; i++) {
+      const f = this.feet[i];
+      this.dvFoot[i].set(f.wx, f.local.y, f.wz);
+      this.dvFootYaw[i] = f.yaw;
+      this.dvLie[i].copy(f.local);
+    }
+    this.lunging = this.lungeHold = false;
+    this.L = 0;
+    this.lungeSwing = null;
+  }
+
+  /** 爬起來站好：腳在站姿位置踩住、骨盆／朝向接上一般動畫（不會跳） */
+  private endDive(p: PlayerState): void {
+    this.diving = false;
+    this.dvG = 0;
+    const side = p.side;
+    const yawS = 0.8 * this.dvYaw;
+    const cy = Math.cos(yawS);
+    const sy = Math.sin(yawS);
+    for (let i = 0; i < 2; i++) {
+      const f = this.feet[i];
+      const px = f.sign * 0.21;
+      const pz = f.sign > 0 ? -0.07 : 0.03;
+      const hx = px * cy + pz * sy;
+      const hz = -px * sy + pz * cy;
+      f.wx = f.homeX = p.pos.x + side * hx * this.h;
+      f.wz = f.homeZ = p.pos.z + side * hz * this.h;
+      f.planted = true;
+      f.forced = false;
+      f.strike = f.dragging = false;
+      f.u = 1;
+      f.h = f.h0 = 0;
+      f.pitch = f.heel = f.toe = 0;
+      f.yaw = f.yawTo = f.homeYaw = yawS - f.sign * 0.22;
+      f.pivoting = false;
+      f.local.set(hx, ANKLE, hz);
+    }
+    this.psi = this.dvYaw;
+    this.hipY = this.yOut = this.pelvis.position.y;
+    this.crouch = this.crouchV = 0;
+    this.offX = this.pelvis.position.x;
+    this.offZ = this.pelvis.position.z;
+    this.offY = 0;
+    this.lunging = this.lungeHold = false;
+    this.L = 0;
+    this.lungeSwing = null;
+    this.recoverT = 0;
+    this.prepOver = this.prepFront = 0;
+    this.wide = 0;
+    this.splitPending = false;
+    this.peak = 0;
+    this.wasAir = false;
+    this.scissor = 0;
+    this.lastStep = null;
+    this.wPose = 0;
+    this.shadow.position.x = this.shadow.position.z = 0;
+    this.shadow.rotation.z = 0;
+  }
+
   /** 第一次或瞬移（發球前重新站位）時，直接擺成準備姿勢 */
   private reset(p: PlayerState): void {
     this.inited = true;
+    this.diving = false;
+    this.dvG = 0;
+    this.shadow.position.x = this.shadow.position.z = 0;
+    this.shadow.rotation.z = 0;
     const side = p.side;
     for (let i = 0; i < 2; i++) {
       const f = this.feet[i];
