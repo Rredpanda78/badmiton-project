@@ -9,6 +9,7 @@ const DOUBLE_TAP_MS = 320; // 兩次按下的間隔在這之內 = 連按兩下�
 const TAP_MAX_MS = 260; // 按住少於這麼久就放開才算「點一下」
 const DOUBLE_TAP_PX = 80;
 const SLIDE_PX = 22; // 點擊滑放：放開時滑超過這個距離才算出拍
+const SERVE_LONG_PX = 96; // 點擊滑放發球：往上滑超過這個距離（第二圈）放開 = 彈發（距離比放開速度在觸控上穩定）
 const DIVE_FLICK_MS = 170; // 自動跑位的撲救區：按下後這麼短時間內划出去才算魚躍（慢慢拖 = 預判）
 const LEAN_PX = 16;
 
@@ -60,6 +61,9 @@ export class LocalControls {
   onDive: (() => void) | null = null;
   /** 擊球操作方式：charge = 蓄力划動、tap = 點擊滑放＋殺球鍵 */
   scheme: ControlScheme = 'charge';
+  /** 現在是自己要發球（main.ts 每幀設定）：點擊滑放時顯示彈發的第二圈與發球手勢提示 */
+  serving = false;
+  private serveRingEl: HTMLElement;
   private smashEl: HTMLButtonElement;
   private labelEl: HTMLElement;
   private smashPad: Pad | null = null;
@@ -90,6 +94,15 @@ export class LocalControls {
     this.smashEl.addEventListener('pointercancel', () => (this.smashPad = null));
     this.smashKnob = mk(this.smashEl, 'smash-knob');
     this.hlEl = mk(overlay, 'tut-ring');
+    // 發球的第二圈（點擊滑放：往上滑過這圈放開 = 彈發）；樣式寫在這裡，不動 style.css
+    this.serveRingEl = mk(overlay, 'serve-ring');
+    const d = SERVE_LONG_PX * 2;
+    this.serveRingEl.style.cssText = `display:none;position:absolute;width:${d}px;height:${d}px;margin:${-d / 2}px 0 0 ${-d / 2}px;border-radius:50%;border:2px dashed rgba(255,213,74,0.75);box-sizing:border-box;pointer-events:none;`;
+    const tag = document.createElement('span');
+    tag.textContent = '↑ 彈發';
+    // 標籤放在圈的左上弧內側（右上方是「殺」搖桿，避免壓到）
+    tag.style.cssText = 'position:absolute;left:27%;top:15%;transform:translate(-50%,0);color:#ffd54a;font-size:12px;font-weight:700;white-space:nowrap;text-shadow:0 1px 4px rgba(0,0,0,0.8);';
+    this.serveRingEl.appendChild(tag);
 
     surface.addEventListener('pointerdown', this.onDown);
     window.addEventListener('pointermove', this.onMove);
@@ -269,8 +282,8 @@ export class LocalControls {
       const dx = a.x - a.ox;
       const dy = a.y - a.oy;
       if (this.scheme === 'tap' && Math.hypot(dx, dy) > SLIDE_PX) {
-        // 點擊滑放：放開的那一刻出拍。上手／下手由擊球點高低自動決定
-        this.pendingFlick = tapShot(dx, -dy);
+        // 點擊滑放：放開的那一刻出拍。上手／下手由擊球點高低自動決定；滑過第二圈 = 發球時的彈發
+        this.pendingFlick = tapShot(dx, -dy, Math.hypot(dx, dy) > SERVE_LONG_PX);
       } else if (this.scheme === 'tap') {
         // 只點不滑 = 平球（網前高於網 = 撲球）；球還沒到身邊就不算（避免太早亂點）
         this.pendingFlick = { x: 0, y: 0, cmd: { family: 'side', depth: 5.0, soft: true } };
@@ -286,6 +299,7 @@ export class LocalControls {
    * 殺球搖桿（點擊滑放模式）：按住拖曳、放開出拍。
    * 往下／左右 = 殺球（左右決定落點）；往上 = 假殺真切（切球）。後場殺球、前場撲球。
    * 點一下再按住 = 跳殺待命（球快到時自動起跳，滯空時放開）
+   * 發球時（cmd.stick）：往上 = 彈發、往下／左右 = 平抽發（左右瞄身體兩側）
    */
   private onSmashDown = (e: PointerEvent) => this.startSmash(e, this.smashEl);
 
@@ -317,17 +331,17 @@ export class LocalControls {
     const dy = e.clientY - s.oy;
     if (Math.hypot(dx, dy) <= SLIDE_PX) {
       // 沒拖曳 = 直線殺球（球快到身邊才出拍；球還遠就只是跳殺連按兩下的第一下）
-      this.pendingFlick = { x: 0, y: -1, cmd: { family: 'down', depth: 'smash', soft: true } };
+      this.pendingFlick = { x: 0, y: -1, cmd: { family: 'down', depth: 'smash', soft: true, stick: 'smash' } };
       if (performance.now() - s.downAt < TAP_MAX_MS) this.lastSmashTap = performance.now();
       return;
     }
     const nx = dx / Math.hypot(dx, dy);
     if (dy < 0 && Math.abs(nx) < 0.77) {
-      // 往上 = 假殺球、真切球
-      this.pendingFlick = { x: dx, y: -dy, cmd: { family: 'down', depth: 1.2 } };
+      // 往上 = 假殺球、真切球（發球：彈發）
+      this.pendingFlick = { x: dx, y: -dy, cmd: { family: 'down', depth: 1.2, stick: 'smash' } };
     } else {
-      // 往下或左右 = 殺球，左右分量瞄準
-      this.pendingFlick = { x: dx, y: -Math.max(Math.abs(dy), 8), cmd: { family: 'down', depth: 'smash' } };
+      // 往下或左右 = 殺球，左右分量瞄準（發球：平抽發）
+      this.pendingFlick = { x: dx, y: -Math.max(Math.abs(dy), 8), cmd: { family: 'down', depth: 'smash', stick: 'smash' } };
     }
   };
 
@@ -360,8 +374,8 @@ export class LocalControls {
       this.spaceDownAt = now;
       this.onPress?.(this.kbJump);
     }
-    // 空白鍵蓄力中按方向鍵 → 出拍（同時按兩個方向可以斜划）
-    if (this.keys.has('Space') && !this.kbFlicked && e.code.startsWith('Arrow')) {
+    // 蓄力划動：空白鍵蓄力中按方向鍵 → 出拍（同時按兩個方向可以斜划）；點擊滑放的方向鍵在放開空白鍵時才看
+    if (this.scheme === 'charge' && this.keys.has('Space') && !this.kbFlicked && e.code.startsWith('Arrow')) {
       setTimeout(() => {
         const x = (this.keys.has('ArrowRight') ? 1 : 0) - (this.keys.has('ArrowLeft') ? 1 : 0);
         const y = (this.keys.has('ArrowUp') ? 1 : 0) - (this.keys.has('ArrowDown') ? 1 : 0);
@@ -375,9 +389,15 @@ export class LocalControls {
 
   private onKeyUp = (e: KeyboardEvent) => {
     if (e.code === 'Space' && this.scheme === 'tap' && this.enabled) {
+      // 點擊滑放：空白鍵 = 「殺」搖桿。放開時按著方向鍵 = 搖桿的方向：↑ 假殺真切（發球：彈發）、←→ 瞄準（發球：平抽發）；
+      // 沒按方向鍵 = 直線殺球（發球：發小球）
       this.keys.delete(e.code);
       this.smashEl.classList.remove('down');
-      this.pendingFlick = { x: 0, y: -1, cmd: { family: 'down', depth: 'smash' } };
+      const k = this.keys;
+      const x = (k.has('ArrowRight') ? 1 : 0) - (k.has('ArrowLeft') ? 1 : 0);
+      if (k.has('ArrowUp') && !x) this.pendingFlick = { x: 0, y: 1, cmd: { family: 'down', depth: 1.2, stick: 'smash' } };
+      else if (x) this.pendingFlick = { x, y: -0.3, cmd: { family: 'down', depth: 'smash', stick: 'smash' } };
+      else this.pendingFlick = { x: 0, y: -1, cmd: { family: 'down', depth: 'smash' } };
       return;
     }
     this.keys.delete(e.code);
@@ -527,6 +547,13 @@ export class LocalControls {
 
     // 點擊滑放：殺球鍵放在右手圈上方；按住時顯示目前是下手還是上手
     const tap = this.scheme === 'tap';
+    // 發球時的第二圈（點擊滑放）：套在右手圈外面，往上滑過去放開 = 彈發
+    const serveRing = tap && this.serving && (this.isTouch || !!a);
+    this.serveRingEl.style.display = serveRing ? 'block' : 'none';
+    if (serveRing) {
+      this.serveRingEl.style.left = this.ringEl.style.left;
+      this.serveRingEl.style.top = this.ringEl.style.top;
+    }
     this.smashEl.style.display = tap && this.enabled ? 'block' : 'none';
     if (tap) {
       this.smashEl.style.left = `${smashX}px`;
@@ -563,17 +590,19 @@ export class LocalControls {
     const showLabel = tap && (!!a || !!sp);
     this.labelEl.style.display = showLabel ? 'block' : 'none';
     if (showLabel && sp) {
-      this.labelEl.textContent = sp.jump ? '跳殺　↓殺球　↑切球' : '殺球　←→瞄準　↓殺　↑假殺真切';
-      this.labelEl.classList.toggle('over', sp.jump);
+      this.labelEl.textContent = this.serving ? '發球　↑彈發　←→↓平抽發' : sp.jump ? '跳殺　↓殺球　↑切球' : '殺球　←→瞄準　↓殺　↑假殺真切';
+      this.labelEl.classList.toggle('over', sp.jump && !this.serving);
       // 置中在殺球搖桿上方，但不能超出螢幕
       const half = this.labelEl.offsetWidth / 2 + 8;
       this.labelEl.style.left = `${Math.max(half, Math.min(w - half, smashX))}px`;
       this.labelEl.style.top = `${smashY - 58}px`;
     } else if (showLabel && a) {
-      this.labelEl.textContent = '↑ 高遠／挑球　↓ 切球／放網　←→ 平抽';
+      this.labelEl.textContent = this.serving ? '↑ 發高遠　↑↑ 彈發　↓ 發小球　斜滑瞄準' : '↑ 高遠／挑球　↓ 切球／放網　←→ 平抽';
       this.labelEl.classList.remove('over');
-      this.labelEl.style.left = `${a.ox}px`;
-      this.labelEl.style.top = `${a.oy - 86}px`;
+      const half = this.labelEl.offsetWidth / 2 + 8;
+      this.labelEl.style.left = `${Math.max(half, Math.min(w - half, a.ox))}px`;
+      // 發球時標籤放在第二圈上面，而且不壓到「殺」搖桿
+      this.labelEl.style.top = `${this.serving ? Math.min(a.oy - SERVE_LONG_PX - 34, smashY - 62) : a.oy - 86}px`;
     }
   }
 }
@@ -585,9 +614,9 @@ function mk(parent: HTMLElement, cls: string): HTMLElement {
   return el;
 }
 
-/** 點擊滑放的手勢 → 球種：↑ 高遠球／挑球、↓ 切球／放網（上手或下手看擊球點高低）、左右 = 平抽 */
-function tapShot(x: number, y: number): Flick {
+/** 點擊滑放的手勢 → 球種：↑ 高遠球／挑球、↓ 切球／放網（上手或下手看擊球點高低）、左右 = 平抽；long = 滑過第二圈（發球時 ↑ = 彈發） */
+function tapShot(x: number, y: number, long = false): Flick {
   const nx = x / (Math.hypot(x, y) || 1);
-  if (Math.abs(nx) >= 0.77) return { x, y, cmd: { family: 'side', depth: 5.0 } };
-  return { x, y, cmd: { family: y > 0 ? 'up' : 'down', depth: 'auto' } };
+  if (Math.abs(nx) >= 0.77) return { x, y, cmd: { family: 'side', depth: 5.0, long } };
+  return { x, y, cmd: { family: y > 0 ? 'up' : 'down', depth: 'auto', long } };
 }

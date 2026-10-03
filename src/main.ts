@@ -494,6 +494,8 @@ function tick(now: number): void {
   renderer.update(match, mode === 'paused' || mode === 'result' ? 0 : dt, settings.landingHint && !demoPlayer, HUMAN);
   // 觀戰：記分板左邊 = 畫面下方那隊（可以換邊）
   if (mode !== 'menu') hud.update(match, renderer, dt, spec ? (renderer.viewSide === 1 ? 0 : 1) : HUMAN);
+  // 發球（src/input/controls.ts）：自己要發球時顯示彈發的第二圈與發球手勢提示
+  controls.serving = !demoPlayer && !spec && match.phase === 'serve' && match.server === HUMAN;
   if (!spec) controls.draw(me.charge, me.charging && !demoPlayer, renderer.bottomReserve);
   updateNetInfo(dt);
   renderer.render();

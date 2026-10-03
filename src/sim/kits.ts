@@ -6,7 +6,7 @@ export type ShotGroup = 'smash' | 'drop' | 'push' | 'clear';
 export function shotGroup(name: string): ShotGroup {
   if (name === '殺球' || name === '跳殺' || name === '下壓' || name === '跳撲' || name === '撲球') return 'smash';
   if (name === '切球' || name === '放網' || name === '發小球') return 'drop';
-  if (name === '推球' || name === '平抽' || name === '平快發球') return 'push';
+  if (name === '推球' || name === '平抽' || name === '平抽發') return 'push';
   return 'clear';
 }
 

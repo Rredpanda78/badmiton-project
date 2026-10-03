@@ -1,7 +1,7 @@
 import { chargeFromTime, COURT, GAME, PHYS, timeForCharge, type Difficulty } from '../config';
 import { idealContactFor, idleInput, runTime, type Match, type PlayerId, type PlayerInput } from '../sim/match';
 import type { Prediction } from '../sim/physics';
-import { chargeForDepth, depthFromCharge, reboundCharge, type Family, type Flick } from '../sim/shots';
+import { chargeForDepth, depthFromCharge, reboundCharge, type Family, type Flick, type ServeKind } from '../sim/shots';
 import { ballTaker, formationSpot, isLift } from './doubles';
 
 interface AIParams {
@@ -16,19 +16,23 @@ interface AIParams {
   jumpRate: number; // 高球殺球時改用跳殺的比例
   diveRate: number; // 跑不到的低球改用魚躍撲救的比例
   aimWide: number; // 打空檔時往邊線瞄多寬（1 = 標準；超難、地獄更貼邊線）
+  flickServe: number; // 發球時彈發的權重（相對發小球 = 1；接發球員站很前面時加倍）
+  driveServe: number; // 雙打平抽發球的權重（單打再打折）
+  rushRate: number; // 接發球：對方小球發得飄（網前、比網高）就搶攻的機率
 }
 
 /**
  * 各難度的 AI 參數（測試腳本會讀／覆寫，所以 export）。
  * 超難、地獄：反應更快、落點與出拍時機更準、出界球幾乎不碰、更常打空檔、多殺多撲多跳殺、跑不到就撲；
  * speedMul > 1 = 跑速／起步比同一位球員快一點（搖桿推滿也追不上的那一點點）
+ * 發球：簡單／普通幾乎只發小球與高遠球；困難以上會混彈發（接發球員站前面時更多）、雙打混平抽發，也會搶攻飄高的小球
  */
 export const DIFFICULTY_PARAMS: Record<Difficulty, AIParams> = {
-  easy: { reaction: 0.38, speedMul: 0.78, depthNoise: 0.9, timingJitter: 0.05, outJudge: 0.5, smartAim: 0.35, smashBias: 0.6, killRate: 0.25, jumpRate: 0, diveRate: 0.2, aimWide: 1 },
-  normal: { reaction: 0.25, speedMul: 0.9, depthNoise: 0.5, timingJitter: 0.04, outJudge: 0.8, smartAim: 0.7, smashBias: 1, killRate: 0.4, jumpRate: 0.15, diveRate: 0.6, aimWide: 1 },
-  hard: { reaction: 0.15, speedMul: 1.0, depthNoise: 0.3, timingJitter: 0.025, outJudge: 0.95, smartAim: 0.9, smashBias: 1.2, killRate: 0.55, jumpRate: 0.35, diveRate: 0.9, aimWide: 1 },
-  extreme: { reaction: 0.1, speedMul: 1.02, depthNoise: 0.2, timingJitter: 0.015, outJudge: 0.98, smartAim: 0.95, smashBias: 1.35, killRate: 0.65, jumpRate: 0.45, diveRate: 0.95, aimWide: 1.06 },
-  hell: { reaction: 0.055, speedMul: 1.05, depthNoise: 0.12, timingJitter: 0.008, outJudge: 0.995, smartAim: 0.98, smashBias: 1.5, killRate: 0.75, jumpRate: 0.55, diveRate: 1, aimWide: 1.12 },
+  easy: { reaction: 0.38, speedMul: 0.78, depthNoise: 0.9, timingJitter: 0.05, outJudge: 0.5, smartAim: 0.35, smashBias: 0.6, killRate: 0.25, jumpRate: 0, diveRate: 0.2, aimWide: 1, flickServe: 0, driveServe: 0, rushRate: 0 },
+  normal: { reaction: 0.25, speedMul: 0.9, depthNoise: 0.5, timingJitter: 0.04, outJudge: 0.8, smartAim: 0.7, smashBias: 1, killRate: 0.4, jumpRate: 0.15, diveRate: 0.6, aimWide: 1, flickServe: 0.04, driveServe: 0.03, rushRate: 0.1 },
+  hard: { reaction: 0.15, speedMul: 1.0, depthNoise: 0.3, timingJitter: 0.025, outJudge: 0.95, smartAim: 0.9, smashBias: 1.2, killRate: 0.55, jumpRate: 0.35, diveRate: 0.9, aimWide: 1, flickServe: 0.12, driveServe: 0.12, rushRate: 0.55 },
+  extreme: { reaction: 0.1, speedMul: 1.02, depthNoise: 0.2, timingJitter: 0.015, outJudge: 0.98, smartAim: 0.95, smashBias: 1.35, killRate: 0.65, jumpRate: 0.45, diveRate: 0.95, aimWide: 1.06, flickServe: 0.18, driveServe: 0.18, rushRate: 0.75 },
+  hell: { reaction: 0.055, speedMul: 1.05, depthNoise: 0.12, timingJitter: 0.008, outJudge: 0.995, smartAim: 0.98, smashBias: 1.5, killRate: 0.75, jumpRate: 0.55, diveRate: 1, aimWide: 1.12, flickServe: 0.22, driveServe: 0.22, rushRate: 0.9 },
 };
 const PARAMS = DIFFICULTY_PARAMS;
 
@@ -99,7 +103,7 @@ export class AIController {
   private seenServeT = -1;
   private reactAt = 0; // 對方這一拍之後，什麼時候開始動（雙打補位也照反應時間）
   private serveDelay = 1;
-  private serveChoice: { charge: number; flick: Flick } | null = null;
+  private serveChoice: { chargeAt: number; flickAt: number; flick: Flick } | null = null;
   /** 會不會魚躍（自動跑位時看設定「自動魚躍」） */
   allowDive = true;
   /** 自動跑位用：反應時間（null = 照難度）。預判模式平常慢一點、讀對了立刻起步；輔助模式 = 0（玩家自己起步） */
@@ -242,31 +246,87 @@ export class AIController {
     return this.takeHook ? this.takeHook(assigned) : assigned;
   }
 
+  /**
+   * 發球：選種類與落點（像點擊滑放一樣直接指定，深度誤差照難度），照發球節奏在球落到最低點時出拍
+   * （時機誤差照難度；發球節奏慢，誤差放大一點），出拍前先按住一下（腳下光圈會亮，跟真人一樣）
+   */
   private serveInput(inp: PlayerInput): PlayerInput {
     const m = this.match;
     if (m.server !== this.id) return inp;
     if (m.phaseT < this.seenServeT || this.seenServeT < 0) {
-      this.serveDelay = 0.9 + m.rng.next() * 0.9;
+      this.serveDelay = 0.3 + m.rng.next() * 0.9;
       this.serveChoice = null;
     }
     this.seenServeT = m.phaseT;
-    if (m.phaseT < this.serveDelay) return inp;
     if (!this.serveChoice) {
-      // 雙打發球多發小球；發高遠要落在雙打後發球線（5.94 m）以內
-      const long = m.rng.chance(m.doubles ? 0.15 : 0.35);
-      const depth = long ? (m.doubles ? COURT.doublesLongService - 0.45 : 5.9) : COURT.shortService + 0.5;
-      const aim = (m.rng.next() - 0.5) * 1.2;
+      const rng = m.rng;
+      const P = GAME.serve.beat;
+      const kind = this.pickServe();
+      const { depth, aimX } = this.serveTarget(kind);
+      const noisy = depth + rng.gauss() * this.p.depthNoise * this.style.steady * 0.4;
+      // serveDelay 之後的第一個最低點（P/2、3P/2、…）
+      const flickAt = P / 2 + Math.ceil(Math.max(0, this.serveDelay - P / 2) / P) * P + rng.gauss() * this.p.timingJitter * 1.5;
+      const dir = kind === 'drive' ? { x: Math.sign(aimX || 1), y: 0.05 } : this.flickFor(kind === 'short' ? 'down' : 'up', aimX);
       this.serveChoice = {
-        charge: this.chargeFor(depth, 0.4), // 發球比較穩
-        flick: this.flickFor(long ? 'up' : 'down', aim),
+        chargeAt: flickAt - 0.3 - rng.next() * 0.3,
+        flickAt,
+        flick: { ...dir, cmd: { family: kind === 'short' ? 'down' : kind === 'drive' ? 'side' : 'up', depth: noisy, serve: kind } },
       };
     }
-    inp.charging = true;
-    if (this.me.charge >= this.serveChoice.charge) {
+    const c = this.serveChoice;
+    if (m.phaseT >= c.chargeAt) inp.charging = true;
+    if (m.phaseT >= c.flickAt) {
       inp.charging = false;
-      inp.flick = this.serveChoice.flick;
+      inp.flick = c.flick;
     }
     return inp;
+  }
+
+  /** 發球種類：雙打多發小球；困難以上混彈發（接發球員站很前面時加倍）、雙打混平抽發；打法個性：進攻型／平抽快攻更愛彈發、平抽發 */
+  private pickServe(): ServeKind {
+    const m = this.match;
+    const p = this.p;
+    const st = this.style;
+    const r = m.players[m.receiver];
+    const creeping = Math.abs(r.pos.z) < COURT.shortService + 0.75;
+    const flickMul = ((st.smash + st.drive) / 2) * (creeping ? 2 : 1);
+    const opts: [number, ServeKind][] = m.doubles
+      ? [[1, 'short'], [0.1, 'high'], [p.flickServe * flickMul, 'flick'], [p.driveServe * st.drive, 'drive']]
+      : [[0.55, 'short'], [0.45, 'high'], [p.flickServe * 0.8 * flickMul, 'flick'], [p.driveServe * 0.35 * st.drive, 'drive']];
+    const total = opts.reduce((s, [w]) => s + w, 0);
+    let x = m.rng.next() * total;
+    for (const [w, k] of opts) {
+      x -= w;
+      if (x <= 0) return k;
+    }
+    return 'short';
+  }
+
+  /** 發球落點：深度（公尺）與左右（aimX，自己視角；往中線 = T 點、往邊線 = 開角） */
+  private serveTarget(kind: ServeKind): { depth: number; aimX: number } {
+    const m = this.match;
+    const rng = m.rng;
+    const S = GAME.serve;
+    const me = this.me;
+    const back = m.serveLongLine;
+    const r = m.players[m.receiver];
+    const boxSign = m.shuttle.serveBoxSign;
+    // 世界座標 x → aimX（跟 shots.ts resolveServe 的對應相反）
+    const span = m.halfWidth / 2 - S.aimMargin;
+    const aimForX = (xw: number) => Math.max(-1, Math.min(1, (xw - boxSign * (m.halfWidth / 2)) / (me.side * span)));
+    const toT = -boxSign * me.side; // 往中線（T 點）的 aimX 方向
+    const backhand = -r.side * 0.9; // 右手持拍的接發球員：反手在他的左邊（世界座標）
+    if (kind === 'short') {
+      // 雙打標準是 T 點；偶爾開角把人拉開
+      const u = rng.next();
+      const tRate = m.doubles ? 0.6 : 0.4;
+      const aimX = u < tRate ? toT * rng.range(0.75, 1) : u < tRate + 0.2 ? -toT * rng.range(0.7, 1) : rng.range(-0.4, 0.4);
+      return { depth: COURT.shortService + S.short, aimX };
+    }
+    if (kind === 'high') return { depth: back - (m.doubles ? S.highGap.doubles : S.highGap.singles), aimX: rng.chance(0.5) ? aimForX(r.pos.x + backhand) : rng.range(-0.6, 0.6) };
+    if (kind === 'flick') return { depth: back - (m.doubles ? S.flickGap.doubles : S.flickGap.singles), aimX: rng.chance(0.65) ? aimForX(r.pos.x + backhand) : rng.range(-0.5, 0.5) };
+    // 平抽發：身體或反手（aimX 在 resolveServe 是相對接發球員身體的偏移）
+    return { depth: Math.max(COURT.shortService + 1.2, Math.min(back - 0.35, Math.abs(r.pos.z) + S.driveBehind)), aimX: rng.chance(0.6) ? (backhand * 0.6) / (me.side * 0.7) : rng.range(-0.15, 0.15) };
   }
 
   private chargeFor(depth: number, noiseMul = 1): number {
@@ -357,9 +417,13 @@ export class AIController {
     const inSpeed = j > pick.i ? Math.hypot(pts[j].p.x - pt.x, pts[j].p.y - pt.y, pts[j].p.z - pt.z) / (pts[j].t - pts[pick.i].t) / speedMul : 0;
     const maxCharge = Math.max(chargeFromTime(flickAt - (now + this.reaction)), reboundCharge(inSpeed));
     let shot = this.chooseShot(pt.y, dn);
+    // 搶攻：對方的小球發得飄（還在網前、高過網帶）→ 困難以上直接撲下去
+    const nearNetHigh = dn < GAME.netKill.zone - 0.1 && pt.y >= COURT.netTop + 0.15;
+    const rush = nearNetHigh && sh.isServe && rng.chance(p.rushRate);
+    if (rush) shot = { family: 'down', depth: GAME.netKill.depth, aimX: shot.aimX };
     // 雙打網前撲球：前場兩人距離近、來不及蓄力，跟玩家一樣用「網前平球 = 撲球」（不用蓄力）
     const netKill =
-      m.doubles && shot.family === 'down' && shot.depth >= 2.6 && dn < GAME.netKill.zone - 0.1 && pt.y >= COURT.netTop + 0.15
+      nearNetHigh && (rush || (m.doubles && shot.family === 'down' && shot.depth >= 2.6))
         ? { x: Math.max(-0.7, Math.min(0.7, shot.aimX / 1.15)), y: 0.7, cmd: { family: 'side' as const, depth: GAME.netKill.depth } }
         : null;
     // 雙打抓球：中前場平飛過來、高度到網子以上的球 → 搶下來往下壓（跟玩家「點一下」一樣，擊中時才轉成抓球）
