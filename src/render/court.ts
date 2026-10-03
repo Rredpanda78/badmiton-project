@@ -16,8 +16,81 @@ const JUDGE: [number, number] = [COURT.doublesHalfWidth + 0.7, 0.35]; // 發球�
  */
 export function makeCourt(maxAniso: number): THREE.Object3D {
   const group = new THREE.Group();
-  group.add(makeMat(maxAniso), makeShadows(), makeNet(), makeFixtures());
+  group.add(makeMat(maxAniso), makeLines(), makeShadows(), makeNet(), makeFixtures());
   return group;
+}
+
+// ---------- 白線 ----------
+
+const LINE_W = 0.065; // 最近那條底線的線寬（真實 4 cm，加粗比較好認）
+const LINE_COMP = 0.6; // 遠處加粗的程度：0 = 照真實透視（遠線細到快看不見）、1 = 螢幕上一樣粗
+const REF_CAM = { y: 10.8, z: 13.2 }; // 以直向鏡頭估算遠近
+
+/**
+ * 球場白線：幾何長條（多重取樣抗鋸齒，每條邊緣一致），全部同樣白。
+ * 遠處的線照透視會細很多（橫線再加上斜看又更扁），所以依離鏡頭距離加粗一部分，看起來比較均勻。
+ */
+function makeLines(): THREE.Mesh {
+  const W = COURT.doublesHalfWidth;
+  const S = COURT.singlesHalfWidth;
+  const L = COURT.halfLength;
+  const LS = COURT.doublesLongService;
+  const SS = COURT.shortService;
+  const dist = (x: number, z: number) => Math.hypot(x, REF_CAM.y, REF_CAM.z - z);
+  const d0 = dist(0, L);
+  // 橫線（沿 x）在螢幕上的厚度 ∝ 1/距離²；直線（沿 z）的寬度 ∝ 1/距離
+  const widthAt = (x: number, z: number, across: boolean) => {
+    const r = dist(x, z) / d0;
+    return LINE_W * Math.min(2.4, Math.pow(across ? r * r : r, LINE_COMP));
+  };
+  const pos: number[] = [];
+  const idx: number[] = [];
+  const seg = (x1: number, z1: number, x2: number, z2: number) => {
+    const len = Math.hypot(x2 - x1, z2 - z1);
+    const across = Math.abs(x2 - x1) > Math.abs(z2 - z1);
+    const nx = -(z2 - z1) / len;
+    const nz = (x2 - x1) / len;
+    const n = Math.max(1, Math.ceil(len / 0.5));
+    const base = pos.length / 3;
+    for (let i = 0; i <= n; i++) {
+      const u = i / n;
+      const x = x1 + (x2 - x1) * u;
+      const z = z1 + (z2 - z1) * u;
+      const h = widthAt(x, z, across) / 2;
+      // 兩端各多延伸半個線寬，轉角才會補滿
+      const ext = i === 0 ? -h : i === n ? h : 0;
+      const ex = x + ((x2 - x1) / len) * ext;
+      const ez = z + ((z2 - z1) / len) * ext;
+      pos.push(ex + nx * h, 0, ez + nz * h, ex - nx * h, 0, ez - nz * h);
+      if (i > 0) {
+        const a = base + (i - 1) * 2;
+        idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); // 逆時針（從上面看）= 正面朝上
+      }
+    }
+  };
+  // 雙打外框、後發球線（真實球場一樣是白線）
+  seg(-W, -L, -W, L);
+  seg(W, -L, W, L);
+  seg(-W, -LS, W, -LS);
+  seg(-W, LS, W, LS);
+  // 單打邊線、底線、前發球線、中線
+  seg(-W, -L, W, -L);
+  seg(-W, L, W, L);
+  seg(-S, -L, -S, L);
+  seg(S, -L, S, L);
+  seg(-W, -SS, W, -SS);
+  seg(-W, SS, W, SS);
+  seg(0, -L, 0, -SS);
+  seg(0, SS, 0, L);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setIndex(idx);
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(pos.map((_, i) => (i % 3 === 1 ? 1 : 0)), 3));
+  const mat = new THREE.MeshLambertMaterial({ color: 0xf4f7f2, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.y = 0.004;
+  mesh.name = 'courtLines';
+  return mesh;
 }
 
 // ---------- 地墊 ----------
@@ -98,38 +171,7 @@ function makeMat(maxAniso: number): THREE.Mesh {
     g.fillRect(toX(-W + 0.45), z0, W * 2 * PX, z1 - z0);
   }
 
-  // ---- 白線（真實 4 cm，加粗到 7.5 cm 比較好認）----
-  const lw = 0.075 * PX;
-  const line = (x1: number, z1: number, x2: number, z2: number, color = '#f4f7f2') => {
-    g.strokeStyle = color;
-    g.lineWidth = lw;
-    g.beginPath();
-    g.moveTo(toX(x1), toY(z1));
-    g.lineTo(toX(x2), toY(z2));
-    g.stroke();
-  };
-  const dim = 'rgba(244,247,242,0.45)';
-  // 雙打外框與後發球線（單打用不到，畫淡一點）
-  line(-W, -L, -W, L, dim);
-  line(W, -L, W, L, dim);
-  line(-W, -COURT.doublesLongService, W, -COURT.doublesLongService, dim);
-  line(-W, COURT.doublesLongService, W, COURT.doublesLongService, dim);
-  // 單打實際界線
-  line(-W, -L, W, -L);
-  line(-W, L, W, L);
-  line(-S, -L, -S, L);
-  line(S, -L, S, L);
-  line(-W, -COURT.shortService, W, -COURT.shortService);
-  line(-W, COURT.shortService, W, COURT.shortService);
-  line(0, -L, 0, -COURT.shortService);
-  line(0, COURT.shortService, 0, L);
-
-  // 線上也蓋一層很淡的顆粒（油漆線的質感；線寬不變）
-  g.globalAlpha = 0.05;
-  g.fillStyle = grain;
-  g.fillRect(0, 0, canvas.width, canvas.height);
-  g.globalAlpha = 1;
-
+  // 白線改用幾何（makeLines），貼圖縮小時才不會有的粗有的細
   // ---- 地墊包邊：外圈深色收邊＋一條亮的斜角線（看起來有厚度）----
   const b = 0.07 * PX;
   g.strokeStyle = '#1d5541';
