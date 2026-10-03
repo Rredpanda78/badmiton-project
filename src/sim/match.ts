@@ -112,6 +112,7 @@ export interface ShuttleState {
   launchTime: number; // 擊出時的 match.time（prediction 的 t 從這裡算）
   wobble: boolean; // 勉強接回的機會球（會晃、比較慢、適合殺）
   attack: number; // 這顆球有多好殺（0..1）：高球越短越好殺，機會球 = 1
+  pace: number; // 來球有多兇（0..1）：殺球 1、撲／壓 0.8、平抽 0.5（硬伸手接的懲罰用）
 }
 
 const clamp = (x: number, a: number, b: number) => Math.max(a, Math.min(b, x));
@@ -204,7 +205,7 @@ export class Match {
       reachMul: 1,
     });
     this.players = [mk(0, 1), mk(1, -1)];
-    this.shuttle = { pos: v3(), vel: v3(), mode: 'held', lastHitter: null, isServe: false, serveBoxSign: 1, prediction: null, stepDt: PHYS.dt, launchTime: 0, wobble: false, attack: 0 };
+    this.shuttle = { pos: v3(), vel: v3(), mode: 'held', lastHitter: null, isServe: false, serveBoxSign: 1, prediction: null, stepDt: PHYS.dt, launchTime: 0, wobble: false, attack: 0, pace: 0 };
     if (settings.practice) this.enterDrillIdle();
     else this.setupServe();
   }
@@ -667,6 +668,7 @@ export class Match {
     sh.launchTime = this.time;
     sh.wobble = false;
     sh.attack = 0;
+    sh.pace = 0;
     sh.prediction = predict(sh.pos, sh.vel, stepDt);
     this.rallyHits++;
     this.hitSerial++;
@@ -750,17 +752,36 @@ export class Match {
       const apexQ = 1 - 0.35 * clamp(Math.abs(this.time - p.takeoffAt - jumpApexTime()) / 0.15, 0, 1);
       qTime = swing.triggeredJump ? apexQ : Math.max(qTime, apexQ);
     }
-    // 魚躍：自動挑回固定是一顆普通的球；自己另外划的最多「不錯」
-    const quality = swing.diveAuto ? GAME.dive.quality : qTime * posQuality(dist, this.reachOf(p)) * (swing.dive ? 0.85 : 1);
+    // 魚躍：自動救回固定是一顆普通的球（至少會過網）
+    let quality = swing.diveAuto ? GAME.dive.quality : qTime * posQuality(dist, this.reachOf(p)) * (swing.dive ? 0.85 : 1);
     const contact = copy3(sh.pos);
     const incoming = Math.hypot(sh.vel.x, sh.vel.y, sh.vel.z);
+    // 硬伸手去接快球（殺球）：離身體越遠、來球越快，球質越差；太勉強可能直接掛網 → 這種球要用魚躍
+    let stretchFail = false;
+    if (!swing.dive && !p.airborne) {
+      const fast = sh.pace;
+      // 看球的路線離身體多遠（側向距離），不是擊球當下的距離：正面飛來的球在身前 0.9 m 接很正常
+      const hv = Math.hypot(sh.vel.x, sh.vel.z) || 1;
+      const lateral = Math.abs((p.pos.x - sh.pos.x) * (sh.vel.z / hv) - (p.pos.z - sh.pos.z) * (sh.vel.x / hv));
+      const stretch = clamp((lateral - GAME.stretch.comfy) / (this.reachOf(p) - GAME.stretch.comfy), 0, 1);
+      const strain = fast * stretch;
+      if (strain > 0) {
+        quality *= 1 - GAME.stretch.penalty * strain;
+        if (quality < 0.5 && strain > 0.5) stretchFail = this.rng.chance(clamp((0.5 - quality) / 0.25, 0, GAME.stretch.maxFail));
+      }
+    }
     let charge = swing.preset ? swing.charge : Math.max(swing.charge, reboundCharge(incoming));
     // 勉強接到（品質差、不是往下壓）→ 只能把球撈成一顆又高又慢、會晃的「機會球」到中場
     let family = swing.family;
-    const weak = quality < 0.6 && !p.airborne && family !== 'down';
+    const weak = quality < 0.6 && !p.airborne && family !== 'down' && !stretchFail;
     if (weak) {
       family = 'up';
       charge = clamp(charge, chargeForDepth(3.2), chargeForDepth(4.6));
+    }
+    if (stretchFail) {
+      // 伸手太勉強：拍面沒控制好，球打進網
+      family = 'down';
+      charge = chargeForDepth(-0.6);
     }
     // 網前、球高於網時按平球（點一下／左右滑）→ 撲球：比一般撲球快一點，但打向對方中場、反應得過來還救得到
     let killCap: number | undefined;
@@ -784,6 +805,7 @@ export class Match {
     swing.contactT = swing.t;
     this.launch(p, shot.vel, stepDt, false);
     sh.wobble = weak;
+    sh.pace = paceOf(shot.name);
     // 這顆球有多好打：高球越短越好殺；機會球最好殺
     sh.attack = weak ? 1 : family === 'up' ? clamp((5.8 - Math.abs(shot.target.z)) / 1.4, 0, 1) : 0;
     if (weak) this.events.push({ type: 'chance', player: p.id === 0 ? 1 : 0 });
@@ -962,6 +984,7 @@ export class Match {
       diveAuto: false,
     };
     this.launch(feeder, shot.vel, shot.stepDt, false);
+    this.shuttle.pace = paceOf(shot.name);
     this.events.push({
       type: 'hit',
       player: 1,
@@ -1100,6 +1123,7 @@ export class Match {
     this.launch(p, h.vel, h.stepDt, h.serve);
     sh.wobble = h.wobble;
     sh.attack = h.attack;
+    sh.pace = paceOf(h.name);
     const prev = p.swing;
     const s = this.syntheticSwing(p, h.family, prev && !prev.contacted ? prev.t : GAME.idealContactT, p.airborne);
     s.contacted = true;
@@ -1192,6 +1216,14 @@ function timeQuality(t: number, f = 1): number {
   if (Math.abs(t - ideal) <= flat) return 1;
   if (t < ideal) return 1 - 0.2 * clamp((ideal - flat - t) / Math.max(0.01, ideal - flat) / f, 0, 1);
   return 1 - 0.28 * clamp((t - ideal - flat) / (GAME.swingWindow - ideal) / f, 0, 1);
+}
+
+/** 來球有多兇：硬伸手去接的難度 */
+function paceOf(name: string): number {
+  if (name === '殺球' || name === '跳殺' || name === '機會殺球') return 1;
+  if (name === '撲球' || name === '跳撲' || name === '下壓') return 0.8;
+  if (name === '平抽' || name === '推球' || name === '平高球') return 0.5;
+  return 0;
 }
 
 /** 位置分數：離身體 0.25~0.85 m 最好，太遠或太擠扣分 */

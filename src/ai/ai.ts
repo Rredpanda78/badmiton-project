@@ -311,12 +311,15 @@ export class AIController {
     if (!this.match.rng.chance(this.moveOnly ? 1 : p.diveRate)) return null;
     const speed = GAME.moveSpeed * p.speedMul * me.kit.move;
     const reach = GAME.reach * me.reachMul;
-    // 用跑的（伸手）其實搆得到就不撲
+    // 用跑的其實搆得到就不撲；但快球（殺球）硬伸手接球質很差，要能「舒服地」接到才不撲
+    const sh = this.match.shuttle;
+    const fastIn = (Math.hypot(sh.vel.x, sh.vel.y, sh.vel.z) * pred.stepDt) / PHYS.dt > 25;
+    const okDist = fastIn ? GAME.stretch.comfy + 0.15 : reach * 0.9;
     for (const q of pred.points) {
       const pt = q.p;
       if (pt.z * me.side < 0.05 || pt.y < 0.1 || pt.y > GAME.reachMaxY) continue;
       const run = speed * Math.max(0, q.t - p.reaction - 0.15);
-      if (Math.hypot(pt.x - me.pos.x, pt.z - me.pos.z) <= run + reach * 0.9) return null;
+      if (Math.hypot(pt.x - me.pos.x, pt.z - me.pos.z) <= run + okDist) return null;
     }
     for (let i = 0; i < pred.points.length; i += 2) {
       const q = pred.points[i];
